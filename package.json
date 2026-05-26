@@ -1,0 +1,44 @@
+{
+  "name": "pi-background-tasks",
+  "version": "0.1.0",
+  "description": "Claude-Code-like background shell task manager for Pi: bg_run tools, /bg commands, /tasks UI, bounded logs, kill/timeout safety, and completion wakeups.",
+  "type": "module",
+  "license": "ISC",
+  "keywords": [
+    "pi-package",
+    "pi-extension",
+    "pi",
+    "background-tasks",
+    "coding-agent",
+    "shell",
+    "tasks"
+  ],
+  "homepage": "https://github.com/ismailsaleekh/pi-background-tasks#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ismailsaleekh/pi-background-tasks.git"
+  },
+  "bugs": {
+    "url": "https://github.com/ismailsaleekh/pi-background-tasks/issues"
+  },
+  "files": [
+    "extensions/",
+    "README.md",
+    "PUBLISHING.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "smoke": "pi --no-extensions -e ./extensions/background-tasks.ts --offline --no-tools --no-session -p \"/jobs\"",
+    "pack:dry-run": "npm pack --dry-run"
+  },
+  "pi": {
+    "extensions": [
+      "./extensions/background-tasks.ts"
+    ]
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-tui": "*",
+    "typebox": "*"
+  }
+}
