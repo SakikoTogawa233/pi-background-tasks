@@ -4,6 +4,10 @@
   "description": "Claude-Code-like background shell task manager for Pi: bg_run tools, /bg commands, /tasks UI, bounded logs, kill/timeout safety, and completion wakeups.",
   "type": "module",
   "license": "ISC",
+  "author": "Ismail <ismailsalikhodjaev@gmail.com>",
+  "publishConfig": {
+    "access": "public"
+  },
   "keywords": [
     "pi-package",
     "pi-extension",
