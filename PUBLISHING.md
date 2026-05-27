@@ -12,12 +12,14 @@ This package is ready for both npm publishing and standalone git publishing.
 
 ```bash
 cd packages/pi-background-tasks
+npm run test
+npm run test:full
 npm run smoke
 npm pack --dry-run
 npm view pi-background-tasks name version --json
 ```
 
-At creation time, `npm view pi-background-tasks` returned 404, so the unscoped name appeared available.
+`pi-background-tasks` is already published; bump `package.json` before each npm publish.
 
 ## Publish to npm
 
@@ -30,8 +32,8 @@ npm publish --access public
 Pi install smoke after publish:
 
 ```bash
-pi -e npm:pi-background-tasks@0.1.0 --offline --no-tools --no-session -p "/jobs"
-pi install npm:pi-background-tasks@0.1.0
+pi -e npm:pi-background-tasks@0.2.0 --offline --no-tools --no-session -p "/jobs"
+pi install npm:pi-background-tasks@0.2.0
 ```
 
 ## Publish to git
@@ -42,19 +44,19 @@ Because Pi git package installs treat the repository root as the package root, d
 cd packages/pi-background-tasks
 git init
 git add .
-git commit -m "Initial pi-background-tasks package"
+git commit -m "Release pi-background-tasks"
 git branch -M main
 git remote add origin git@github.com:ismailsaleekh/pi-background-tasks.git
 git push -u origin main
-git tag v0.1.0
-git push origin v0.1.0
+git tag v0.2.0
+git push origin v0.2.0
 ```
 
 Pi install smoke after git tag:
 
 ```bash
-pi -e git:github.com/ismailsaleekh/pi-background-tasks@v0.1.0 --offline --no-tools --no-session -p "/jobs"
-pi install git:github.com/ismailsaleekh/pi-background-tasks@v0.1.0
+pi -e git:github.com/ismailsaleekh/pi-background-tasks@v0.2.0 --offline --no-tools --no-session -p "/jobs"
+pi install git:github.com/ismailsaleekh/pi-background-tasks@v0.2.0
 ```
 
 ## pi.dev/packages
