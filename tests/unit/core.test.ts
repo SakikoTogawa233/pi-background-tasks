@@ -5,14 +5,18 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import {
 	boundedRead,
+	compareSemver,
 	deriveTaskNameFromCommand,
 	formatCompactNumber,
 	formatDuration,
 	formatModelSummary,
 	formatSnapshotList,
+	formatUpdateSegment,
+	isNewerVersion,
 	normalizeMaxBytes,
 	normalizeTaskName,
 	parseBgCommandArgs,
+	parseSemver,
 	sanitizePathSegment,
 	shellInvocation,
 	taskDisplayName,
@@ -95,6 +99,44 @@ describe("core", () => {
 		assert.equal(formatModelSummary("anthropic/claude-sonnet-4"), "model=anthropic/claude-sonnet-4");
 		assert.equal(formatModelSummary(undefined), undefined);
 		assert.equal(formatModelSummary(""), undefined);
+	});
+
+	it("parses and compares semver including prerelease precedence", () => {
+		assert.deepEqual(parseSemver("1.2.3"), { major: 1, minor: 2, patch: 3, prerelease: [] });
+		assert.deepEqual(parseSemver("v0.4.0"), { major: 0, minor: 4, patch: 0, prerelease: [] });
+		assert.deepEqual(parseSemver("1.0.0-beta.2"), { major: 1, minor: 0, patch: 0, prerelease: ["beta", "2"] });
+		assert.deepEqual(parseSemver("1.2.3+build.5"), { major: 1, minor: 2, patch: 3, prerelease: [] });
+		assert.equal(parseSemver("1.2"), undefined);
+		assert.equal(parseSemver("latest"), undefined);
+		assert.equal(parseSemver(""), undefined);
+
+		assert.equal(compareSemver("1.2.3", "1.2.2"), 1);
+		assert.equal(compareSemver("1.2.3", "1.2.3"), 0);
+		assert.equal(compareSemver("1.2.3", "1.3.0"), -1);
+		assert.equal(compareSemver("2.0.0", "1.9.9"), 1);
+		assert.equal(compareSemver("1.0.0", "1.0.0-beta"), 1);
+		assert.equal(compareSemver("1.0.0-alpha", "1.0.0"), -1);
+		assert.equal(compareSemver("1.0.0-alpha", "1.0.0-beta"), -1);
+		assert.equal(compareSemver("1.0.0-alpha.2", "1.0.0-alpha.1"), 1);
+		assert.equal(compareSemver("1.0.0-alpha.1", "1.0.0-alpha"), 1);
+		assert.equal(compareSemver("1.0.0-1", "1.0.0-alpha"), -1);
+		assert.equal(compareSemver("1.0.0-2", "1.0.0-10"), -1);
+		assert.equal(compareSemver("garbage", "1.0.0"), undefined);
+		assert.equal(compareSemver("1.0.0", "garbage"), undefined);
+	});
+
+	it("derives newer-version flags and footer update segments", () => {
+		assert.equal(isNewerVersion("0.4.0", "0.3.0"), true);
+		assert.equal(isNewerVersion("v0.4.0", "0.3.0"), true);
+		assert.equal(isNewerVersion("0.3.0", "0.3.0"), false);
+		assert.equal(isNewerVersion("0.2.0", "0.3.0"), false);
+		assert.equal(isNewerVersion("garbage", "0.3.0"), false);
+		assert.equal(formatUpdateSegment("0.4.0", "0.3.0"), "\u2b06 v0.4.0 /bg-update");
+		assert.equal(formatUpdateSegment("0.3.0", "0.3.0"), undefined);
+		assert.equal(formatUpdateSegment("0.2.0", "0.3.0"), undefined);
+		assert.equal(formatUpdateSegment(undefined, "0.3.0"), undefined);
+		assert.equal(formatUpdateSegment("garbage", "0.3.0"), undefined);
+		assert.equal(formatUpdateSegment("0.4.0", ""), undefined);
 	});
 
 	it("boundedRead supports head, tail, truncation, and empty files", async () => {

@@ -105,7 +105,7 @@ describe("package", () => {
 
 		const readme = await text("README.md");
 		const plan = await text("TEST_PLAN.md");
-		for (const surface of ["/bg", "/jobs", "/logs", "/kill", "/tasks", "/bg-tasks", "/bg-clear", "bg_run", "bg_status", "bg_logs", "bg_kill", "Shift+Down", "Ctrl+Alt+C"]) {
+		for (const surface of ["/bg", "/jobs", "/logs", "/kill", "/tasks", "/bg-tasks", "/bg-clear", "/bg-update", "bg_run", "bg_status", "bg_logs", "bg_kill", "Shift+Down", "Ctrl+Alt+C"]) {
 			assert.match(readme, new RegExp(surface.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")), `README missing ${surface}`);
 			assert.match(plan, new RegExp(surface.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")), `TEST_PLAN missing ${surface}`);
 		}
@@ -140,7 +140,7 @@ describe("package", () => {
 			}
 		} finally {
 			await rm(temp, { recursive: true, force: true });
-			await rm(new URL("pi-background-tasks-0.3.0.tgz", root), { force: true });
+			await rm(new URL("pi-background-tasks-0.4.0.tgz", root), { force: true });
 		}
 	});
 });

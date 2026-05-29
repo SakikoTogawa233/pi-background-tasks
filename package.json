@@ -1,6 +1,6 @@
 {
   "name": "pi-background-tasks",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Claude-Code-like named background shell task manager for Pi: bg_run tools, /bg commands, Shift+Down footer dock, bounded logs, kill/timeout safety, and completion wakeups.",
   "type": "module",
   "license": "ISC",

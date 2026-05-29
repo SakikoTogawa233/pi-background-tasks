@@ -12,7 +12,7 @@ This package follows:
 |---|---|
 | Package | `pi-background-tasks` |
 | Extension entrypoint | `extensions/background-tasks.ts` |
-| Public commands | `/bg`, `/jobs`, `/logs`, `/kill`, `/tasks`, `/bg-tasks`, `/bg-clear` |
+| Public commands | `/bg`, `/jobs`, `/logs`, `/kill`, `/tasks`, `/bg-tasks`, `/bg-clear`, `/bg-update` |
 | Public tools | `bg_run`, `bg_status`, `bg_logs`, `bg_kill` |
 | Shortcuts | `Shift+Down`; optional fallback `Ctrl+Alt+C` |
 | Custom UI | footer status + focused bottom dock overlay |
@@ -62,6 +62,7 @@ This package follows:
 | Dock close | `x`/`Esc`/`q` |  |  |  | yes | yes |  |  | Component + PTY. |
 | Shortcut opens dock | `Shift+Down` |  | registration |  |  | yes |  |  | PTY sends xterm `ESC [ 1 ; 2 B`. |
 | Clear finished notices | `/bg-clear`, optional `Ctrl+Alt+C` fallback |  | yes | yes |  |  |  |  | `/bg-clear` is the canonical terminal-independent path and is advertised in the footer. SDK invokes the slash-command handler and verifies fallback shortcut registration; RPC verifies `/bg-clear` clears finished notices; finished notices remain until explicit clear. |
+| Update-available footer notice | `⬆ v<latest> /bg-update` footer segment + `/bg-update` command | yes | yes | yes |  |  |  |  | Unit covers semver parse/compare/precedence, `isNewerVersion`, `formatUpdateSegment`, npm/`package.json` payload narrowing, injected-fetch success/404/throw/timeout, and `package.json` read/degrade. SDK uses a localhost registry to verify the idle and append-to-active footer segment, `/bg-update` non-installing instructions, and that opt-out (`PI_BG_DISABLE_UPDATE_CHECK=1`), offline (`PI_OFFLINE=1`), already-current, and registry-failure paths render no segment and never throw. RPC verifies `/bg-update` discovery and offline non-installing instructions. The check is one-shot per `session_start`, time-boxed, offline-safe, and never runs on the status tick. |
 | Runtime output files | `.pi/tasks/...output` | yes | yes |  |  |  |  |  | SDK asserts existence. |
 | Runtime metadata files | `.pi/tasks/...json` | yes | yes |  |  |  |  |  | SDK asserts shape/status/name/context usage; registry unit tests cover metadata failure/update ordering. |
 | Timeout kills task | `timeoutSeconds` |  | yes |  |  |  |  |  | SDK. |

@@ -133,7 +133,7 @@ describe("rpc", () => {
 			const c = await rpc.send({ type: "get_commands" });
 			assert.equal(c["success"], true);
 			const names = commandNames(c);
-			for (const name of ["bg", "jobs", "logs", "kill", "tasks", "bg-tasks", "bg-clear"]) assert.ok(names.includes(name), name);
+			for (const name of ["bg", "jobs", "logs", "kill", "tasks", "bg-tasks", "bg-clear", "bg-update"]) assert.ok(names.includes(name), name);
 			await rpc.prompt('/bg --name "RPC Echo" printf rpc-ok');
 			const started = await rpc.wait(notifyWith(/Started RPC Echo/));
 			const id = extractTaskId(started);
@@ -187,6 +187,14 @@ describe("rpc", () => {
 			await rpc.wait(notifyWith(/Showing tail 1 B|Full output/));
 			await rpc.prompt("/logs b 10");
 			await rpc.wait(notifyWith(/Background logs error:[\s\S]*Ambiguous task ID prefix/));
+		});
+	});
+
+	it("prints non-installing /bg-update instructions offline", async () => {
+		await withRpc(async (rpc) => {
+			const response = await rpc.prompt("/bg-update");
+			assert.equal(response["success"], true);
+			await rpc.wait(notifyWith(/pi install npm:pi-background-tasks@latest[\s\S]*does not install or self-update/));
 		});
 	});
 

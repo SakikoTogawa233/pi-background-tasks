@@ -7,6 +7,8 @@ import {
 	MAX_LOG_BYTES,
 	deriveTaskNameFromCommand,
 	formatSnapshotList,
+	formatUpdateSegment,
+	isNewerVersion,
 	normalizeMaxBytes,
 	normalizeTaskName,
 	parseBgCommandArgs,
@@ -20,6 +22,7 @@ import {
 	type BgTaskSnapshot,
 	type StartTaskOptions,
 } from "./core/common.js";
+import { fetchLatestVersion, readPackageInfo, type FetchLatestVersionOptions } from "./core/update-check.js";
 import { BackgroundTaskRegistry } from "./core/registry.js";
 import { BackgroundTasksManager, type BackgroundTaskForUi, type TaskManagerResult } from "./ui/background-tasks-manager.js";
 
@@ -35,6 +38,13 @@ import { BackgroundTasksManager, type BackgroundTaskForUi, type TaskManagerResul
 
 const STATUS_INTERVAL_MS = 1000;
 const COMMAND_PREVIEW_CHARS = 90;
+const GIT_INSTALL_TARGET = "git:github.com/ismailsaleekh/pi-background-tasks";
+
+const packageInfo = readPackageInfo(new URL("../package.json", import.meta.url), (error) => {
+	console.error(`[background-tasks] failed to read package version: ${error.message}`);
+});
+const PACKAGE_NAME = packageInfo.name ?? "pi-background-tasks";
+const PACKAGE_VERSION = packageInfo.version;
 const LIGHT_BLUE_BG = "\x1b[48;2;183;223;255m";
 const LIGHT_BLUE_FG = "\x1b[38;2;11;70;110m";
 const ANSI_RESET = "\x1b[0m";
@@ -88,6 +98,8 @@ export default function backgroundTasksExtension(pi: ExtensionAPI): void {
 	let currentCtx: ExtensionContext | undefined;
 	let dockOpen = false;
 	let statusInterval: NodeJS.Timeout | undefined;
+	let latestKnownVersion: string | undefined;
+	let updateCheckStarted = false;
 
 	const registry = new BackgroundTaskRegistry({
 		onChange: () => updateUi(),
@@ -129,9 +141,10 @@ export default function backgroundTasksExtension(pi: ExtensionAPI): void {
 			const unseenStopped = allTasks.filter((task) => task.status === "killed" && !seenTaskIds.has(task.id));
 			const unseenDone = allTasks.filter((task) => task.status === "completed" && !seenTaskIds.has(task.id));
 			const unseenFinishedCount = unseenFailed.length + unseenStopped.length + unseenDone.length;
+			const updateSegment = formatUpdateSegment(latestKnownVersion, PACKAGE_VERSION ?? "");
 			ctx.ui.setWidget("background-tasks", undefined);
 			if (running.length === 0 && unseenFinishedCount === 0) {
-				ctx.ui.setStatus("background-tasks", undefined);
+				ctx.ui.setStatus("background-tasks", updateSegment ? lightBlue(` bg ${updateSegment} `) : undefined);
 				return;
 			}
 
@@ -141,7 +154,9 @@ export default function backgroundTasksExtension(pi: ExtensionAPI): void {
 			if (unseenStopped.length > 0) parts.push(`${unseenStopped.length} stopped`);
 			if (unseenDone.length > 0) parts.push(`${unseenDone.length} done`);
 			const entryHint = dockOpen ? "focused" : `Shift↓${unseenFinishedCount > 0 ? " · /bg-clear" : ""}`;
-			const label = ` bg ${parts.join(" · ")} · ${entryHint} `;
+			const segments = [...parts, entryHint];
+			if (updateSegment) segments.push(updateSegment);
+			const label = ` bg ${segments.join(" · ")} `;
 			ctx.ui.setStatus("background-tasks", lightBlue(label));
 		} catch (error) {
 			console.error(`[background-tasks] UI update failed: ${error instanceof Error ? error.message : String(error)}`);
@@ -227,6 +242,26 @@ export default function backgroundTasksExtension(pi: ExtensionAPI): void {
 		return new Text(`${theme.fg(color, `[bg ${status}]`)} ${theme.fg("accent", name)} ${theme.fg("dim", `(${id})`)}${output}${error}`, 0, 0);
 	});
 
+	async function scheduleUpdateCheck(ctx: ExtensionContext): Promise<void> {
+		if (updateCheckStarted) return;
+		updateCheckStarted = true;
+		const env = process.env;
+		if (env["PI_BG_DISABLE_UPDATE_CHECK"] === "1") return;
+		if (env["PI_OFFLINE"] === "1") return;
+		if (!PACKAGE_VERSION) return;
+		const options: FetchLatestVersionOptions = {
+			packageName: PACKAGE_NAME,
+			onError: (error) => console.error(`[background-tasks] update check skipped: ${error.message}`),
+		};
+		const registryUrl = env["PI_BG_REGISTRY_URL"];
+		if (registryUrl) options.registryUrl = registryUrl;
+		const latest = await fetchLatestVersion(options);
+		if (latest && isNewerVersion(latest, PACKAGE_VERSION)) {
+			latestKnownVersion = latest;
+			updateUi(ctx);
+		}
+	}
+
 	pi.on("session_start", async (_event, ctx) => {
 		registry.setShuttingDown(false);
 		currentCtx = ctx;
@@ -234,6 +269,8 @@ export default function backgroundTasksExtension(pi: ExtensionAPI): void {
 		updateUi(ctx);
 		if (statusInterval) clearInterval(statusInterval);
 		statusInterval = setInterval(() => updateUi(), STATUS_INTERVAL_MS);
+		// One-shot, non-blocking: never awaited on the session-start path or the status tick.
+		void scheduleUpdateCheck(ctx);
 	});
 
 	pi.on("session_shutdown", async (_event, ctx) => {
@@ -298,6 +335,28 @@ export default function backgroundTasksExtension(pi: ExtensionAPI): void {
 		description: "Clear finished background task footer notices",
 		handler: async (_args, ctx) => {
 			notifyClearFinishedNotices(ctx);
+		},
+	});
+
+	pi.registerCommand("bg-update", {
+		description: "Show how to update pi-background-tasks to the latest published version",
+		handler: async (_args, ctx) => {
+			const current = PACKAGE_VERSION ?? "unknown";
+			const latest = latestKnownVersion;
+			const pinnedNpm = latest ? `${PACKAGE_NAME}@${latest}` : `${PACKAGE_NAME}@<version>`;
+			const pinnedGit = latest ? `${GIT_INSTALL_TARGET}@v${latest}` : `${GIT_INSTALL_TARGET}@<tag>`;
+			const lines = [
+				latest
+					? `pi-background-tasks ${current} is installed; ${latest} is the latest published version.`
+					: `pi-background-tasks ${current} is installed.`,
+				"Update from npm:",
+				`  pi install npm:${PACKAGE_NAME}@latest`,
+				`  pi install npm:${pinnedNpm}`,
+				"Or update from git tags:",
+				`  pi install ${pinnedGit}`,
+				"This command only prints update instructions; it does not install or self-update.",
+			];
+			ctx.ui.notify(lines.join("\n"), "info");
 		},
 	});
 

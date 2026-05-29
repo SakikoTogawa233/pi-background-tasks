@@ -5,8 +5,10 @@ import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises
 import { existsSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { tmpdir } from "node:os";
+import { createServer } from "node:http";
 import { AuthStorage, createAgentSession, DefaultResourceLoader, ModelRegistry, SessionManager, SettingsManager, type AgentSession } from "@earendil-works/pi-coding-agent";
 import type { BgTaskSnapshot } from "../../src/core/common.js";
+import { parsePackageInfo } from "../../src/core/update-check.js";
 
 const extensionPath = resolve("extensions/background-tasks.ts");
 const scriptedProviderPath = resolve("tests/scripted-provider/scripted-provider-extension.ts");
@@ -86,6 +88,84 @@ afterEach(async () => {
 	for (const r of roots.splice(0)) await rm(r, { recursive: true, force: true });
 });
 
+function makeStatusUi(statuses: Array<string | undefined>, notifications: string[]) {
+	return {
+		select: async () => undefined,
+		confirm: async () => false,
+		input: async () => undefined,
+		notify: (message: string) => { notifications.push(message); },
+		onTerminalInput: () => () => {},
+		setStatus: (_key: string, text: string | undefined) => { statuses.push(text); },
+		setWorkingMessage: () => {},
+		setWorkingVisible: () => {},
+		setWorkingIndicator: () => {},
+		setHiddenThinkingLabel: () => {},
+		setWidget: () => {},
+		setFooter: () => {},
+		setHeader: () => {},
+		setTitle: () => {},
+		setEditorText: () => {},
+		getEditorText: () => "",
+		pasteToEditor: () => {},
+		editor: async () => undefined,
+		addAutocompleteProvider: () => {},
+		setEditor: () => {},
+		custom: async () => undefined,
+	};
+}
+
+async function startRegistry(payload: string, status = 200): Promise<{ url: string; close: () => Promise<void> }> {
+	const server = createServer((_req, res) => {
+		res.writeHead(status, { "content-type": "application/json" });
+		res.end(payload);
+	});
+	await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", () => resolve()));
+	const address = server.address();
+	assert.ok(address !== null && typeof address === "object", "registry server must report an address");
+	return {
+		url: `http://127.0.0.1:${address.port}`,
+		close: () => new Promise<void>((resolve) => server.close(() => resolve())),
+	};
+}
+
+async function renderFooterViaJobs(session: AgentSession): Promise<void> {
+	const jobs = session.extensionRunner.getRegisteredCommands().find((cmd) => cmd.invocationName === "jobs");
+	assert.ok(jobs);
+	await jobs.handler("", session.extensionRunner.createContext());
+}
+
+const UPDATE_ENV_KEYS = ["PI_OFFLINE", "PI_BG_DISABLE_UPDATE_CHECK", "PI_BG_REGISTRY_URL"] as const;
+
+async function settledFooter(options: { env: Record<string, string>; registryPayload: string; registryStatus?: number }): Promise<{ status: string | undefined; threw: boolean }> {
+	const saved = new Map<string, string | undefined>();
+	for (const key of UPDATE_ENV_KEYS) { saved.set(key, process.env[key]); delete process.env[key]; }
+	for (const [key, value] of Object.entries(options.env)) process.env[key] = value;
+	const registry = await startRegistry(options.registryPayload, options.registryStatus);
+	process.env["PI_BG_REGISTRY_URL"] = registry.url;
+	const { session } = await harness();
+	const statuses: Array<string | undefined> = [];
+	const notifications: string[] = [];
+	session.extensionRunner.setUIContext(makeStatusUi(statuses, notifications));
+	let threw = false;
+	try {
+		await session.extensionRunner.emit({ type: "session_start", reason: "startup" });
+		await new Promise((resolve) => setTimeout(resolve, 200));
+		await renderFooterViaJobs(session);
+	} catch {
+		threw = true;
+	} finally {
+		await session.extensionRunner.emit({ type: "session_shutdown", reason: "quit" });
+		session.dispose();
+		await registry.close();
+		for (const key of UPDATE_ENV_KEYS) {
+			const value = saved.get(key);
+			if (value === undefined) delete process.env[key];
+			else process.env[key] = value;
+		}
+	}
+	return { status: statuses.at(-1), threw };
+}
+
 describe("sdk", () => {
 	it("registers commands, tools, shortcuts, renderers, and runs with output and metadata files", async () => {
 		const { session, cwd } = await harness();
@@ -96,7 +176,7 @@ describe("sdk", () => {
 			assert.ok(bgRunParams.required?.includes("isAgent"), "bg_run schema must require isAgent");
 			assert.match(JSON.stringify(bgRunParams.properties?.isAgent ?? bgRunParams), /LLM\/agent/);
 			const cmds = session.extensionRunner.getRegisteredCommands().map((c) => c.invocationName);
-			for (const cmd of ["bg", "jobs", "logs", "kill", "tasks", "bg-tasks", "bg-clear"]) assert.ok(cmds.includes(cmd), cmd);
+			for (const cmd of ["bg", "jobs", "logs", "kill", "tasks", "bg-tasks", "bg-clear", "bg-update"]) assert.ok(cmds.includes(cmd), cmd);
 			assert.ok(session.extensionRunner.getMessageRenderer("background-task-notification"));
 			const shortcuts = session.extensionRunner.getShortcuts(new Map());
 			assert.ok(shortcuts.has("shift+down"));
@@ -531,5 +611,71 @@ console.log(JSON.stringify({ type: "message_end", message: secondMessage }));
 		assert.equal(s2.details.tasks[0].status, "killed");
 		assert.match(s1.details.tasks[0].error, /shutdown/);
 		session.dispose();
+	});
+
+	it("surfaces an update-available footer segment and registers a non-installing /bg-update command", async () => {
+		const saved = new Map<string, string | undefined>();
+		for (const key of UPDATE_ENV_KEYS) { saved.set(key, process.env[key]); delete process.env[key]; }
+		const registry = await startRegistry(JSON.stringify({ name: "pi-background-tasks", version: "999.0.0" }));
+		process.env["PI_BG_REGISTRY_URL"] = registry.url;
+		const { session } = await harness();
+		const statuses: Array<string | undefined> = [];
+		const notifications: string[] = [];
+		session.extensionRunner.setUIContext(makeStatusUi(statuses, notifications));
+		try {
+			const commands = session.extensionRunner.getRegisteredCommands().map((cmd) => cmd.invocationName);
+			assert.ok(commands.includes("bg-update"), "bg-update command must be registered");
+
+			await session.extensionRunner.emit({ type: "session_start", reason: "startup" });
+			let footer: string | undefined;
+			for (let i = 0; i < 50; i++) {
+				await renderFooterViaJobs(session);
+				footer = statuses.at(-1) ?? undefined;
+				if (footer && /\u2b06 v999\.0\.0 \/bg-update/.test(footer)) break;
+				await new Promise((resolve) => setTimeout(resolve, 20));
+			}
+			assert.match(footer ?? "", /bg \u2b06 v999\.0\.0 \/bg-update/);
+
+			// Append-to-active-footer path: segment trails the running/entry-hint status.
+			const running = await exec(session, "bg_run", { isAgent: false, name: "Update Footer Running", command: "sleep 10", notifyOnCompletion: false, triggerOnCompletion: false });
+			await renderFooterViaJobs(session);
+			assert.match(statuses.at(-1) ?? "", /bg 1 running · Shift↓ · \u2b06 v999\.0\.0 \/bg-update/);
+			await exec(session, "bg_kill", { taskId: running.details.task.id });
+
+			const updateCommand = session.extensionRunner.getRegisteredCommands().find((cmd) => cmd.invocationName === "bg-update");
+			assert.ok(updateCommand);
+			await updateCommand.handler("", session.extensionRunner.createContext());
+			const message = notifications.at(-1) ?? "";
+			assert.match(message, /pi install npm:pi-background-tasks@latest/);
+			assert.match(message, /pi install npm:pi-background-tasks@999\.0\.0/);
+			assert.match(message, /pi install git:github\.com\/ismailsaleekh\/pi-background-tasks@v999\.0\.0/);
+			assert.match(message, /999\.0\.0 is the latest published version/);
+			assert.match(message, /does not install or self-update/);
+		} finally {
+			await session.extensionRunner.emit({ type: "session_shutdown", reason: "quit" });
+			session.dispose();
+			await registry.close();
+			for (const [key, value] of saved) { if (value === undefined) delete process.env[key]; else process.env[key] = value; }
+		}
+	});
+
+	it("shows no update segment when opted out, offline, already current, or the registry fails, and never throws", async () => {
+		const newer = JSON.stringify({ version: "999.0.0" });
+		const disabled = await settledFooter({ env: { PI_BG_DISABLE_UPDATE_CHECK: "1" }, registryPayload: newer });
+		assert.equal(disabled.threw, false);
+		assert.doesNotMatch(disabled.status ?? "", /bg-update/);
+
+		const offline = await settledFooter({ env: { PI_OFFLINE: "1" }, registryPayload: newer });
+		assert.equal(offline.threw, false);
+		assert.doesNotMatch(offline.status ?? "", /bg-update/);
+
+		const currentVersion = parsePackageInfo(JSON.parse(await readFile(new URL("../../package.json", import.meta.url), "utf8"))).version ?? "0.0.0";
+		const current = await settledFooter({ env: {}, registryPayload: JSON.stringify({ version: currentVersion }) });
+		assert.equal(current.threw, false);
+		assert.doesNotMatch(current.status ?? "", /bg-update/);
+
+		const failure = await settledFooter({ env: {}, registryPayload: "{}", registryStatus: 500 });
+		assert.equal(failure.threw, false);
+		assert.doesNotMatch(failure.status ?? "", /bg-update/);
 	});
 });

@@ -9,19 +9,19 @@ This package adds named, tracked background shell jobs with durable output files
 From npm after publish:
 
 ```bash
-pi install npm:pi-background-tasks@0.3.0
+pi install npm:pi-background-tasks@0.4.0
 ```
 
 From git after pushing this package to its standalone repository and tagging:
 
 ```bash
-pi install git:github.com/ismailsaleekh/pi-background-tasks@v0.3.0
+pi install git:github.com/ismailsaleekh/pi-background-tasks@v0.4.0
 ```
 
 For project-local install:
 
 ```bash
-pi install -l npm:pi-background-tasks@0.3.0
+pi install -l npm:pi-background-tasks@0.4.0
 ```
 
 ## Commands
@@ -32,6 +32,7 @@ pi install -l npm:pi-background-tasks@0.3.0
 - `/kill <id>` — stop a running task.
 - `/tasks` or `/bg-tasks` — fallback command to open the task manager UI.
 - `/bg-clear` — clear finished background-task footer notices.
+- `/bg-update` — print update instructions when a newer published version exists (instruct-only; never self-installs).
 
 ## Footer dock UX
 
@@ -65,6 +66,19 @@ Dock controls:
 | `R` | Rerun selected command |
 | `c` | Show copyable output path |
 | `x` / `Esc` / `q` | Close dock |
+| `/bg-update` | Print update instructions when a newer version is published |
+
+### Update-available notice
+
+When a newer version of `pi-background-tasks` has been published to npm, the footer appends a compact, instruct-only segment after the entry hint:
+
+```text
+bg 1 running · 1 failed · Shift↓ · /bg-clear · ⬆ v0.5.0 /bg-update
+```
+
+When no tasks are active, the notice still appears on its own (`bg ⬆ v0.5.0 /bg-update`) so the update hint is visible. The segment is rendered only when a strictly newer published version exists; `/bg-update` prints the npm and git update commands and never installs or self-updates.
+
+The lookup runs at most once per session on `session_start`, is time-boxed, and is fully offline-safe: it never blocks or errors the footer/session, and on an offline or failed lookup it simply renders no segment (it never pins a misleading version). The check is skipped entirely when `PI_OFFLINE=1`, and can be disabled explicitly with `PI_BG_DISABLE_UPDATE_CHECK=1`. Set `PI_BG_REGISTRY_URL` to point the check at a registry mirror instead of `https://registry.npmjs.org`.
 
 ## LLM tools
 
