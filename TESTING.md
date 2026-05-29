@@ -35,6 +35,7 @@ This runs the default gate plus:
 
 ```bash
 npm run test:pty
+npm run test:agent-loop
 ```
 
 Smoke/release checks:
@@ -69,19 +70,31 @@ Tests must not use the user's real `~/.pi/agent`.
 
 Implemented coverage includes:
 
-- tools: `bg_run`, `bg_status`, `bg_logs`, `bg_kill`, including unknown/ambiguous IDs, completed-kill failure, legacy no-name preparation, head/tail truncation, and notification on/off behavior
-- commands: `/bg`, `/jobs`, `/logs`, `/kill`, `/tasks`, `/bg-tasks` discovery, happy paths, malformed `/bg`, unknown/ambiguous IDs, completed-task `/kill`, byte-limit normalization, and RPC no-hang fallback behavior
-- shortcut/UI: component coverage for focused dock list/detail/key handling, empty/history/unread states, paging, close aliases, stop/stop-all/rerun/path actions, missing output files; SDK coverage for explicit `Shift+C` finished-notice clearing; and PTY coverage for `/tasks`, real `Shift+Down`, detail/back/history/stop/close
-- runtime files: output and metadata files under `.pi/tasks/`, task-owned context-window telemetry snapshots, metadata after completion/failure, local tarball install contents
-- safety: kill, already-finished kill failure, timeout failure, spawn failure, low output-cap failure, multi-task shutdown cleanup
+- tools: `bg_run`, `bg_status`, `bg_logs`, `bg_kill`, including required `isAgent` schema/runtime validation, unknown/ambiguous IDs, completed-kill failure, legacy no-name preparation, head/tail truncation, and notification on/off behavior
+- commands: `/bg`, `/jobs`, `/logs`, `/kill`, `/tasks`, `/bg-tasks`, `/bg-clear` discovery, happy paths, `/bg --agent` parsing, finished-notice clearing, malformed `/bg`, unknown/ambiguous IDs, completed-task `/kill`, byte-limit normalization, and RPC no-hang fallback behavior
+- shortcut/UI: component coverage for focused dock list/detail/key handling, empty/history/unread states, paging, close aliases, stop/stop-all/rerun/path actions, missing output files; SDK coverage for explicit `/bg-clear` finished-notice clearing, `/bg-clear` footer hinting, optional `Ctrl+Alt+C` fallback shortcut registration, and mixed failed/stopped/done/focused footer status; RPC coverage that `/bg-clear` works as a terminal-independent clear path; and PTY coverage for `/tasks`, `/bg-tasks`, real `Shift+Down`, arrows, page keys, detail/back/history/stop/stop-all/rerun/path/close, failed unread badges, and running/completed/failed/killed rerun paths
+- runtime files: output and metadata files under `.pi/tasks/`, persisted `isAgent` classification, task-owned context-window telemetry snapshots, cumulative background Pi-agent token usage, tool-use counts, agent model identifier (preferring the fully-qualified `provider/model` form), explicit `isAgent:true` telemetry wrapping for background `pi` agents, `isAgent:false` non-wrapping for scripts, real child `pi --mode json` tool-event parsing, split/large telemetry ingestion, metadata after completion/failure, local tarball install contents
+- safety: kill, already-finished kill failure, timeout failure, spawn failure, low output-cap failure, multi-task shutdown cleanup, process-group kill fallback, Windows child-kill behavior, SIGKILL escalation, duplicate finalization/notification races, metadata/notification failure handling, and pruning
+- agent loop: deterministic scripted-provider coverage for actual `bg_run` completion follow-up turns, `/bg` display-only behavior, `notifyOnCompletion:false`, and failed-task notification error fields
 - package: manifest, docs, `pi.extensions`, peer dependency/import parity, packed runtime files, tarball-install smoke, and artifact exclusion
 
 ## PTY notes
 
 `test:pty` uses `/usr/bin/expect` to drive a real pseudo-terminal. It verifies:
 
-- `/tasks` opens the focused dock and closes with `x`.
+- `/tasks` and `/bg-tasks` open the focused dock and close with `x`.
 - A named `/bg` task appears in the dock when opened with xterm `Shift+Down` (`ESC [ 1 ; 2 B`).
+- Secondary dock keys work in a real TUI: arrows, page keys, detail/back, history, stop selected, stop-all confirmation, rerun, output path, and failed/unread history surfacing.
+
+The detail-view `Model:` line and the compact `model <id>` dock row are also exercised deterministically by the component layer (`tests/component/background-tasks-manager.test.ts`), which is the lowest reliable layer for dock rendering.
+
+### Terminal keyboard-protocol negotiation
+
+`pi` enables the Kitty keyboard protocol at startup by emitting `ESC[>7u ESC[?u ESC[c` and briefly intercepts stdin until that negotiation completes. The expect harness therefore must not key on a bare `>` (which matches the `ESC[>7u` push instantly and fires input before pi is listening); instead it waits for the steady-state status marker `(auto)`, answers the keyboard-protocol query (`ESC[?0u`, i.e. legacy keyboard) and the device-attributes query (`ESC[?1;2c`), and settles briefly before sending keys. This makes legacy keystrokes reach pi deterministically rather than racing the 150 ms negotiation fallback.
+
+### Interactive-stdin capability probe
+
+`test:pty` begins with a one-shot probe (`ptyInputSupported()`) that spawns a minimal raw-mode Node stdin reader under the same `/usr/bin/expect` driver and checks that a sent byte is received. Some hosts cannot deliver stdin to a raw-mode Node TUI through expect (a plain `cat` receives input but Node `process.stdin` does not). On such hosts every PTY case is skipped with a loud reason instead of failing; where stdin is deliverable the full interactive dock scenarios run for real. The deterministic SDK/RPC/component layers remain the authoritative gates in `npm run test` either way.
 
 ## Artifact policy
 
@@ -100,4 +113,4 @@ Normalize volatile values before snapshotting: task IDs, session IDs, PIDs, time
 
 ## Remaining full exhaustive coverage work
 
-The package now has expanded edge-case coverage across the default and full gates. Remaining hardening items tracked in [`TEST_PLAN.md`](TEST_PLAN.md) are narrower: deeper registry extraction/race unit tests, scripted-provider validation of actual follow-up agent turns, exhaustive real-PTY coverage for every secondary dock key (`a`/`K`, `R`, `c`, page keys), process-tree kill fallback mocking, pruning, and Windows-specific shell/path/kill mocks.
+The Lane A residual hardening items and the explicit `isAgent` agent-vs-script classification are now covered by default unit/SDK gates plus full PTY and scripted-provider gates. `TEST_PLAN.md` remains the source of truth for future edge-case additions, especially any new telemetry surfaces added after this baseline.

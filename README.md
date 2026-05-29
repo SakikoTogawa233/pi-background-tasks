@@ -2,35 +2,36 @@
 
 Claude-Code-like explicit background shell task manager for [Pi](https://pi.dev/).
 
-This package adds named, tracked background shell jobs with durable output files, bounded log reads, kill/timeout safety, task-owned context-window telemetry, a focused footer-dock task manager, `/tasks` fallback UI, and completion notifications that can wake the agent when LLM-launched work finishes.
+This package adds named, tracked background shell jobs with durable output files, bounded log reads, kill/timeout safety, task-owned context-window/token/tool-use/model telemetry, explicit Pi-agent telemetry wrapping for tasks marked as agents, a focused footer-dock task manager, `/tasks` fallback UI, and completion notifications that can wake the agent when LLM-launched work finishes.
 
 ## Install
 
 From npm after publish:
 
 ```bash
-pi install npm:pi-background-tasks@0.2.0
+pi install npm:pi-background-tasks@0.3.0
 ```
 
 From git after pushing this package to its standalone repository and tagging:
 
 ```bash
-pi install git:github.com/ismailsaleekh/pi-background-tasks@v0.2.0
+pi install git:github.com/ismailsaleekh/pi-background-tasks@v0.3.0
 ```
 
 For project-local install:
 
 ```bash
-pi install -l npm:pi-background-tasks@0.2.0
+pi install -l npm:pi-background-tasks@0.3.0
 ```
 
 ## Commands
 
-- `/bg [--name "Task name"] <command>` — start a named tracked background shell command.
+- `/bg [--agent] [--name "Task name"] <command>` — start a named tracked background shell command. Use `--agent` only when the command launches an LLM/agent.
 - `/jobs` — list running and recent completed/failed/killed tasks.
 - `/logs <id> [maxBytes]` — show bounded tail output and full output path.
 - `/kill <id>` — stop a running task.
 - `/tasks` or `/bg-tasks` — fallback command to open the task manager UI.
+- `/bg-clear` — clear finished background-task footer notices.
 
 ## Footer dock UX
 
@@ -38,18 +39,21 @@ When tasks are active or unseen completions/failures exist, Pi shows a compact f
 
 ```text
 bg 2 running · Shift↓
-bg 1 running · 1 failed · Shift↓
-bg 2 done · Shift↓
+bg 1 running · 1 failed · Shift↓ · /bg-clear
+bg 2 done · Shift↓ · /bg-clear
 ```
 
-Press `Shift+Down` to open the focused bottom dock. Arrow keys are captured only while the dock is focused. Each task row shows context-window usage reported by that specific background task, for example `ctx 21.0%/200k`; tasks that do not report their own context show `ctx —` rather than the parent Pi session's usage. Finished-task badges intentionally remain visible until acknowledged; press uppercase `C` (`Shift+C`) from the main UI to clear finished background-task notices without opening the dock.
+Press `Shift+Down` to open the focused bottom dock. Arrow keys are captured only while the dock is focused. Each task row shows the latest context-window usage reported by that specific background task, for example `ctx 21.0%/200k`; tasks that do not report their own context show `ctx —` rather than the parent Pi session's usage. Background Pi-agent tasks also surface the LLM model they ran (`model gpt-5.5` in the compact row, fully-qualified such as `openai-codex/gpt-5.5` in the detail view), cumulative token usage (`tok 1.6k`), and tool-use counts (`tools 2/1 failed`) in the dock and detail view; missing model/token/tool telemetry is omitted in rows and shown as “not reported by this background task” in details. When a background command is explicitly marked as an agent and invokes a print/json child agent such as `pi -p ...` through the normal shell command name, the extension wraps that child Pi process with `--mode json`, parses real assistant usage/tool execution events, and emits task-owned telemetry automatically — including the model reported by the child assistant turns.
+
+Finished-task badges intentionally remain visible until acknowledged. The reliable clear path is `/bg-clear`, which works in every terminal and clears finished background-task footer notices without opening the dock. `Ctrl+Alt+C` is still registered as an optional terminal-dependent fallback shortcut, but the footer advertises `/bg-clear` because some macOS terminals do not transmit `Ctrl+Alt+C` distinctly.
 
 Dock controls:
 
 | Key | Action |
 |---|---|
 | `Shift+Down` | Open focused background-task dock |
-| `C` / `Shift+C` | Clear finished-task footer notices from the main UI |
+| `/bg-clear` | Clear finished-task footer notices from the main UI |
+| `Ctrl+Alt+C` | Optional terminal-dependent shortcut for `/bg-clear` |
 | `↑` / `↓` | Select task |
 | `PageUp` / `PageDown` | Page task list |
 | `Enter` / `→` | Inspect logs/details |
@@ -69,7 +73,7 @@ Dock controls:
 - `bg_logs` — read bounded task output.
 - `bg_kill` — stop a running task.
 
-`bg_run` requires a concise `name` for the footer dock, plus the shell `command`. It defaults to `triggerOnCompletion: true`, so completion notifications trigger a follow-up agent turn. User-launched `/bg` jobs and UI reruns are display-only by default.
+`bg_run` requires a concise `name` for the footer dock, the shell `command`, and required `isAgent: boolean`. Set `isAgent: true` only when the background task launches an LLM/agent process (for example `pi -p ...` or `pi --mode json ...`); set `isAgent: false` for scripts, tests, dev servers, sleeps, and ordinary shell commands. It defaults to `triggerOnCompletion: true`, so completion notifications trigger a follow-up agent turn. Tasks marked with `isAgent: true` that launch print/json child Pi agents through the normal shell command name are telemetry-wrapped; set `PI_BG_DISABLE_PI_TELEMETRY=1` only when raw Pi stdout is required. The task snapshot and metadata expose `isAgent`, `contextUsage` (latest reported child assistant turn), cumulative `tokenUsage` (`input`, `output`, `cacheRead`, `cacheWrite`, `totalTokens`), cumulative `toolUsage` (`total`, `failed`, `byName`), and `model` (the LLM identifier reported by the child assistant turns, preferring the fully-qualified `provider/model` form) when reported by the child task. User-launched `/bg` jobs are display-only by default unless `--agent` is provided; UI reruns preserve the original task's `isAgent` value.
 
 ## Runtime files
 
@@ -112,9 +116,9 @@ Full interactive QA gate:
 npm run test:full
 ```
 
-The suite includes typecheck, unit, SDK, RPC, component, package, and PTY/TUI coverage for the focused dock and `Shift+Down` shortcut.
+The suite includes typecheck, unit, SDK, RPC, component, package, PTY/TUI, and scripted-provider coverage for the focused dock, lifecycle safety, and completion follow-up behavior.
 
-Note: the repo QA standard now requires exhaustive coverage of every public behavior and plausible edge case. This package passes the current baseline gates, but `TEST_PLAN.md` tracks remaining exhaustive-coverage work for restart/rerun, all dock keys, command/tool edge cases, lifecycle safety paths, notification follow-up, footer badges, package distribution edge cases, and cross-platform mocks.
+Note: the repo QA standard requires exhaustive coverage of every public behavior and plausible edge case. `TEST_PLAN.md` tracks the current coverage matrix and any future edge-case additions.
 
 This package follows the repo-wide Pi extension QA standard documented in:
 

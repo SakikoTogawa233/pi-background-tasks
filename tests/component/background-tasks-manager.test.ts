@@ -3,14 +3,20 @@ import assert from "node:assert/strict";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { Theme, type ThemeColor } from "@earendil-works/pi-coding-agent";
 import { visibleWidth } from "@earendil-works/pi-tui";
 import { BackgroundTasksManager, type BackgroundTaskForUi } from "../../src/ui/background-tasks-manager.js";
 import { stripAnsi } from "../../src/testing/normalize.js";
 
-const theme = {
-	bold: (text: string) => text,
-	fg: (_color: string, text: string) => text,
-} as any;
+const themeColors: readonly ThemeColor[] = ["accent", "border", "borderAccent", "borderMuted", "success", "error", "warning", "muted", "dim", "text", "thinkingText", "userMessageText", "customMessageText", "customMessageLabel", "toolTitle", "toolOutput", "mdHeading", "mdLink", "mdLinkUrl", "mdCode", "mdCodeBlock", "mdCodeBlockBorder", "mdQuote", "mdQuoteBorder", "mdHr", "mdListBullet", "toolDiffAdded", "toolDiffRemoved", "toolDiffContext", "syntaxComment", "syntaxKeyword", "syntaxFunction", "syntaxVariable", "syntaxString", "syntaxNumber", "syntaxType", "syntaxOperator", "syntaxPunctuation", "thinkingOff", "thinkingMinimal", "thinkingLow", "thinkingMedium", "thinkingHigh", "thinkingXhigh", "bashMode"];
+const themeBackgrounds = ["selectedBg", "userMessageBg", "customMessageBg", "toolPendingBg", "toolSuccessBg", "toolErrorBg"] as const;
+type ThemeForegrounds = ConstructorParameters<typeof Theme>[0];
+type ThemeBackgrounds = ConstructorParameters<typeof Theme>[1];
+const theme = new Theme(
+	Object.fromEntries(themeColors.map((color) => [color, "#ffffff"])) as ThemeForegrounds,
+	Object.fromEntries(themeBackgrounds.map((color) => [color, "#000000"])) as ThemeBackgrounds,
+	"truecolor",
+);
 
 function task(overrides: Partial<BackgroundTaskForUi> = {}): BackgroundTaskForUi {
 	const now = Date.now();
@@ -24,6 +30,7 @@ function task(overrides: Partial<BackgroundTaskForUi> = {}): BackgroundTaskForUi
 		cwd: tmpdir(),
 		startTime: now - 1000,
 		bytesWritten: 0,
+		isAgent: false,
 		notified: false,
 		notifyOnCompletion: true,
 		triggerOnCompletion: false,
@@ -49,7 +56,14 @@ function manager(options: Partial<ConstructorParameters<typeof BackgroundTasksMa
 				for (const t of running) { stopped.push(t.id); t.status = "killed"; t.endTime = Date.now(); }
 				return { stopped: running.length, failures: [] };
 			},
-			rerunTask: async (t) => { const rerun = task({ id: `babcdef${tasks.length}`, name: t.name, command: t.command, description: t.description, timeoutSeconds: t.timeoutSeconds, startTime: Date.now() }); tasks.unshift(rerun); return rerun; },
+			rerunTask: async (t) => {
+				const overrides: Partial<BackgroundTaskForUi> = { id: `babcdef${tasks.length}`, name: t.name, command: t.command, startTime: Date.now() };
+				if (t.description !== undefined) overrides.description = t.description;
+				if (t.timeoutSeconds !== undefined) overrides.timeoutSeconds = t.timeoutSeconds;
+				const rerun = task(overrides);
+				tasks.unshift(rerun);
+				return rerun;
+			},
 			showOutputPath: (t) => { paths.push(t.outputPath); },
 			markSeen: (id) => { seen.add(id); },
 			markFinishedSeen: (ids) => { for (const id of ids) seen.add(id); },
@@ -66,7 +80,11 @@ function assertWidth(lines: string[], width: number) {
 
 describe("BackgroundTasksManager component", () => {
 	it("renders list within width and handles selection/actions", async () => {
-		const tasks = [task({ id: "b11111111", name: "First Task" }), task({ id: "b22222222", name: "Second Task" })];
+		const baseTime = Date.now();
+		const tasks = [
+			task({ id: "b11111111", name: "First Task", startTime: baseTime + 1000 }),
+			task({ id: "b22222222", name: "Second Task", startTime: baseTime }),
+		];
 		const h = manager({}, tasks);
 		try {
 			let lines = h.instance.render(90);
@@ -94,24 +112,45 @@ describe("BackgroundTasksManager component", () => {
 		}
 	});
 
-	it("renders task-owned context window usage in list/detail rows and placeholder when absent", async () => {
+	it("renders task-owned context, model, token, and tool telemetry in list/detail rows and placeholder when absent", async () => {
 		const dir = await mkdtemp(join(tmpdir(), "pi-bg-context-"));
 		try {
 			const outputAbsPath = join(dir, "task.output");
 			await writeFile(outputAbsPath, "context-output\n", "utf8");
 			const tasks = [
-				task({ id: "bctx00001", name: "Context Task", outputAbsPath, contextUsage: { tokens: 42_000, contextWindow: 200_000, percent: 21 } }),
+				task({
+					id: "bctx00001",
+					name: "Context Task",
+					outputAbsPath,
+					isAgent: true,
+					model: "openai-codex/gpt-5.5",
+					contextUsage: { tokens: 42_000, contextWindow: 200_000, percent: 21 },
+					tokenUsage: { input: 1000, output: 200, cacheRead: 30, cacheWrite: 20, totalTokens: 1250 },
+					toolUsage: { total: 3, failed: 1, byName: { bash: 2, read: 1 } },
+				}),
 				task({ id: "bctx00002", name: "No Context Task", outputAbsPath, startTime: Date.now() - 2000 }),
 			];
 			const h = manager({}, tasks);
 			try {
-				let text = stripAnsi(h.instance.render(100).join("\n"));
+				let text = stripAnsi(h.instance.render(120).join("\n"));
 				assert.match(text, /ctx 21\.0%\/200k/);
+				assert.match(text, /model gpt-5\.5/);
+				assert.match(text, /tok 1\.3k/);
+				assert.match(text, /tools 3\/1 failed/);
 				assert.match(text, /ctx —/);
 				h.instance.handleInput("\r");
 				await new Promise((resolve) => setTimeout(resolve, 20));
-				text = stripAnsi(h.instance.render(100).join("\n"));
+				text = stripAnsi(h.instance.render(120).join("\n"));
+				assert.match(text, /Model: openai-codex\/gpt-5\.5/);
 				assert.match(text, /Context: 21\.0% of 200k window \(42k tokens\)/);
+				assert.match(text, /Tokens: input 1\.0k · output 200 · cache read 30 · cache write 20 · total 1\.3k/);
+				assert.match(text, /Tools: 3 total · 1 failed · bash 2 · read 1/);
+				h.instance.handleInput("\x1b[D");
+				h.instance.handleInput("\x1b[B");
+				h.instance.handleInput("\r");
+				await new Promise((resolve) => setTimeout(resolve, 20));
+				text = stripAnsi(h.instance.render(120).join("\n"));
+				assert.match(text, /Model: not reported by this background task/);
 			} finally {
 				h.instance.dispose();
 			}
@@ -198,8 +237,10 @@ describe("BackgroundTasksManager component", () => {
 
 	it("handles non-running stop, output read failures, paging, long text, and close aliases", async () => {
 		const many = Array.from({ length: 20 }, (_, i) => task({ id: `b${String(i).padStart(8, "0")}`, name: `Very Long Component Task Name ${i} ${"x".repeat(80)}`, command: `printf ${i}`, startTime: Date.now() - i * 1000 }));
-		many[0]!.status = "completed";
-		many[0]!.endTime = Date.now();
+		const firstTask = many[0];
+		assert.ok(firstTask);
+		firstTask.status = "completed";
+		firstTask.endTime = Date.now();
 		const h = manager({}, many);
 		try {
 			h.instance.handleInput("\x1b[6~");

@@ -12,9 +12,9 @@ This package follows:
 |---|---|
 | Package | `pi-background-tasks` |
 | Extension entrypoint | `extensions/background-tasks.ts` |
-| Public commands | `/bg`, `/jobs`, `/logs`, `/kill`, `/tasks`, `/bg-tasks` |
+| Public commands | `/bg`, `/jobs`, `/logs`, `/kill`, `/tasks`, `/bg-tasks`, `/bg-clear` |
 | Public tools | `bg_run`, `bg_status`, `bg_logs`, `bg_kill` |
-| Shortcuts | `Shift+Down`, `Shift+C` |
+| Shortcuts | `Shift+Down`; optional fallback `Ctrl+Alt+C` |
 | Custom UI | footer status + focused bottom dock overlay |
 | Custom provider | no |
 | Runtime files/state | `.pi/tasks/<session-id>-<pid>/<task-id>.output`, `.pi/tasks/<session-id>-<pid>/<task-id>.json` |
@@ -29,7 +29,8 @@ This package follows:
 | RPC | `npm run test:rpc` | yes | implemented |
 | Component | `npm run test:component` | yes | implemented |
 | Package | `npm run test:package` | yes | implemented |
-| PTY/TUI | `npm run test:pty` | full gate | implemented |
+| PTY/TUI | `npm run test:pty` | full gate | implemented (answers pi's Kitty keyboard-protocol negotiation; auto-skips with a loud reason on hosts that cannot deliver raw-mode Node stdin via `/usr/bin/expect`) |
+| Scripted provider | `npm run test:agent-loop` | full gate | implemented |
 | Pack dry run | `npm run pack:dry-run` | release gate | implemented |
 | Smoke | `npm run smoke` | no | implemented; load-only |
 
@@ -37,55 +38,61 @@ This package follows:
 
 | Feature | Public surface | Unit | SDK | RPC | Component | PTY | Package | Scripted provider | Notes |
 |---|---|---:|---:|---:|---:|---:|---:|---:|---|
-| Start background command from UI command | `/bg` | yes |  | yes |  | yes |  |  | Unit covers `--name`; RPC/PTY start real processes. |
+| Start background command from UI command | `/bg` | yes |  | yes |  | yes |  |  | Unit covers `--name` and `--agent`; RPC/PTY start real processes. |
 | List tasks | `/jobs` |  |  | yes |  |  |  |  | RPC asserts running and killed task rows. |
 | Show bounded logs | `/logs <id> [maxBytes]` | yes |  | yes |  |  |  |  | Unit covers bounded reads; RPC verifies output/path. |
 | Kill running task | `/kill <id>` |  | yes | yes |  |  |  |  | SDK tool and RPC slash command. |
-| Open task manager fallback | `/tasks`, `/bg-tasks` |  |  | discovery | yes | yes |  |  | Component covers dock; PTY covers `/tasks`. |
-| Start background command from LLM tool | `bg_run` | yes | yes |  |  |  |  | optional | SDK starts named commands. |
+| Open task manager fallback | `/tasks`, `/bg-tasks` |  |  | discovery | yes | yes |  |  | Component covers dock; PTY covers `/tasks` and `/bg-tasks`. |
+| Start background command from LLM tool | `bg_run` | yes | yes |  |  |  |  | yes | SDK starts named commands, verifies required `isAgent` schema/runtime behavior, and scripted provider verifies agent-loop tool calls with `isAgent:false` for scripts. |
 | Inspect task status | `bg_status` |  | yes |  |  |  |  |  | SDK polls exact IDs and validates shutdown state. |
 | Read task logs | `bg_logs` | yes | yes |  |  |  |  |  | SDK verifies content. |
 | Stop task from LLM tool | `bg_kill` |  | yes |  |  |  |  |  | Covers running kill and already-finished loud failure. |
-| Completion notification | custom message `background-task-notification` |  | manual/runtime |  | renderer via typecheck |  |  | optional | Live runtime smoke previously verified; scripted-provider follow-up remains optional hardening. |
-| Footer status | `ctx.ui.setStatus` |  | load path + clear shortcut |  | render semantics | yes |  |  | SDK verifies `C clear` persistence/clear; PTY verifies Shift+Down dock path after footer-visible task. |
-| Per-task context usage | task row/detail + metadata |  | yes |  | yes |  |  |  | SDK verifies task-owned telemetry is captured and parent `ctx.getContextUsage()` is not used; component verifies list/detail rendering plus `ctx —` placeholder. |
-| Focused dock list | overlay component |  |  |  | yes | yes |  |  | Selection/actions/history tested. |
+| Completion notification | custom message `background-task-notification` | yes | yes |  | renderer via typecheck |  |  | yes | Unit covers duplicate/failing notification paths; SDK verifies XML/details; scripted provider verifies real follow-up turns, display-only `/bg`, `notifyOnCompletion:false`, and failed-task error fields. |
+| Footer status | `ctx.ui.setStatus` |  | load path + clear command/shortcut + mixed states/focused label |  | render semantics | yes |  |  | SDK verifies `/bg-clear` hint, failed/stopped/done combinations, running combinations, and focused label; PTY verifies Shift+Down dock path after footer-visible task. |
+| Explicit agent classification | required `bg_run.isAgent`, `/bg --agent`, task metadata | yes | yes |  |  |  |  | yes | `isAgent:true` is required only for LLM/agent tasks and enables Pi-agent telemetry wrapping when the command invokes plain `pi`; `isAgent:false` is required for scripts/non-agents and prevents wrapping even if the command text looks like `pi -p ...`. |
+| Per-task context usage | task row/detail + `bg_status`/metadata/notification snapshots | yes | yes |  | yes |  |  |  | SDK verifies task-owned telemetry is captured, explicitly marked background `pi` invocations are wrapped to emit telemetry, and parent `ctx.getContextUsage()` is not used; component verifies list/detail rendering plus `ctx —` placeholder. |
+| Per-task token usage | background Pi-agent telemetry + `bg_status`/metadata/dock row/detail | yes | yes |  | yes |  |  |  | SDK verifies cumulative input/output/cache read/cache write/total token usage from explicit telemetry, fake `isAgent:true` wrapped child events, and real child `pi --mode json` with scripted provider; component verifies row/detail rendering. |
+| Per-task tool-use counts | background Pi-agent telemetry + `bg_status`/metadata/dock row/detail | yes | yes |  | yes |  |  |  | SDK verifies total/failed/by-name tool counts from fake and real child Pi `tool_execution_start/end` events, including failed tools; component verifies row/detail rendering. |
+| Per-task agent model | background Pi-agent telemetry + `bg_status`/metadata/dock row/detail | yes | yes |  | yes |  |  |  | Unit verifies `formatModelSummary`/snapshot-list rendering and telemetry ingestion of `model`; SDK verifies the model is captured from explicit telemetry, fake `isAgent:true` wrapped child `message_end` events (qualified `provider/model`), and a real child `pi --mode json` run (bare child model re-qualified from `--model`), plus that non-agent tasks report no model; component verifies compact `model <id>` row, fully-qualified `Model:` detail, and the “not reported by this background task” placeholder. |
+| Focused dock list | overlay component |  |  |  | yes | yes |  |  | Selection/actions/history tested; PTY covers arrows, page keys, ordering with multiple tasks, failed/unread badges, and `/bg-tasks` fallback. |
 | Focused dock detail | overlay component |  |  |  | yes |  |  |  | Tail read, output box, return-to-list tested. |
 | Dock stop selected | `k` |  |  |  | yes |  |  |  | Component. |
-| Dock stop all | `a`/`K` |  |  |  | yes |  |  |  | Component confirmation. |
-| Dock rerun | `R` |  |  |  | yes |  |  |  | Component. |
+| Dock stop all | `a`/`K` |  |  |  | yes | yes |  |  | Component and PTY confirmation. |
+| Dock rerun | `R` |  |  |  | yes | yes |  |  | Component plus PTY running/completed/failed/killed rerun paths. |
 | Dock close | `x`/`Esc`/`q` |  |  |  | yes | yes |  |  | Component + PTY. |
 | Shortcut opens dock | `Shift+Down` |  | registration |  |  | yes |  |  | PTY sends xterm `ESC [ 1 ; 2 B`. |
-| Shortcut clears finished notices | `Shift+C` / `C` |  | yes |  |  |  |  |  | SDK invokes registered shortcut and asserts finished notices remain until explicit clear. |
+| Clear finished notices | `/bg-clear`, optional `Ctrl+Alt+C` fallback |  | yes | yes |  |  |  |  | `/bg-clear` is the canonical terminal-independent path and is advertised in the footer. SDK invokes the slash-command handler and verifies fallback shortcut registration; RPC verifies `/bg-clear` clears finished notices; finished notices remain until explicit clear. |
 | Runtime output files | `.pi/tasks/...output` | yes | yes |  |  |  |  |  | SDK asserts existence. |
-| Runtime metadata files | `.pi/tasks/...json` |  | yes |  |  |  |  |  | SDK asserts shape/status/name/context usage. |
+| Runtime metadata files | `.pi/tasks/...json` | yes | yes |  |  |  |  |  | SDK asserts shape/status/name/context usage; registry unit tests cover metadata failure/update ordering. |
 | Timeout kills task | `timeoutSeconds` |  | yes |  |  |  |  |  | SDK. |
 | Output cap kills task | `PI_BG_MAX_OUTPUT_BYTES` |  |  | yes |  |  |  |  | RPC runs with a low cap and asserts failed status/log notice. |
-| Shutdown cleanup | `session_shutdown` |  | yes |  |  |  |  |  | SDK asserts multiple running tasks become killed. |
+| Shutdown cleanup | `session_shutdown` | yes | yes |  |  |  |  |  | SDK asserts multiple running tasks become killed; registry tests cover shared stop/wait behavior. |
+| Process lifecycle/races | registry core | yes | yes | yes |  | yes |  | yes | Unit tests cover process-group fallback, Windows fallback, SIGKILL escalation, duplicate finalization/notification races, notification/metadata failures, pruning, malformed telemetry, split telemetry chunks, and large telemetry records above the old 16KiB buffer; SDK/RPC cover runtime spawn/timeout/output-cap/shutdown; scripted provider covers wakeup integration. |
 | Package manifest | `package.json` |  |  |  |  |  | yes |  | Keywords, `pi.extensions`, files. |
 | Pack contents | `npm pack --dry-run` |  |  |  |  |  | yes |  | Runtime files included. |
 
-## Remaining hardening coverage
+## Residual hardening coverage
 
-The expanded suite now covers the major public command/tool/UI/package edge cases. The rows below are the residual hardening items that still require deeper extraction, mocks, or scripted-provider infrastructure before the package can be called exhaustively complete under the strictest interpretation of the repo QA standard.
+Lane A residual hardening is now covered by automated tests. No remaining hardening-only gaps are intentionally left open in this plan. Future feature work should add new rows instead of weakening these gates.
 
-| Gap | Owner | Date | Reason | Planned fix |
-|---|---|---|---|---|
-| Process registry still mostly lives in `src/extension.ts` | package maintainer | 2026-05-27 | UI was extracted; deeper registry extraction remains | Move process lifecycle into `src/core/registry.ts` and unit-test state transitions/races directly. |
-| Restart/rerun not exhaustively tested in live PTY | package maintainer | 2026-05-27 | Component covers `R` from list/detail; PTY currently covers detail/back/history/stop/close but not real rerun | Add PTY cases for `R` from completed/killed/failed tasks, inherited fields, new ID, and display-only notification defaults. |
-| Dock key map not exhaustively covered in PTY | package maintainer | 2026-05-27 | Component covers full key map; PTY covers `/tasks`, `Shift+Down`, `Enter`, `←`, `h`, `k`, `r`, `x` | Add PTY cases for `↑/↓`, page keys, `a`/`K`, `R`, `c`, failed/unseen/done badges, ordering, and multiple running tasks. |
-| Process lifecycle/safety edge cases incomplete | package maintainer | 2026-05-27 | Timeout/shutdown/kill/spawn-failure/output-cap covered; lower-level races need extraction/mocks | Add tests for process-tree fallback where mockable, duplicate finalization prevention, duplicate notification prevention under races, metadata-after-notification ordering under write failures, and pruning old tasks. |
-| Completion follow-up turn not deterministic | package maintainer | 2026-05-27 | SDK now verifies custom message XML/details and `notifyOnCompletion:false`; live runtime smoke verified wakeups | Add scripted-provider tests for `/bg` display-only default, `bg_run` wakeup default, failed notification error fields, and actual follow-up trigger behavior. |
-| Footer/status behavior could be deeper | package maintainer | 2026-05-27 | SDK covers explicit clear and running/done persistence; component covers seen-state behavior and PTY observes dock path; full status protocol assertions are still thin | Add RPC/SDK assertions for failed/stopped count combinations and focused label. |
-| Cross-platform behavior not covered | package maintainer | 2026-05-27 | Current tests run on local POSIX/macOS | Add unit/mocked coverage for Windows shell invocation, path separator handling, and kill fallback semantics. |
+| Hardened area | Coverage |
+|---|---|
+| Extracted process registry | `src/core/registry.ts` has direct unit coverage for state transitions and injected spawn/kill/platform behavior. |
+| Agent/script classification | Unit tests cover `isAgent:true` wrapping, `isAgent:false` non-wrapping, `PI_BG_DISABLE_PI_TELEMETRY`, and non-interceptable path-qualified `pi`; SDK verifies required tool schema/runtime validation and real marked Pi telemetry. |
+| Process lifecycle/races | Unit tests cover duplicate error/close finalization, output-cap races, duplicate-notification prevention, waiter resolution via stop paths, metadata failure logging, and notification failure reset. |
+| Process-tree kill safety | Unit tests cover POSIX process-group kill, child fallback, both-fail loud errors, SIGTERM idempotency, SIGKILL escalation, and Windows child-kill/shell invocation. |
+| Pruning | Unit tests cover oldest-finished pruning while preserving running tasks. |
+| Completion follow-up turns | `test:agent-loop` registers a deterministic scripted provider and verifies `bg_run` wakeup default, `/bg` display-only default, `notifyOnCompletion:false`, failed notification error fields, and real follow-up provider calls. |
+| PTY secondary keys | `test:pty` covers arrows, page keys, `a`/`K`, `R`, `c`, `/bg-tasks`, failed/unread badges, multiple-task ordering, and rerun paths for running/completed/failed/killed tasks. |
+| Footer/status combinations | SDK tests cover failed/stopped/done/running combinations, explicit clear, and focused label. |
 
 ## Acceptance checklist
 
 - [x] `npm run test` passes offline in isolated temp dirs.
 - [x] `npm run test:full` validates baseline real TUI/PTY behavior.
 - [x] `npm run pack:dry-run` passes.
-- [ ] README claims and all plausible edge cases are exhaustively mapped in this test plan.
-- [ ] Every listed edge case has automated coverage at the lowest reliable layer.
+- [x] README claims and all plausible edge cases are exhaustively mapped in this test plan.
+- [x] Every listed edge case has automated coverage at the lowest reliable layer.
 - [x] No real LLM/API/network dependency in default tests.
 - [x] No dependency on user/global `~/.pi/agent` for SDK/RPC/PTY tests.
 - [x] Volatile output is normalized in snapshot-style assertions where applicable.
