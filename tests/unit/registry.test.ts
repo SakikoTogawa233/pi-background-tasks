@@ -1,6 +1,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
+import { readFileSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -382,6 +383,54 @@ describe("BackgroundTaskRegistry", () => {
 			assert.deepEqual(metadata.tokenUsage, task.tokenUsage);
 			assert.equal(metadata.toolUsage.byName["tool-2499"], 1);
 			assert.equal(metadata.model, "openai-codex/gpt-5.5");
+		} finally {
+			await cleanup(h.root);
+		}
+	});
+
+	it("renders wrapped Pi-agent activity transcripts and keeps telemetry out of the output file", async () => {
+		const h = await createHarness({ platform: "linux" });
+		try {
+			const task = await h.registry.startTask(h.ctx, "pi -p hello", { name: "Wrapped Agent", isAgent: true, notifyOnCompletion: false });
+			assert.equal(task.telemetryWrapped, true);
+			const child = h.children.at(-1)?.child;
+			assert.ok(child);
+
+			child.writeStdout('{"type":"background-task-activity","kind":"tool_start","tool":"read","argsSummary":"README.md"}\n');
+			// Telemetry split across two stdout chunks must reassemble before parsing.
+			child.writeStdout('{"type":"background-task-telemetry","tokenUsage":{"input":10,"output":5,"cacheRead":0,"cacheWrite":0,"totalTokens":15},');
+			child.writeStdout('"toolUsage":{"total":1,"failed":1,"byName":{"read":1}},"model":"prov/model","contextUsage":{"tokens":15,"contextWindow":1000,"percent":1.5}}\n');
+			child.writeStdout('{"type":"background-task-activity","kind":"tool_end","tool":"read","isError":true,"error":"boom"}\n');
+			child.writeStdout('{"type":"background-task-activity","kind":"assistant_text","text":"final answer"}\n');
+			child.writeStderr("child stderr diagnostic\n");
+			// Trailing partial line (no newline) must be flushed verbatim on finalize.
+			child.writeStdout("trailing fragment without newline");
+
+			assert.deepEqual(task.tokenUsage, { input: 10, output: 5, cacheRead: 0, cacheWrite: 0, totalTokens: 15 });
+			assert.deepEqual(task.toolUsage, { total: 1, failed: 1, byName: { read: 1 } });
+			assert.equal(task.model, "prov/model");
+			assert.deepEqual(task.contextUsage, { tokens: 15, contextWindow: 1000, percent: 1.5 });
+
+			child.close(0, null);
+			await waitFor(() => task.status === "completed", "wrapped-agent completion");
+
+			let output = "";
+			await waitFor(() => {
+				try {
+					output = readFileSync(task.outputAbsPath, "utf8");
+				} catch {
+					output = "";
+				}
+				return /trailing fragment without newline/.test(output);
+			}, "wrapped-agent transcript flushed");
+
+			assert.match(output, /\u2192 read README\.md/);
+			assert.match(output, /\u2717 read failed: boom/);
+			assert.match(output, /^final answer$/m);
+			assert.match(output, /child stderr diagnostic/);
+			assert.doesNotMatch(output, /background-task-telemetry/);
+			assert.doesNotMatch(output, /background-task-activity/);
+			assert.doesNotMatch(output, /"kind"/);
 		} finally {
 			await cleanup(h.root);
 		}

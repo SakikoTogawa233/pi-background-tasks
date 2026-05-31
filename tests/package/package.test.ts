@@ -125,12 +125,14 @@ describe("package", () => {
 
 	it("local tarball installs with the expected package files", async () => {
 		const temp = await mkdtemp(join(tmpdir(), "pi-bg-pack-"));
+		let tarball: URL | undefined;
 		try {
 			const pack = spawnSync("npm", ["pack", "--json"], { cwd: root, encoding: "utf8", env: { ...process.env, NPM_CONFIG_CACHE: "/tmp/pi-npm-cache" } });
 			assert.equal(pack.status, 0, pack.stderr);
 			const firstEntry = parsePackEntries(pack.stdout)[0];
 			assert.ok(firstEntry, "npm pack must return one entry");
-			const tarballPath = new URL(firstEntry.filename, root).pathname;
+			tarball = new URL(firstEntry.filename, root);
+			const tarballPath = tarball.pathname;
 			const init = spawnSync("npm", ["init", "-y"], { cwd: temp, encoding: "utf8", env: { ...process.env, NPM_CONFIG_CACHE: "/tmp/pi-npm-cache" } });
 			assert.equal(init.status, 0, init.stderr);
 			const install = spawnSync("npm", ["install", "--ignore-scripts", "--no-audit", "--no-fund", tarballPath], { cwd: temp, encoding: "utf8", env: { ...process.env, NPM_CONFIG_CACHE: "/tmp/pi-npm-cache" } });
@@ -140,7 +142,7 @@ describe("package", () => {
 			}
 		} finally {
 			await rm(temp, { recursive: true, force: true });
-			await rm(new URL("pi-background-tasks-0.4.0.tgz", root), { force: true });
+			if (tarball) await rm(tarball, { force: true });
 		}
 	});
 });

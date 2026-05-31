@@ -7,6 +7,8 @@ import {
 	boundedRead,
 	compareSemver,
 	deriveTaskNameFromCommand,
+	formatAgentActivityLine,
+	parseAgentActivity,
 	formatCompactNumber,
 	formatDuration,
 	formatModelSummary,
@@ -137,6 +139,34 @@ describe("core", () => {
 		assert.equal(formatUpdateSegment(undefined, "0.3.0"), undefined);
 		assert.equal(formatUpdateSegment("garbage", "0.3.0"), undefined);
 		assert.equal(formatUpdateSegment("0.4.0", ""), undefined);
+	});
+
+	it("parses and formats agent activity transcript lines", () => {
+		assert.deepEqual(parseAgentActivity({ type: "background-task-activity", kind: "assistant_text", text: "Done.\n" }), { kind: "assistant_text", text: "Done.\n" });
+		assert.equal(formatAgentActivityLine({ kind: "assistant_text", text: "Looks good\n\n" }), "Looks good");
+		assert.equal(formatAgentActivityLine({ kind: "assistant_text", text: "  \n " }), undefined);
+
+		assert.equal(formatAgentActivityLine({ kind: "reasoning", text: "weighing options" }), "\u2026 weighing options");
+		assert.equal(formatAgentActivityLine({ kind: "reasoning", text: "   " }), undefined);
+
+		assert.deepEqual(parseAgentActivity({ type: "background-task-activity", kind: "tool_start", tool: "read", argsSummary: "README.md" }), { kind: "tool_start", tool: "read", argsSummary: "README.md" });
+		assert.equal(formatAgentActivityLine({ kind: "tool_start", tool: "read", argsSummary: "  src/index.ts  " }), "\u2192 read src/index.ts");
+		assert.equal(formatAgentActivityLine({ kind: "tool_start", tool: "bash", argsSummary: "" }), "\u2192 bash");
+		assert.equal(formatAgentActivityLine({ kind: "tool_start", tool: "bash", argsSummary: "x".repeat(120) }), `\u2192 bash ${"x".repeat(79)}\u2026`);
+		assert.deepEqual(parseAgentActivity({ type: "background-task-activity", kind: "tool_start", tool: "ls" }), { kind: "tool_start", tool: "ls", argsSummary: "" });
+
+		assert.deepEqual(parseAgentActivity({ type: "background-task-activity", kind: "tool_end", tool: "bash", isError: true, error: "boom" }), { kind: "tool_end", tool: "bash", isError: true, error: "boom" });
+		assert.equal(formatAgentActivityLine({ kind: "tool_end", tool: "read", isError: false }), undefined);
+		assert.equal(formatAgentActivityLine({ kind: "tool_end", tool: "bash", isError: true }), "\u2717 bash failed");
+		assert.equal(formatAgentActivityLine({ kind: "tool_end", tool: "bash", isError: true, error: "exit 1\nmore" }), "\u2717 bash failed: exit 1 more");
+
+		assert.equal(parseAgentActivity(null), undefined);
+		assert.equal(parseAgentActivity("background-task-activity"), undefined);
+		assert.equal(parseAgentActivity({ type: "background-task-telemetry", kind: "tool_start", tool: "read" }), undefined);
+		assert.equal(parseAgentActivity({ type: "background-task-activity", kind: "mystery" }), undefined);
+		assert.equal(parseAgentActivity({ type: "background-task-activity", kind: "tool_start" }), undefined);
+		assert.equal(parseAgentActivity({ type: "background-task-activity", kind: "assistant_text" }), undefined);
+		assert.deepEqual(parseAgentActivity({ type: "background-task-activity", kind: "tool_end", tool: "x", isError: false, error: "   " }), { kind: "tool_end", tool: "x", isError: false });
 	});
 
 	it("boundedRead supports head, tail, truncation, and empty files", async () => {

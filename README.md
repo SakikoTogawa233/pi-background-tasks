@@ -9,19 +9,19 @@ This package adds named, tracked background shell jobs with durable output files
 From npm after publish:
 
 ```bash
-pi install npm:pi-background-tasks@0.4.0
+pi install npm:pi-background-tasks@0.5.0
 ```
 
 From git after pushing this package to its standalone repository and tagging:
 
 ```bash
-pi install git:github.com/ismailsaleekh/pi-background-tasks@v0.4.0
+pi install git:github.com/ismailsaleekh/pi-background-tasks@v0.5.0
 ```
 
 For project-local install:
 
 ```bash
-pi install -l npm:pi-background-tasks@0.4.0
+pi install -l npm:pi-background-tasks@0.5.0
 ```
 
 ## Commands
@@ -45,6 +45,10 @@ bg 2 done · Shift↓ · /bg-clear
 ```
 
 Press `Shift+Down` to open the focused bottom dock. Arrow keys are captured only while the dock is focused. Each task row shows the latest context-window usage reported by that specific background task, for example `ctx 21.0%/200k`; tasks that do not report their own context show `ctx —` rather than the parent Pi session's usage. Background Pi-agent tasks also surface the LLM model they ran (`model gpt-5.5` in the compact row, fully-qualified such as `openai-codex/gpt-5.5` in the detail view), cumulative token usage (`tok 1.6k`), and tool-use counts (`tools 2/1 failed`) in the dock and detail view; missing model/token/tool telemetry is omitted in rows and shown as “not reported by this background task” in details. When a background command is explicitly marked as an agent and invokes a print/json child agent such as `pi -p ...` through the normal shell command name, the extension wraps that child Pi process with `--mode json`, parses real assistant usage/tool execution events, and emits task-owned telemetry automatically — including the model reported by the child assistant turns.
+
+### Agent activity transcript
+
+For those wrapped background Pi agents, the task output file and the dock's detail **Output tail** show a live, human-readable transcript of what the agent is actually doing — assistant messages, `→ tool args` calls, `… reasoning`, and `✗ tool failed` errors — as the agent loop runs. The machine telemetry (context/token/tool/model) is parsed out of the child stream and surfaced only as the metrics above and in `bg_status`/metadata, so the focused window reflects the agent's real activity rather than its raw instrumentation JSON. Child stderr is passed through to the transcript verbatim. Non-agent tasks and agent commands that cannot be wrapped (for example a path-qualified `pi`) keep streaming their raw stdout/stderr unchanged.
 
 Finished-task badges intentionally remain visible until acknowledged. The reliable clear path is `/bg-clear`, which works in every terminal and clears finished background-task footer notices without opening the dock. `Ctrl+Alt+C` is still registered as an optional terminal-dependent fallback shortcut, but the footer advertises `/bg-clear` because some macOS terminals do not transmit `Ctrl+Alt+C` distinctly.
 
@@ -73,10 +77,10 @@ Dock controls:
 When a newer version of `pi-background-tasks` has been published to npm, the footer appends a compact, instruct-only segment after the entry hint:
 
 ```text
-bg 1 running · 1 failed · Shift↓ · /bg-clear · ⬆ v0.5.0 /bg-update
+bg 1 running · 1 failed · Shift↓ · /bg-clear · ⬆ v0.6.0 /bg-update
 ```
 
-When no tasks are active, the notice still appears on its own (`bg ⬆ v0.5.0 /bg-update`) so the update hint is visible. The segment is rendered only when a strictly newer published version exists; `/bg-update` prints the npm and git update commands and never installs or self-updates.
+When no tasks are active, the notice still appears on its own (`bg ⬆ v0.6.0 /bg-update`) so the update hint is visible. The segment is rendered only when a strictly newer published version exists; `/bg-update` prints the npm and git update commands and never installs or self-updates.
 
 The lookup runs at most once per session on `session_start`, is time-boxed, and is fully offline-safe: it never blocks or errors the footer/session, and on an offline or failed lookup it simply renders no segment (it never pins a misleading version). The check is skipped entirely when `PI_OFFLINE=1`, and can be disabled explicitly with `PI_BG_DISABLE_UPDATE_CHECK=1`. Set `PI_BG_REGISTRY_URL` to point the check at a registry mirror instead of `https://registry.npmjs.org`.
 

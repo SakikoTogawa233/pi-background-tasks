@@ -9,8 +9,10 @@ import {
 	boundedRead,
 	deriveTaskNameFromCommand,
 	escapeXml,
+	formatAgentActivityLine,
 	formatDuration,
 	normalizeTaskName,
+	parseAgentActivity,
 	sanitizePathSegment,
 	shellInvocation,
 	shellQuote,
@@ -221,6 +223,36 @@ function emitUnifiedTelemetry(payload) {
   process.stdout.write(JSON.stringify(out) + "\\n");
 }
 
+function emitActivity(activity) {
+  process.stdout.write(JSON.stringify({ type: "background-task-activity", ...activity }) + "\\n");
+}
+
+function summarizeArgs(args) {
+  if (!args || typeof args !== "object") return "";
+  const pick = (value) => {
+    if (typeof value === "string" && value.trim()) return value.trim().slice(0, 200);
+    if (typeof value === "number" && Number.isFinite(value)) return String(value);
+    return undefined;
+  };
+  const preferred = ["path", "file_path", "file", "filename", "command", "cmd", "pattern", "query", "url", "name", "value", "text", "message"];
+  for (const key of preferred) { const summary = pick(args[key]); if (summary) return summary; }
+  for (const key of Object.keys(args)) { const summary = pick(args[key]); if (summary) return summary; }
+  return "";
+}
+
+function emitAssistantActivity(message) {
+  const content = message && Array.isArray(message.content) ? message.content : [];
+  for (const part of content) {
+    if (!part || typeof part !== "object") continue;
+    if (part.type === "text" && typeof part.text === "string" && part.text.trim()) {
+      emitActivity({ kind: "assistant_text", text: part.text });
+    } else if (part.type === "thinking" || part.type === "reasoning") {
+      const text = typeof part.text === "string" ? part.text : (typeof part.thinking === "string" ? part.thinking : "");
+      if (text.trim()) emitActivity({ kind: "reasoning", text: text });
+    }
+  }
+}
+
 function resolveModelName(fromMessage, fromArgs, providerFromArgs) {
   const message = fromMessage ? String(fromMessage) : "";
   const args = fromArgs ? String(fromArgs) : "";
@@ -320,7 +352,6 @@ function emitToolTelemetry() {
 const parsed = parseInvocation(process.argv.slice(2));
 const child = spawn("pi", parsed.args, { stdio: ["ignore", "pipe", "pipe"], env: process.env });
 let buffer = "";
-let finalText = "";
 
 if (!parsed.parseJson) {
   child.stdout.pipe(process.stdout);
@@ -338,7 +369,6 @@ child.on("error", (error) => {
 });
 child.on("close", (code, signal) => {
   if (parsed.parseJson && buffer.trim()) processLine(buffer);
-  if (finalText) process.stdout.write(finalText.endsWith("\\n") ? finalText : finalText + "\\n");
   if (signal) process.kill(process.pid, signal);
   process.exit(code ?? 0);
 });
@@ -353,22 +383,23 @@ function processLine(line) {
     return;
   }
   if (event.type === "tool_execution_start") {
-    markToolStarted(event.toolCallId || event.tool_call_id, event.toolName || event.tool_name);
+    const toolName = event.toolName || event.tool_name || "tool";
+    markToolStarted(event.toolCallId || event.tool_call_id, toolName);
+    emitActivity({ kind: "tool_start", tool: String(toolName), argsSummary: summarizeArgs(event.args || event.arguments || event.input || event.parameters) });
     emitToolTelemetry();
     return;
   }
   if (event.type === "tool_execution_end") {
+    const toolName = event.toolName || event.tool_name || "tool";
     if (event.isError) markToolFailed(event.toolCallId || event.tool_call_id);
+    emitActivity({ kind: "tool_end", tool: String(toolName), isError: !!event.isError, error: typeof event.error === "string" ? event.error : undefined });
     emitToolTelemetry();
     return;
   }
   if (event.type === "message_end" && event.message && event.message.role === "assistant") {
+    emitAssistantActivity(event.message);
     countToolCallsFromMessage(event.message);
     emitMessageTelemetry(event.message, parsed.model, parsed.provider);
-    finalText = (event.message.content || [])
-      .filter((part) => part && part.type === "text" && part.text)
-      .map((part) => part.text)
-      .join("\\n");
   }
 }
 `;
@@ -457,6 +488,13 @@ function normalizeToolUsage(value: unknown): TaskToolUsage | undefined {
 	const total = Math.max(nonNegativeInteger(input["total"]), byNameTotal, failed);
 	return total > 0 || failed > 0 ? { total, failed, byName } : undefined;
 }
+
+type TelemetryDelta = {
+	context?: TaskContextUsage | undefined;
+	tokens?: TaskTokenUsage | undefined;
+	tools?: TaskToolUsage | undefined;
+	model?: string | undefined;
+};
 
 export class BackgroundTaskRegistry {
 	private readonly tasks = new Map<string, BgTask>();
@@ -585,6 +623,7 @@ export class BackgroundTaskRegistry {
 				const wrapperAbsPath = join(dir.abs, `${id}.pi-telemetry-wrapper.cjs`);
 				await writeFile(wrapperAbsPath, createPiTelemetryWrapperSource(buildModelWindowIndex(ctx)), "utf8");
 				commandToSpawn = `pi() { node ${shellQuote(wrapperAbsPath)} "$@"; }\n${normalizedCommand}`;
+				task.telemetryWrapped = true;
 			}
 			const invocation = shellInvocation(commandToSpawn, this.platform, this.env);
 			const child = this.spawn(invocation.shell, invocation.args, {
@@ -598,11 +637,11 @@ export class BackgroundTaskRegistry {
 			task.child = child;
 			task.pid = child.pid;
 
-			child.stdout?.on("data", (data) => this.appendToOutput(task, data));
-			child.stderr?.on("data", (data) => this.appendToOutput(task, data));
+			child.stdout?.on("data", (data) => this.appendChildOutput(task, data, "stdout"));
+			child.stderr?.on("data", (data) => this.appendChildOutput(task, data, "stderr"));
 
 			child.on("error", (error) => {
-				this.appendToOutput(task, `\n[background task spawn error: ${error.message}]\n`);
+				this.writeNotice(task, `\n[background task spawn error: ${error.message}]\n`);
 				void this.finalizeTask(task, "failed", null, undefined, error.message);
 			});
 
@@ -631,7 +670,7 @@ export class BackgroundTaskRegistry {
 					if (task.status !== "running") return;
 					task.killKind = "timeout";
 					task.error = `Timed out after ${timeoutSeconds}s`;
-					this.appendToOutput(task, `\n[background task timeout: ${task.error}]\n`);
+					this.writeNotice(task, `\n[background task timeout: ${task.error}]\n`);
 					try {
 						this.requestKill(task, "SIGTERM");
 					} catch (error) {
@@ -645,7 +684,7 @@ export class BackgroundTaskRegistry {
 			return task;
 		} catch (error) {
 			const message = error instanceof Error ? error.message : String(error);
-			this.appendToOutput(task, `\n[background task spawn exception: ${message}]\n`);
+			this.writeNotice(task, `\n[background task spawn exception: ${message}]\n`);
 			await this.finalizeTask(task, "failed", null, undefined, message);
 			throw new Error(`Failed to start background task: ${message}`);
 		}
@@ -760,11 +799,16 @@ export class BackgroundTaskRegistry {
 		if (lastXmlOpen > lastXmlClose) retained = telemetryText.slice(lastXmlOpen);
 		task.contextUsageBuffer = retained.slice(-TELEMETRY_BUFFER_CHARS);
 
+		this.commitTelemetry(task, { context: latestContext, tokens: latestTokens, tools: latestTools, model: latestModel });
+	}
+
+	/** Apply the latest parsed telemetry to a task, persisting metadata and notifying the UI only on change. */
+	private commitTelemetry(task: BgTask, next: TelemetryDelta): void {
 		const before = JSON.stringify({ contextUsage: task.contextUsage, tokenUsage: task.tokenUsage, toolUsage: task.toolUsage, model: task.model });
-		task.contextUsage = latestContext;
-		task.tokenUsage = latestTokens;
-		task.toolUsage = latestTools;
-		task.model = latestModel;
+		if (next.context !== undefined) task.contextUsage = next.context;
+		if (next.tokens !== undefined) task.tokenUsage = next.tokens;
+		if (next.tools !== undefined) task.toolUsage = next.tools;
+		if (next.model !== undefined) task.model = next.model;
 		const after = JSON.stringify({ contextUsage: task.contextUsage, tokenUsage: task.tokenUsage, toolUsage: task.toolUsage, model: task.model });
 		if (before !== after) {
 			this.onChange();
@@ -774,11 +818,10 @@ export class BackgroundTaskRegistry {
 		}
 	}
 
-	private appendToOutput(task: BgTask, data: Buffer | string): void {
+	/** Cap-enforcing sink for all persisted task output; terminates the task once the byte cap is exceeded. */
+	private writeToStream(task: BgTask, buffer: Buffer): void {
 		if (!task.stream || task.stream.destroyed) return;
-		const buffer = Buffer.isBuffer(data) ? data : Buffer.from(data, "utf8");
 		if (buffer.length === 0) return;
-		this.ingestTelemetry(task, buffer.toString("utf8"));
 
 		const nextBytes = task.bytesWritten + buffer.length;
 		if (nextBytes <= this.maxOutputBytes) {
@@ -807,6 +850,95 @@ export class BackgroundTaskRegistry {
 				void this.finalizeTask(task, "failed", null, undefined, task.error);
 			}
 		}
+	}
+
+	/** Persist an internally generated notice (spawn/timeout/cap diagnostics) verbatim. */
+	private writeNotice(task: BgTask, text: string): void {
+		if (!text) return;
+		this.writeToStream(task, Buffer.from(text, "utf8"));
+	}
+
+	private appendChildOutput(task: BgTask, data: Buffer | string, source: "stdout" | "stderr"): void {
+		if (!task.stream || task.stream.destroyed) return;
+		const buffer = Buffer.isBuffer(data) ? data : Buffer.from(data, "utf8");
+		if (buffer.length === 0) return;
+		if (task.telemetryWrapped) {
+			// Wrapped Pi agents stream control lines on stdout (telemetry + activity); child
+			// stderr is raw diagnostics and is always passed through to the transcript verbatim.
+			if (source === "stdout") this.processAgentStdout(task, buffer.toString("utf8"));
+			else this.writeToStream(task, buffer);
+			return;
+		}
+		this.ingestTelemetry(task, buffer.toString("utf8"));
+		this.writeToStream(task, buffer);
+	}
+
+	/** Reconstruct wrapped-agent stdout into whole control lines, routing telemetry to metrics and activity to the transcript. */
+	private processAgentStdout(task: BgTask, text: string): void {
+		const buffered = `${task.agentStdoutBuffer ?? ""}${text}`;
+		const lastNewline = buffered.lastIndexOf("\n");
+		task.agentStdoutBuffer = lastNewline >= 0 ? buffered.slice(lastNewline + 1) : buffered;
+		if (lastNewline < 0) return;
+		const latest: TelemetryDelta = {};
+		for (const line of buffered.slice(0, lastNewline).split("\n")) this.consumeAgentLine(task, line, latest);
+		this.commitTelemetry(task, latest);
+	}
+
+	/** Flush a trailing partial wrapped-agent line on finalize so the last transcript fragment is never lost. */
+	private flushAgentStdout(task: BgTask): void {
+		const remainder = task.agentStdoutBuffer;
+		if (!remainder) return;
+		task.agentStdoutBuffer = "";
+		const latest: TelemetryDelta = {};
+		this.consumeAgentLine(task, remainder, latest);
+		this.commitTelemetry(task, latest);
+	}
+
+	private consumeAgentLine(task: BgTask, rawLine: string, latest: TelemetryDelta): void {
+		const line = rawLine.replace(/\r$/, "");
+		const trimmed = line.trim();
+		if (!trimmed) return;
+		if (!trimmed.startsWith("{") || !trimmed.endsWith("}")) {
+			this.writeNotice(task, `${line}\n`);
+			return;
+		}
+		let parsed: unknown;
+		try {
+			parsed = JSON.parse(trimmed);
+		} catch {
+			this.writeNotice(task, `${line}\n`);
+			return;
+		}
+		if (typeof parsed !== "object" || parsed === null) {
+			this.writeNotice(task, `${line}\n`);
+			return;
+		}
+		const record = parsed as Record<string, unknown>;
+		const type = record["type"];
+		if (type === "background-task-context-usage") {
+			const context = normalizeContextUsage(parsed);
+			if (context) latest.context = context;
+			return;
+		}
+		if (type === "background-task-telemetry") {
+			const context = normalizeContextUsage(record["contextUsage"]);
+			if (context) latest.context = context;
+			const tokens = normalizeTokenUsage(record["tokenUsage"]);
+			if (tokens) latest.tokens = tokens;
+			const tools = normalizeToolUsage(record["toolUsage"]);
+			if (tools) latest.tools = tools;
+			const model = normalizeModel(record["model"]);
+			if (model) latest.model = model;
+			return;
+		}
+		const activity = parseAgentActivity(parsed);
+		if (activity) {
+			const formatted = formatAgentActivityLine(activity);
+			if (formatted) this.writeNotice(task, `${formatted}\n`);
+			return;
+		}
+		// Unknown JSON object: pass through to the transcript rather than silently dropping it.
+		this.writeNotice(task, `${line}\n`);
 	}
 
 	private requestKill(task: BgTask, signal: NodeJS.Signals = "SIGTERM"): void {
@@ -921,6 +1053,7 @@ export class BackgroundTaskRegistry {
 		task.signal = signal ?? null;
 		task.endTime = this.now();
 		if (error) task.error = error;
+		if (task.telemetryWrapped) this.flushAgentStdout(task);
 		if (task.stream && !task.stream.destroyed) task.stream.end();
 
 		for (const waiter of task.waiters.splice(0)) waiter();

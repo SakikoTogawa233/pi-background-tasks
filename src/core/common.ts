@@ -64,6 +64,10 @@ export type BgTask = Omit<BgTaskSnapshot, "name"> & {
 	capExceeded?: boolean | undefined;
 	finalized?: boolean | undefined;
 	contextUsageBuffer?: string | undefined;
+	/** True when this task launched a telemetry-wrapped Pi agent; its stdout carries control lines, not raw output. */
+	telemetryWrapped?: boolean | undefined;
+	/** Partial trailing stdout line held between chunks while reconstructing wrapped-agent control lines. */
+	agentStdoutBuffer?: string | undefined;
 	waiters: Array<() => void>;
 };
 
@@ -297,6 +301,81 @@ export function formatToolUsageSummary(usage?: TaskToolUsage): string | undefine
 export function formatModelSummary(model?: string): string | undefined {
 	if (!model) return undefined;
 	return `model=${model}`;
+}
+
+/**
+ * Human-readable activity transcript for telemetry-wrapped Pi agents.
+ *
+ * The wrapper emits one `background-task-activity` control line per meaningful
+ * child-agent event (assistant text, reasoning, tool start, tool end) so the
+ * registry can render "what the agent is actually doing" into the task output
+ * file instead of leaking raw telemetry JSON. Both the parser and the formatter
+ * are pure so the visible transcript is fully unit-testable.
+ */
+export const AGENT_ACTIVITY_TYPE = "background-task-activity";
+const AGENT_ACTIVITY_DETAIL_MAX = 80;
+
+export type AgentActivity =
+	| { kind: "assistant_text"; text: string }
+	| { kind: "reasoning"; text: string }
+	| { kind: "tool_start"; tool: string; argsSummary: string }
+	| { kind: "tool_end"; tool: string; isError: boolean; error?: string };
+
+function readActivityString(record: Record<string, unknown>, key: string): string | undefined {
+	const value = record[key];
+	return typeof value === "string" ? value : undefined;
+}
+
+/** Narrow a parsed `background-task-activity` control payload into a typed {@link AgentActivity}. */
+export function parseAgentActivity(payload: unknown): AgentActivity | undefined {
+	if (typeof payload !== "object" || payload === null) return undefined;
+	const record = payload as Record<string, unknown>;
+	if (record["type"] !== AGENT_ACTIVITY_TYPE) return undefined;
+	const kind = record["kind"];
+	if (kind === "assistant_text" || kind === "reasoning") {
+		const text = readActivityString(record, "text");
+		if (text === undefined) return undefined;
+		return { kind, text };
+	}
+	if (kind === "tool_start") {
+		const tool = readActivityString(record, "tool");
+		if (!tool) return undefined;
+		return { kind, tool, argsSummary: readActivityString(record, "argsSummary") ?? "" };
+	}
+	if (kind === "tool_end") {
+		const tool = readActivityString(record, "tool");
+		if (!tool) return undefined;
+		const activity: AgentActivity = { kind, tool, isError: record["isError"] === true };
+		const error = readActivityString(record, "error");
+		if (error !== undefined && error.trim().length > 0) activity.error = error;
+		return activity;
+	}
+	return undefined;
+}
+
+/**
+ * Render an {@link AgentActivity} into a single transcript line, or `undefined`
+ * when the event carries nothing worth showing (blank text, a successful tool
+ * end). Successful tool ends are intentionally silent: the matching `→` start
+ * line already announced the call, and the next line implies completion.
+ */
+export function formatAgentActivityLine(activity: AgentActivity): string | undefined {
+	if (activity.kind === "assistant_text") {
+		const text = activity.text.replace(/\s+$/u, "");
+		return text.trim().length > 0 ? text : undefined;
+	}
+	if (activity.kind === "reasoning") {
+		const text = activity.text.replace(/\s+$/u, "");
+		return text.trim().length > 0 ? `\u2026 ${text}` : undefined;
+	}
+	if (activity.kind === "tool_start") {
+		const summary = compactWhitespace(activity.argsSummary);
+		const suffix = summary.length > 0 ? ` ${truncateChars(summary, AGENT_ACTIVITY_DETAIL_MAX)}` : "";
+		return `\u2192 ${activity.tool}${suffix}`;
+	}
+	if (!activity.isError) return undefined;
+	const detail = activity.error ? `: ${truncateChars(compactWhitespace(activity.error), AGENT_ACTIVITY_DETAIL_MAX)}` : "";
+	return `\u2717 ${activity.tool} failed${detail}`;
 }
 
 export function shellQuote(value: string): string {
