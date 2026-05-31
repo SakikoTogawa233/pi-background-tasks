@@ -9,19 +9,19 @@ This package adds named, tracked background shell jobs with durable output files
 From npm after publish:
 
 ```bash
-pi install npm:pi-background-tasks@0.5.0
+pi install npm:pi-background-tasks@0.6.0
 ```
 
 From git after pushing this package to its standalone repository and tagging:
 
 ```bash
-pi install git:github.com/ismailsaleekh/pi-background-tasks@v0.5.0
+pi install git:github.com/ismailsaleekh/pi-background-tasks@v0.6.0
 ```
 
 For project-local install:
 
 ```bash
-pi install -l npm:pi-background-tasks@0.5.0
+pi install -l npm:pi-background-tasks@0.6.0
 ```
 
 ## Commands
@@ -59,8 +59,8 @@ Dock controls:
 | `Shift+Down` | Open focused background-task dock |
 | `/bg-clear` | Clear finished-task footer notices from the main UI |
 | `Ctrl+Alt+C` | Optional terminal-dependent shortcut for `/bg-clear` |
-| `↑` / `↓` | Select task |
-| `PageUp` / `PageDown` | Page task list |
+| `↑` / `↓` | Select task (list) · scroll the output tail (detail) |
+| `PageUp` / `PageDown` | Page the task list (list) · page the output tail (detail) |
 | `Enter` / `→` | Inspect logs/details |
 | `←` | Return from details to list |
 | `h` | Toggle recent history |
@@ -72,15 +72,17 @@ Dock controls:
 | `x` / `Esc` / `q` | Close dock |
 | `/bg-update` | Print update instructions when a newer version is published |
 
+In the detail view the **Output tail** is scrollable: `↑`/`↓` and `PageUp`/`PageDown` move through the loaded output (a generous bounded window, not just the last lines). Scrolling up pauses the live tail and freezes the view so it stays stable as new output arrives; the status line shows your position (e.g. `lines 46–57 of 60`). Scrolling back to the bottom (or pressing `r`) resumes live tailing.
+
 ### Update-available notice
 
 When a newer version of `pi-background-tasks` has been published to npm, the footer appends a compact, instruct-only segment after the entry hint:
 
 ```text
-bg 1 running · 1 failed · Shift↓ · /bg-clear · ⬆ v0.6.0 /bg-update
+bg 1 running · 1 failed · Shift↓ · /bg-clear · ⬆ v0.7.0 /bg-update
 ```
 
-When no tasks are active, the notice still appears on its own (`bg ⬆ v0.6.0 /bg-update`) so the update hint is visible. The segment is rendered only when a strictly newer published version exists; `/bg-update` prints the npm and git update commands and never installs or self-updates.
+When no tasks are active, the notice still appears on its own (`bg ⬆ v0.7.0 /bg-update`) so the update hint is visible. The segment is rendered only when a strictly newer published version exists; `/bg-update` prints the npm and git update commands and never installs or self-updates.
 
 The lookup runs at most once per session on `session_start`, is time-boxed, and is fully offline-safe: it never blocks or errors the footer/session, and on an offline or failed lookup it simply renders no segment (it never pins a misleading version). The check is skipped entirely when `PI_OFFLINE=1`, and can be disabled explicitly with `PI_BG_DISABLE_UPDATE_CHECK=1`. Set `PI_BG_REGISTRY_URL` to point the check at a registry mirror instead of `https://registry.npmjs.org`.
 

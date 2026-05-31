@@ -193,6 +193,74 @@ describe("BackgroundTasksManager component", () => {
 		}
 	});
 
+	it("scrolls the detail output tail with arrows/pages and resumes follow at the bottom", async () => {
+		const dir = await mkdtemp(join(tmpdir(), "pi-bg-scroll-"));
+		try {
+			const outputAbsPath = join(dir, "task.output");
+			const fileLines = Array.from({ length: 40 }, (_, i) => `LINE-${String(i + 1).padStart(3, "0")}`);
+			await writeFile(outputAbsPath, `${fileLines.join("\n")}\n`, "utf8");
+			const h = manager({ initialTaskId: "b12345678" }, [task({ outputAbsPath, bytesWritten: 400 })]);
+			try {
+				await new Promise((resolve) => setTimeout(resolve, 20));
+				let text = stripAnsi(h.instance.render(100).join("\n"));
+				assert.match(text, /following tail/);
+				assert.match(text, /LINE-040/);
+				assert.match(text, /LINE-029/);
+				assert.doesNotMatch(text, /LINE-001/);
+				assert.doesNotMatch(text, /LINE-005/);
+
+				// Scroll up 20 lines: pauses follow, reveals earlier lines, hides the latest.
+				for (let i = 0; i < 20; i++) h.instance.handleInput("\x1b[A");
+				text = stripAnsi(h.instance.render(100).join("\n"));
+				assert.match(text, /lines 9\u201320 of 40/);
+				assert.match(text, /LINE-009/);
+				assert.match(text, /LINE-020/);
+				assert.doesNotMatch(text, /LINE-040/);
+
+				// PageUp reaches the top of the buffer.
+				h.instance.handleInput("\x1b[5~");
+				text = stripAnsi(h.instance.render(100).join("\n"));
+				assert.match(text, /lines 1\u201312 of 40/);
+				assert.match(text, /LINE-001/);
+
+				// Paging back past the end resumes the live tail.
+				h.instance.handleInput("\x1b[6~");
+				h.instance.handleInput("\x1b[6~");
+				h.instance.handleInput("\x1b[6~");
+				await new Promise((resolve) => setTimeout(resolve, 20));
+				text = stripAnsi(h.instance.render(100).join("\n"));
+				assert.match(text, /following tail/);
+				assert.match(text, /LINE-040/);
+			} finally {
+				h.instance.dispose();
+			}
+		} finally {
+			await rm(dir, { recursive: true, force: true });
+		}
+	});
+
+	it("does not enter scroll mode when the output fits the detail window", async () => {
+		const dir = await mkdtemp(join(tmpdir(), "pi-bg-noscroll-"));
+		try {
+			const outputAbsPath = join(dir, "task.output");
+			await writeFile(outputAbsPath, "only-line-a\nonly-line-b\nonly-line-c\n", "utf8");
+			const h = manager({ initialTaskId: "b12345678" }, [task({ outputAbsPath, bytesWritten: 33 })]);
+			try {
+				await new Promise((resolve) => setTimeout(resolve, 20));
+				h.instance.handleInput("\x1b[A");
+				h.instance.handleInput("\x1b[A");
+				const text = stripAnsi(h.instance.render(100).join("\n"));
+				assert.match(text, /only-line-c/);
+				assert.match(text, /following tail/);
+				assert.doesNotMatch(text, /lines \d+\u2013\d+ of/);
+			} finally {
+				h.instance.dispose();
+			}
+		} finally {
+			await rm(dir, { recursive: true, force: true });
+		}
+	});
+
 	it("requires confirmation before stopping all running tasks and reports no-op clearly", async () => {
 		const tasks = [task({ id: "b11111111" }), task({ id: "b22222222" })];
 		const h = manager({}, tasks);

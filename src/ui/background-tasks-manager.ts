@@ -16,7 +16,10 @@ export type BackgroundTaskForUi = BgTaskSnapshot & { name: string; outputAbsPath
 type BgTask = BackgroundTaskForUi;
 
 const STATUS_INTERVAL_MS = 1000;
-const DETAIL_TAIL_BYTES = 8 * 1024;
+// Detail-view scrollback reservoir. Larger than the model-facing log cap because
+// this is a UI-only read; a local 128KiB tail read per second is negligible and
+// gives thousands of lines of scrollback when the user pauses the live tail.
+const DETAIL_TAIL_BYTES = 128 * 1024;
 const LIST_VISIBLE_ROWS = 14;
 const DETAIL_VISIBLE_OUTPUT_LINES = 12;
 const LIGHT_BLUE_BG = "\x1b[48;2;183;223;255m";
@@ -26,6 +29,11 @@ const ANSI_RESET = "\x1b[0m";
 
 function formatTime(timestamp: number): string {
 	return new Date(timestamp).toLocaleTimeString();
+}
+
+/** Normalize raw output bytes into display lines, dropping only the trailing empty line from a final newline. */
+function toOutputLines(content: string): string[] {
+	return content.replace(/\r/g, "").split("\n").filter((line, index, array) => line.length > 0 || index < array.length - 1);
 }
 
 function padAnsi(value: string, width: number): string {
@@ -168,7 +176,9 @@ export class BackgroundTasksManager implements Component {
 	private listScroll = 0;
 	private detailTaskId: string | undefined;
 	private showHistory = false;
-	private tailText = "";
+	private detailLines: string[] = [];
+	private detailFollow = true;
+	private detailScrollTop = 0;
 	private tailBytesRead = 0;
 	private tailTotalBytes = 0;
 	private tailTruncated = false;
@@ -309,7 +319,25 @@ export class BackgroundTasksManager implements Component {
 			this.tui.requestRender();
 			return;
 		}
+		if (matchesKey(data, "up")) {
+			this.scrollDetail(-1);
+			return;
+		}
+		if (matchesKey(data, "down")) {
+			this.scrollDetail(1);
+			return;
+		}
+		if (matchesKey(data, "pageUp")) {
+			this.scrollDetail(-DETAIL_VISIBLE_OUTPUT_LINES);
+			return;
+		}
+		if (matchesKey(data, "pageDown")) {
+			this.scrollDetail(DETAIL_VISIBLE_OUTPUT_LINES);
+			return;
+		}
 		if (data === "r") {
+			this.detailFollow = true;
+			this.detailScrollTop = 0;
 			void this.refreshTail();
 			return;
 		}
@@ -343,7 +371,9 @@ export class BackgroundTasksManager implements Component {
 	private openDetail(taskId: string): void {
 		this.detailTaskId = taskId;
 		this.mode = "detail";
-		this.tailText = "";
+		this.detailLines = [];
+		this.detailFollow = true;
+		this.detailScrollTop = 0;
 		this.tailError = undefined;
 		this.options.markSeen(taskId);
 		void this.refreshTail();
@@ -425,20 +455,40 @@ export class BackgroundTasksManager implements Component {
 		this.tui.requestRender();
 	}
 
+	/** Scroll the detail output window. Scrolling up pauses the live tail; reaching the bottom resumes it. */
+	private scrollDetail(delta: number): void {
+		const maxTop = Math.max(0, this.detailLines.length - DETAIL_VISIBLE_OUTPUT_LINES);
+		if (maxTop === 0) return;
+		if (this.detailFollow) {
+			this.detailFollow = false;
+			this.detailScrollTop = maxTop;
+		}
+		this.detailScrollTop = Math.min(maxTop, Math.max(0, this.detailScrollTop + delta));
+		if (this.detailScrollTop >= maxTop) {
+			this.detailFollow = true;
+			this.detailScrollTop = 0;
+			void this.refreshTail();
+		}
+		this.tui.requestRender();
+	}
+
 	private async refreshTail(): Promise<void> {
 		const task = this.detailTask();
 		if (!task) return;
+		// While the user has scrolled up, the buffer is frozen so their view stays stable.
+		if (!this.detailFollow) return;
 		try {
 			if (!existsSync(task.outputAbsPath)) {
-				this.tailText = "";
+				this.detailLines = [];
 				this.tailBytesRead = 0;
 				this.tailTotalBytes = 0;
 				this.tailTruncated = false;
 				this.tailError = `Output file not found: ${task.outputPath}`;
+				this.tui.requestRender();
 				return;
 			}
 			const read = await boundedRead(task.outputAbsPath, DETAIL_TAIL_BYTES, true);
-			this.tailText = read.content;
+			this.detailLines = toOutputLines(read.content);
 			this.tailBytesRead = read.bytesRead;
 			this.tailTotalBytes = read.totalBytes;
 			this.tailTruncated = read.truncated;
@@ -593,7 +643,7 @@ export class BackgroundTasksManager implements Component {
 		body.push(...this.renderOutputBox(width - 4));
 		if (this.actionMessage) body.push(this.theme.fg("warning", ` ${this.actionMessage}`));
 		const subtitle = `${task.id} · ${task.status === "running" ? "live tail refreshes every second" : "final output"}`;
-		const footer = ` ${this.theme.fg("dim", "← list · r refresh · k stop · R rerun · c path · x close")}`;
+		const footer = ` ${this.theme.fg("dim", "↑/↓ scroll · ← list · r refresh · k stop · R rerun · c path · x close")}`;
 		return this.frame(`bg: ${truncateChars(name, 64)}`, subtitle, body, footer, width);
 	}
 
@@ -605,18 +655,30 @@ export class BackgroundTasksManager implements Component {
 		const lines = [top];
 		if (this.tailError) {
 			lines.push(row(this.theme.fg("error", this.tailError)));
-		} else if (!this.tailText) {
+		} else if (this.detailLines.length === 0) {
 			lines.push(row(this.theme.fg("dim", "No output yet")));
 		} else {
-			const outputLines = this.tailText.replace(/\r/g, "").split("\n").filter((line, index, array) => line.length > 0 || index < array.length - 1);
-			const visible = outputLines.slice(-DETAIL_VISIBLE_OUTPUT_LINES);
-			for (const line of visible) lines.push(row(this.theme.fg("toolOutput", line)));
+			const maxTop = Math.max(0, this.detailLines.length - DETAIL_VISIBLE_OUTPUT_LINES);
+			const start = this.detailFollow ? maxTop : Math.min(this.detailScrollTop, maxTop);
+			const windowLines = this.detailLines.slice(start, start + DETAIL_VISIBLE_OUTPUT_LINES);
+			for (const line of windowLines) lines.push(row(this.theme.fg("toolOutput", line)));
 		}
 		while (lines.length < DETAIL_VISIBLE_OUTPUT_LINES + 1) lines.push(row());
 		lines.push(bottom);
-		const suffix = this.tailTruncated ? ` of ${formatSize(this.tailTotalBytes)}` : "";
-		lines.push(` ${this.theme.fg("dim", `Showing tail ${formatSize(this.tailBytesRead)}${suffix}`)}`);
+		lines.push(` ${this.theme.fg("dim", this.outputStatusLine())}`);
 		return lines;
+	}
+
+	private outputStatusLine(): string {
+		const total = this.detailLines.length;
+		if (!this.detailFollow && total > 0) {
+			const maxTop = Math.max(0, total - DETAIL_VISIBLE_OUTPUT_LINES);
+			const start = Math.min(this.detailScrollTop, maxTop);
+			const end = Math.min(total, start + DETAIL_VISIBLE_OUTPUT_LINES);
+			return `lines ${start + 1}\u2013${end} of ${total} · ↑/↓ PgUp/PgDn scroll · ↓ at bottom follows`;
+		}
+		const suffix = this.tailTruncated ? ` of ${formatSize(this.tailTotalBytes)}` : "";
+		return `following tail ${formatSize(this.tailBytesRead)}${suffix} · ↑ scroll`;
 	}
 }
 

@@ -62,13 +62,18 @@ async function probePtyInput(): Promise<boolean> {
 	}
 }
 
-async function runExpect(body: string, timeoutSeconds = 35): Promise<string> {
+async function runExpect(body: string, timeoutSeconds = 35, size?: { rows: number; cols: number }): Promise<string> {
 	const root = await mkdtemp(join(tmpdir(), "pi-bg-pty-"));
 	const cwd = join(root, "project");
 	await mkdir(cwd, { recursive: true });
 	const script = join(root, "scenario.expect");
+	// Some scenarios (e.g. scrolling the tall detail view) need a taller pty so the
+	// bottom-anchored dock is not clipped; stty_init must be set before spawn.
+	const sttyInit = size ? `set stty_init {rows ${size.rows} columns ${size.cols}}\n` : "";
 	const content = `
 set timeout ${timeoutSeconds}
+${sttyInit}`;
+	const tail = `
 set env(PI_OFFLINE) "${isolatedTestEnv.PI_OFFLINE}"
 set env(PI_SKIP_VERSION_CHECK) "${isolatedTestEnv.PI_SKIP_VERSION_CHECK}"
 set env(PI_TELEMETRY) "${isolatedTestEnv.PI_TELEMETRY}"
@@ -90,7 +95,7 @@ send "\\003"
 after 500
 exit 0
 `;
-	await writeFile(script, content, "utf8");
+	await writeFile(script, content + tail, "utf8");
 	try {
 		const result = spawnSync(expectBin, [script], { cwd, encoding: "utf8", timeout: (timeoutSeconds + 5) * 1000 });
 		const output = `${result.stdout}\n${result.stderr}`;
@@ -177,6 +182,40 @@ send "x"
 		assert.match(output, /PTY Action/);
 		assert.match(output, /bg tasks focused/);
 		assert.match(output, /bg: PTY Action|Output tail/);
+	});
+
+	it("scrolls the detail output tail with real arrow/page keys", { timeout: 60_000 }, async (t) => {
+		if (!(await ptyInputSupported())) return void t.skip(PTY_SKIP_REASON);
+		const output = await runExpect(`
+send {/bg --name "PTY Scroll" node -e "for(let i=1;i<=60;i++)console.log('PTYSCROLL-'+i)"}
+send "\\r"
+expect {
+  -re "Started PTY Scroll" {}
+  timeout { puts "SCROLL_START_TIMEOUT"; exit 33 }
+}
+after 600
+send "\\033\\[1;2B"
+expect {
+  -re "bg tasks focused" {}
+  timeout { puts "SCROLL_DOCK_TIMEOUT"; exit 34 }
+}
+send "\\r"
+expect {
+  -re "bg: PTY Scroll" {}
+  timeout { puts "SCROLL_DETAIL_TIMEOUT"; exit 35 }
+}
+after 700
+send "\\033\\[A"
+send "\\033\\[A"
+send "\\033\\[A"
+expect {
+  -re {of 60} {}
+  timeout { puts "SCROLL_INDICATOR_TIMEOUT"; exit 36 }
+}
+send "x"
+`, 45, { rows: 80, cols: 120 });
+		assert.match(output, /PTY Scroll/);
+		assert.match(output, /lines [0-9]+.*of 60/);
 	});
 
 	it("covers secondary dock keys for selection, output path, rerun, and stop-all", { timeout: 80_000 }, async (t) => {
