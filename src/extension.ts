@@ -72,7 +72,24 @@ function textContent(text: string) {
   return [{ type: 'text' as const, text }];
 }
 
-type TextToolResult = { content?: readonly { type: string; text?: string }[] };
+interface TextToolResult {
+  content?: ReadonlyArray<{ type: string; text?: string }>;
+}
+
+interface BgToolArgumentRecord {
+  readonly command?: unknown;
+  readonly name?: unknown;
+  readonly description?: unknown;
+  readonly isAgent?: unknown;
+  readonly timeoutSeconds?: unknown;
+  readonly notifyOnCompletion?: unknown;
+  readonly triggerOnCompletion?: unknown;
+}
+
+function optionalTrimmed(value: string): string | undefined {
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : undefined;
+}
 
 const BgRunParams = Type.Object({
   name: Type.String({
@@ -129,15 +146,10 @@ const BgKillParams = Type.Object({
 });
 
 type BgRunParamsValue = Static<typeof BgRunParams>;
-type BgStatusParamsValue = Static<typeof BgStatusParams>;
-type BgLogsParamsValue = Static<typeof BgLogsParams>;
-type BgKillParamsValue = Static<typeof BgKillParams>;
 
-function renderPlainResult(
-  result: TextToolResult,
-  _options: ToolRenderResultOptions,
-  _theme: Theme,
-) {
+function renderPlainResult(result: TextToolResult, options: ToolRenderResultOptions, theme: Theme) {
+  void options;
+  void theme;
   const text =
     result.content?.map((part) => (part.type === 'text' ? (part.text ?? '') : '')).join('\n') ?? '';
   return new Text(text, 0, 0);
@@ -152,7 +164,9 @@ export default function backgroundTasksExtension(pi: ExtensionAPI): void {
   let updateCheckStarted = false;
 
   const registry = new BackgroundTaskRegistry({
-    onChange: () => updateUi(),
+    onChange: () => {
+      updateUi();
+    },
     sendCompletionNotification: (message, options) => {
       pi.sendMessage(message, options);
     },
@@ -177,7 +191,7 @@ export default function backgroundTasksExtension(pi: ExtensionAPI): void {
     if (!ctx.hasUI) return;
     ctx.ui.notify(
       cleared > 0
-        ? `Cleared ${cleared} finished background task notice${cleared === 1 ? '' : 's'}.`
+        ? `Cleared ${String(cleared)} finished background task notice${cleared === 1 ? '' : 's'}.`
         : 'No finished background task notices to clear.',
       cleared > 0 ? 'info' : 'warning',
     );
@@ -210,10 +224,10 @@ export default function backgroundTasksExtension(pi: ExtensionAPI): void {
       }
 
       const parts: string[] = [];
-      if (running.length > 0) parts.push(`${running.length} running`);
-      if (unseenFailed.length > 0) parts.push(`${unseenFailed.length} failed`);
-      if (unseenStopped.length > 0) parts.push(`${unseenStopped.length} stopped`);
-      if (unseenDone.length > 0) parts.push(`${unseenDone.length} done`);
+      if (running.length > 0) parts.push(`${String(running.length)} running`);
+      if (unseenFailed.length > 0) parts.push(`${String(unseenFailed.length)} failed`);
+      if (unseenStopped.length > 0) parts.push(`${String(unseenStopped.length)} stopped`);
+      if (unseenDone.length > 0) parts.push(`${String(unseenDone.length)} done`);
       const entryHint = dockOpen
         ? 'focused'
         : `Shift↓${unseenFinishedCount > 0 ? ' · /bg-clear' : ''}`;
@@ -354,8 +368,9 @@ export default function backgroundTasksExtension(pi: ExtensionAPI): void {
     if (!PACKAGE_VERSION) return;
     const options: FetchLatestVersionOptions = {
       packageName: PACKAGE_NAME,
-      onError: (error) =>
-        console.error(`[background-tasks] update check skipped: ${error.message}`),
+      onError: (error) => {
+        console.error(`[background-tasks] update check skipped: ${error.message}`);
+      },
     };
     const registryUrl = env['PI_BG_REGISTRY_URL'];
     if (registryUrl) options.registryUrl = registryUrl;
@@ -372,7 +387,9 @@ export default function backgroundTasksExtension(pi: ExtensionAPI): void {
     await registry.ensureRuntimeDir(ctx);
     updateUi(ctx);
     if (statusInterval) clearInterval(statusInterval);
-    statusInterval = setInterval(() => updateUi(), STATUS_INTERVAL_MS);
+    statusInterval = setInterval(() => {
+      updateUi();
+    }, STATUS_INTERVAL_MS);
     // One-shot, non-blocking: never awaited on the session-start path or the status tick.
     void scheduleUpdateCheck(ctx);
   });
@@ -433,7 +450,7 @@ export default function backgroundTasksExtension(pi: ExtensionAPI): void {
   pi.registerCommand('tasks', {
     description: 'Open the Claude-like background task manager UI',
     handler: async (args, ctx) => {
-      const taskId = args.trim() || undefined;
+      const taskId = optionalTrimmed(args);
       await openTaskManager(ctx, taskId);
     },
   });
@@ -441,21 +458,22 @@ export default function backgroundTasksExtension(pi: ExtensionAPI): void {
   pi.registerCommand('bg-tasks', {
     description: 'Open the background task manager UI',
     handler: async (args, ctx) => {
-      const taskId = args.trim() || undefined;
+      const taskId = optionalTrimmed(args);
       await openTaskManager(ctx, taskId);
     },
   });
 
   pi.registerCommand('bg-clear', {
     description: 'Clear finished background task footer notices',
-    handler: async (_args, ctx) => {
+    handler: (_args, ctx) => {
       notifyClearFinishedNotices(ctx);
+      return Promise.resolve();
     },
   });
 
   pi.registerCommand('bg-update', {
     description: 'Show how to update pi-background-tasks to the latest published version',
-    handler: async (_args, ctx) => {
+    handler: (_args, ctx) => {
       const current = PACKAGE_VERSION ?? 'unknown';
       const latest = latestKnownVersion;
       const pinnedNpm = latest ? `${PACKAGE_NAME}@${latest}` : `${PACKAGE_NAME}@<version>`;
@@ -472,6 +490,7 @@ export default function backgroundTasksExtension(pi: ExtensionAPI): void {
         'This command only prints update instructions; it does not install or self-update.',
       ];
       ctx.ui.notify(lines.join('\n'), 'info');
+      return Promise.resolve();
     },
   });
 
@@ -485,18 +504,21 @@ export default function backgroundTasksExtension(pi: ExtensionAPI): void {
   pi.registerShortcut('ctrl+alt+c' satisfies KeyId, {
     description:
       'Clear finished background task footer notices (terminal-dependent fallback for /bg-clear)',
-    handler: (ctx) => notifyClearFinishedNotices(ctx),
+    handler: (ctx) => {
+      notifyClearFinishedNotices(ctx);
+    },
   });
 
   pi.registerCommand('jobs', {
     description: 'List running and recent background tasks',
-    handler: async (_args, ctx) => {
+    handler: (_args, ctx) => {
       currentCtx = ctx;
       ctx.ui.notify(
         formatSnapshotList(registry.allTasks().map((task) => registry.snapshot(task))),
         'info',
       );
       updateUi(ctx);
+      return Promise.resolve();
     },
   });
 
@@ -518,7 +540,7 @@ export default function backgroundTasksExtension(pi: ExtensionAPI): void {
       try {
         currentCtx = ctx;
         const [id, bytes] = args.trim().split(/\s+/, 2);
-        const task = registry.resolveTask(id || '');
+        const task = registry.resolveTask(id ?? '');
         const maxBytes = normalizeMaxBytes(Number(bytes), DEFAULT_LOG_BYTES);
         const logs = await registry.getTaskLogs(task, maxBytes, true);
         ctx.ui.notify(logs.text, 'info');
@@ -580,28 +602,27 @@ export default function backgroundTasksExtension(pi: ExtensionAPI): void {
     parameters: BgRunParams,
     prepareArguments(args): BgRunParamsValue {
       if (!args || typeof args !== 'object') throw new Error('bg_run arguments must be an object');
-      const input = args as Record<string, unknown>;
-      if (typeof input['command'] !== 'string') throw new Error('bg_run requires command string');
-      if (typeof input['isAgent'] !== 'boolean') {
+      const input = args as BgToolArgumentRecord;
+      if (typeof input.command !== 'string') throw new Error('bg_run requires command string');
+      if (typeof input.isAgent !== 'boolean') {
         throw new Error(
           'bg_run requires isAgent boolean. Set true only for LLM/agent tasks; set false for scripts, tests, servers, sleeps, and ordinary shell commands.',
         );
       }
       const prepared: BgRunParamsValue = {
-        command: input['command'],
+        command: input.command,
         name:
-          normalizeTaskName(input['name']) ??
-          normalizeTaskName(input['description']) ??
-          deriveTaskNameFromCommand(input['command']),
-        isAgent: input['isAgent'],
+          normalizeTaskName(input.name) ??
+          normalizeTaskName(input.description) ??
+          deriveTaskNameFromCommand(input.command),
+        isAgent: input.isAgent,
       };
-      if (typeof input['description'] === 'string') prepared.description = input['description'];
-      if (typeof input['timeoutSeconds'] === 'number')
-        prepared.timeoutSeconds = input['timeoutSeconds'];
-      if (typeof input['notifyOnCompletion'] === 'boolean')
-        prepared.notifyOnCompletion = input['notifyOnCompletion'];
-      if (typeof input['triggerOnCompletion'] === 'boolean')
-        prepared.triggerOnCompletion = input['triggerOnCompletion'];
+      if (typeof input.description === 'string') prepared.description = input.description;
+      if (typeof input.timeoutSeconds === 'number') prepared.timeoutSeconds = input.timeoutSeconds;
+      if (typeof input.notifyOnCompletion === 'boolean')
+        prepared.notifyOnCompletion = input.notifyOnCompletion;
+      if (typeof input.triggerOnCompletion === 'boolean')
+        prepared.triggerOnCompletion = input.triggerOnCompletion;
       return prepared;
     },
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
@@ -621,7 +642,7 @@ export default function backgroundTasksExtension(pi: ExtensionAPI): void {
       const task = await startTask(ctx, params.command, taskOptions);
       return {
         content: textContent(
-          `Started background task ${taskDisplayName(task)} (${task.id})\nStatus: ${task.status}\nPID: ${task.pid ?? 'unknown'}\nOutput: ${task.outputPath}`,
+          `Started background task ${taskDisplayName(task)} (${task.id})\nStatus: ${task.status}\nPID: ${String(task.pid ?? 'unknown')}\nOutput: ${task.outputPath}`,
         ),
         details: { task: registry.snapshot(task) },
       };
@@ -634,8 +655,7 @@ export default function backgroundTasksExtension(pi: ExtensionAPI): void {
       );
     },
     renderResult(result, _options, theme) {
-      const task = result.details?.task;
-      if (!task) return renderPlainResult(result, _options, theme);
+      const { task } = result.details;
       return new Text(
         `${theme.fg('success', '✓ started')} ${theme.fg('accent', taskDisplayName(task))} ${theme.fg('dim', `(${task.id})`)}\n${theme.fg('dim', `Output: ${task.outputPath}`)}`,
         0,
@@ -653,13 +673,13 @@ export default function backgroundTasksExtension(pi: ExtensionAPI): void {
       'Use bg_status before bg_logs when you need to know whether a background task is still running or has finished.',
     ],
     parameters: BgStatusParams,
-    async execute(_toolCallId, params) {
+    execute(_toolCallId, params) {
       const selected = params.taskId ? [registry.resolveTask(params.taskId)] : registry.allTasks();
       const snapshots = selected.map((task) => registry.snapshot(task));
-      return {
+      return Promise.resolve({
         content: textContent(formatSnapshotList(snapshots)),
         details: { tasks: snapshots },
-      };
+      });
     },
     renderCall(args, theme) {
       return new Text(
@@ -701,14 +721,14 @@ export default function backgroundTasksExtension(pi: ExtensionAPI): void {
     },
     renderResult(result, { expanded }, theme) {
       const details = result.details;
-      if (!details) return renderPlainResult(result, { expanded, isPartial: false }, theme);
       let text = `${theme.fg('accent', taskDisplayName(details.task))} ${theme.fg('dim', `(${details.task.id})`)} ${theme.fg('muted', details.tail ? 'tail' : 'head')} ${formatSize(details.bytesRead)}`;
       if (details.truncated) text += theme.fg('warning', ' (truncated)');
       text += `\n${theme.fg('dim', `Full output: ${details.path}`)}`;
       if (expanded) {
-        const content = result.content?.[0];
-        if (content?.type === 'text')
-          text += `\n${theme.fg('toolOutput', content.text.split('\n').slice(0, 30).join('\n'))}`;
+        const output = result.content
+          .map((content) => (content.type === 'text' ? content.text : '[image content]'))
+          .join('\n');
+        text += `\n${theme.fg('toolOutput', output.split('\n').slice(0, 30).join('\n'))}`;
       }
       return new Text(text, 0, 0);
     },
@@ -741,8 +761,7 @@ export default function backgroundTasksExtension(pi: ExtensionAPI): void {
       );
     },
     renderResult(result, _options, theme) {
-      const task = result.details?.task;
-      if (!task) return renderPlainResult(result, _options, theme);
+      const { task } = result.details;
       return new Text(
         `${theme.fg('warning', '■ killed')} ${theme.fg('accent', taskDisplayName(task))} ${theme.fg('dim', `(${task.id})`)}\n${theme.fg('dim', `Output: ${task.outputPath}`)}`,
         0,
