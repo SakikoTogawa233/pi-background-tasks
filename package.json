@@ -47,7 +47,9 @@
     "test:agent-loop": "tsx --test tests/scripted-provider/**/*.test.ts",
     "test:full": "npm run test && npm run test:pty && npm run test:agent-loop",
     "smoke": "pi --no-extensions -e ./extensions/background-tasks.ts --offline --no-tools --no-session -p \"/jobs\"",
-    "pack:dry-run": "npm pack --dry-run"
+    "pack:dry-run": "npm pack --dry-run",
+    "lint": "cd ../.. && npm run quality:ts:lint",
+    "format:check": "cd ../.. && npm run quality:ts:format"
   },
   "pi": {
     "extensions": [
