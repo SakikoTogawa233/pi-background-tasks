@@ -1,22 +1,22 @@
-import { describe, it } from "node:test";
-import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
-import { existsSync } from "node:fs";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
-import { join, resolve } from "node:path";
-import { tmpdir } from "node:os";
-import { isolatedTestEnv, stripAnsi } from "../../src/testing/normalize.js";
+import { describe, it } from 'node:test';
+import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
+import { existsSync } from 'node:fs';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { join, resolve } from 'node:path';
+import { tmpdir } from 'node:os';
+import { isolatedTestEnv, stripAnsi } from '../../src/testing/normalize.js';
 
-const extensionPath = resolve("extensions/background-tasks.ts");
-const expectBin = "/usr/bin/expect";
+const extensionPath = resolve('extensions/background-tasks.ts');
+const expectBin = '/usr/bin/expect';
 
 const PTY_SKIP_REASON =
-	"interactive stdin is not deliverable to a raw-mode Node TUI via /usr/bin/expect on this host " +
-	"(verified: a plain `cat` receives input but a Node process.stdin reader does not). " +
-	"Run `npm run test:pty` on a host/CI where Node TTY stdin works under the PTY driver.";
+  'interactive stdin is not deliverable to a raw-mode Node TUI via /usr/bin/expect on this host ' +
+  '(verified: a plain `cat` receives input but a Node process.stdin reader does not). ' +
+  'Run `npm run test:pty` on a host/CI where Node TTY stdin works under the PTY driver.';
 
 function tclQuote(value: string): string {
-	return `{${value.replace(/}/g, "\\}")}}`;
+  return `{${value.replace(/}/g, '\\}')}}`;
 }
 
 /**
@@ -29,57 +29,71 @@ function tclQuote(value: string): string {
  */
 let ptyInputProbe: Promise<boolean> | undefined;
 function ptyInputSupported(): Promise<boolean> {
-	if (!ptyInputProbe) ptyInputProbe = probePtyInput();
-	return ptyInputProbe;
+  ptyInputProbe ??= probePtyInput();
+  return ptyInputProbe;
 }
 
 async function probePtyInput(): Promise<boolean> {
-	if (process.platform === "win32") return false;
-	if (!existsSync(expectBin)) return false;
-	const root = await mkdtemp(join(tmpdir(), "pi-bg-pty-probe-"));
-	try {
-		const reader = join(root, "reader.cjs");
-		await writeFile(reader, [
-			'process.stdin.setEncoding("utf8");',
-			"if (process.stdin.setRawMode) process.stdin.setRawMode(true);",
-			"process.stdin.resume();",
-			'process.stdin.on("data", (d) => { if (d.includes("Z")) { process.stdout.write("PTYPROBE_OK\\n"); process.exit(0); } });',
-			'process.stdout.write("PTYPROBE_READY\\n");',
-		].join("\n"), "utf8");
-		const script = join(root, "probe.expect");
-		await writeFile(script, [
-			"set timeout 6",
-			`spawn -noecho ${tclQuote(process.execPath)} ${tclQuote(reader)}`,
-			'expect { -re "PTYPROBE_READY" {} timeout { exit 2 } }',
-			"after 300",
-			'send "Z"',
-			'expect { -re "PTYPROBE_OK" { exit 0 } timeout { exit 3 } }',
-		].join("\n"), "utf8");
-		const result = spawnSync(expectBin, [script], { encoding: "utf8", timeout: 12_000 });
-		return result.status === 0 && /PTYPROBE_OK/.test(result.stdout ?? "");
-	} finally {
-		await rm(root, { recursive: true, force: true });
-	}
+  if (process.platform === 'win32') return false;
+  if (!existsSync(expectBin)) return false;
+  const root = await mkdtemp(join(tmpdir(), 'pi-bg-pty-probe-'));
+  try {
+    const reader = join(root, 'reader.cjs');
+    await writeFile(
+      reader,
+      [
+        'process.stdin.setEncoding("utf8");',
+        'if (process.stdin.setRawMode) process.stdin.setRawMode(true);',
+        'process.stdin.resume();',
+        'process.stdin.on("data", (d) => { if (d.includes("Z")) { process.stdout.write("PTYPROBE_OK\\n"); process.exit(0); } });',
+        'process.stdout.write("PTYPROBE_READY\\n");',
+      ].join('\n'),
+      'utf8',
+    );
+    const script = join(root, 'probe.expect');
+    await writeFile(
+      script,
+      [
+        'set timeout 6',
+        `spawn -noecho ${tclQuote(process.execPath)} ${tclQuote(reader)}`,
+        'expect { -re "PTYPROBE_READY" {} timeout { exit 2 } }',
+        'after 300',
+        'send "Z"',
+        'expect { -re "PTYPROBE_OK" { exit 0 } timeout { exit 3 } }',
+      ].join('\n'),
+      'utf8',
+    );
+    const result = spawnSync(expectBin, [script], { encoding: 'utf8', timeout: 12_000 });
+    return result.status === 0 && result.stdout.includes('PTYPROBE_OK');
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
 }
 
-async function runExpect(body: string, timeoutSeconds = 35, size?: { rows: number; cols: number }): Promise<string> {
-	const root = await mkdtemp(join(tmpdir(), "pi-bg-pty-"));
-	const cwd = join(root, "project");
-	await mkdir(cwd, { recursive: true });
-	const script = join(root, "scenario.expect");
-	// Some scenarios (e.g. scrolling the tall detail view) need a taller pty so the
-	// bottom-anchored dock is not clipped; stty_init must be set before spawn.
-	const sttyInit = size ? `set stty_init {rows ${size.rows} columns ${size.cols}}\n` : "";
-	const content = `
-set timeout ${timeoutSeconds}
+async function runExpect(
+  body: string,
+  timeoutSeconds = 35,
+  size?: { rows: number; cols: number },
+): Promise<string> {
+  const root = await mkdtemp(join(tmpdir(), 'pi-bg-pty-'));
+  const cwd = join(root, 'project');
+  await mkdir(cwd, { recursive: true });
+  const script = join(root, 'scenario.expect');
+  // Some scenarios (e.g. scrolling the tall detail view) need a taller pty so the
+  // bottom-anchored dock is not clipped; stty_init must be set before spawn.
+  const sttyInit = size
+    ? `set stty_init {rows ${String(size.rows)} columns ${String(size.cols)}}\n`
+    : '';
+  const content = `
+set timeout ${String(timeoutSeconds)}
 ${sttyInit}`;
-	const tail = `
+  const tail = `
 set env(PI_OFFLINE) "${isolatedTestEnv.PI_OFFLINE}"
 set env(PI_SKIP_VERSION_CHECK) "${isolatedTestEnv.PI_SKIP_VERSION_CHECK}"
 set env(PI_TELEMETRY) "${isolatedTestEnv.PI_TELEMETRY}"
 set env(CI) "${isolatedTestEnv.CI}"
-set env(PI_CODING_AGENT_DIR) ${tclQuote(join(root, "agent"))}
-set env(PI_CODING_AGENT_SESSION_DIR) ${tclQuote(join(root, "sessions"))}
+set env(PI_CODING_AGENT_DIR) ${tclQuote(join(root, 'agent'))}
+set env(PI_CODING_AGENT_SESSION_DIR) ${tclQuote(join(root, 'sessions'))}
 set env(NPM_CONFIG_CACHE) "/tmp/pi-npm-cache"
 set env(TERM) "xterm-256color"
 spawn -noecho /usr/local/bin/pi --offline --no-session --no-extensions -e ${tclQuote(extensionPath)} --no-skills --no-prompt-templates --no-context-files --no-tools
@@ -95,21 +109,32 @@ send "\\003"
 after 500
 exit 0
 `;
-	await writeFile(script, content + tail, "utf8");
-	try {
-		const result = spawnSync(expectBin, [script], { cwd, encoding: "utf8", timeout: (timeoutSeconds + 5) * 1000 });
-		const output = `${result.stdout}\n${result.stderr}`;
-		assert.equal(result.status, 0, stripAnsi(output));
-		return stripAnsi(output).replace(/\r/g, "");
-	} finally {
-		await rm(root, { recursive: true, force: true });
-	}
+  await writeFile(script, content + tail, 'utf8');
+  try {
+    const result = spawnSync(expectBin, [script], {
+      cwd,
+      encoding: 'utf8',
+      timeout: (timeoutSeconds + 5) * 1000,
+    });
+    const output = `${result.stdout}\n${result.stderr}`;
+    assert.equal(result.status, 0, stripAnsi(output));
+    return stripAnsi(output).replace(/\r/g, '');
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
 }
 
-describe("interactive PTY", () => {
-	it("opens the focused dock from /tasks and closes with x", { timeout: 45_000 }, async (t) => {
-		if (!(await ptyInputSupported())) return void t.skip(PTY_SKIP_REASON);
-		const output = await runExpect(`
+void describe('interactive PTY', () => {
+  void it(
+    'opens the focused dock from /tasks and closes with x',
+    { timeout: 45_000 },
+    async (t) => {
+      if (!(await ptyInputSupported())) {
+        t.skip(PTY_SKIP_REASON);
+        return;
+      }
+      const output = await runExpect(
+        `
 send "/tasks"
 send "\\r"
 expect {
@@ -117,13 +142,23 @@ expect {
   timeout { puts "TASKS_DOCK_TIMEOUT"; exit 3 }
 }
 send "x"
-`, 30);
-		assert.match(output, /bg tasks focused|No background tasks/);
-	});
+`,
+        30,
+      );
+      assert.match(output, /bg tasks focused|No background tasks/);
+    },
+  );
 
-	it("opens the footer dock via Shift+Down after starting a named task", { timeout: 55_000 }, async (t) => {
-		if (!(await ptyInputSupported())) return void t.skip(PTY_SKIP_REASON);
-		const output = await runExpect(`
+  void it(
+    'opens the footer dock via Shift+Down after starting a named task',
+    { timeout: 55_000 },
+    async (t) => {
+      if (!(await ptyInputSupported())) {
+        t.skip(PTY_SKIP_REASON);
+        return;
+      }
+      const output = await runExpect(
+        `
 send {/bg --name "PTY Sleep" node -e "setTimeout(()=>{},4000)"}
 send "\\r"
 expect {
@@ -136,14 +171,24 @@ expect {
   timeout { puts "SHIFT_DOWN_DOCK_TIMEOUT"; exit 5 }
 }
 send "x"
-`, 40);
-		assert.match(output, /PTY Sleep/);
-		assert.match(output, /bg tasks focused/);
-	});
+`,
+        40,
+      );
+      assert.match(output, /PTY Sleep/);
+      assert.match(output, /bg tasks focused/);
+    },
+  );
 
-	it("drives real dock detail, history, stop, and close keys", { timeout: 70_000 }, async (t) => {
-		if (!(await ptyInputSupported())) return void t.skip(PTY_SKIP_REASON);
-		const output = await runExpect(`
+  void it(
+    'drives real dock detail, history, stop, and close keys',
+    { timeout: 70_000 },
+    async (t) => {
+      if (!(await ptyInputSupported())) {
+        t.skip(PTY_SKIP_REASON);
+        return;
+      }
+      const output = await runExpect(
+        `
 send {/bg --name "PTY Action" node -e "let i=0; const t=setInterval(()=>{console.log('pty-action-'+(++i)); if(i===20) clearInterval(t)},100)"}
 send "\\r"
 expect {
@@ -178,15 +223,25 @@ expect {
   timeout { puts "ACTION_STOP_TIMEOUT"; exit 11 }
 }
 send "x"
-`, 55);
-		assert.match(output, /PTY Action/);
-		assert.match(output, /bg tasks focused/);
-		assert.match(output, /bg: PTY Action|Output tail/);
-	});
+`,
+        55,
+      );
+      assert.match(output, /PTY Action/);
+      assert.match(output, /bg tasks focused/);
+      assert.match(output, /bg: PTY Action|Output tail/);
+    },
+  );
 
-	it("scrolls the detail output tail with real arrow/page keys", { timeout: 60_000 }, async (t) => {
-		if (!(await ptyInputSupported())) return void t.skip(PTY_SKIP_REASON);
-		const output = await runExpect(`
+  void it(
+    'scrolls the detail output tail with real arrow/page keys',
+    { timeout: 60_000 },
+    async (t) => {
+      if (!(await ptyInputSupported())) {
+        t.skip(PTY_SKIP_REASON);
+        return;
+      }
+      const output = await runExpect(
+        `
 send {/bg --name "PTY Scroll" node -e "for(let i=1;i<=60;i++)console.log('PTYSCROLL-'+i)"}
 send "\\r"
 expect {
@@ -213,14 +268,25 @@ expect {
   timeout { puts "SCROLL_INDICATOR_TIMEOUT"; exit 36 }
 }
 send "x"
-`, 45, { rows: 80, cols: 120 });
-		assert.match(output, /PTY Scroll/);
-		assert.match(output, /lines [0-9]+.*of 60/);
-	});
+`,
+        45,
+        { rows: 80, cols: 120 },
+      );
+      assert.match(output, /PTY Scroll/);
+      assert.match(output, /lines [0-9]+.*of 60/);
+    },
+  );
 
-	it("covers secondary dock keys for selection, output path, rerun, and stop-all", { timeout: 80_000 }, async (t) => {
-		if (!(await ptyInputSupported())) return void t.skip(PTY_SKIP_REASON);
-		const output = await runExpect(`
+  void it(
+    'covers secondary dock keys for selection, output path, rerun, and stop-all',
+    { timeout: 80_000 },
+    async (t) => {
+      if (!(await ptyInputSupported())) {
+        t.skip(PTY_SKIP_REASON);
+        return;
+      }
+      const output = await runExpect(
+        `
 send {/bg --name "PTY Alpha" node -e "setInterval(()=>console.log('alpha'),200)"}
 send "\\r"
 expect {
@@ -274,17 +340,27 @@ expect {
   timeout { puts "SECONDARY_STOP_ALL_TIMEOUT"; exit 21 }
 }
 send "x"
-`, 65);
-		assert.match(output, /PTY Alpha/);
-		assert.match(output, /PTY Beta/);
-		assert.match(output, /Output path shown for PTY/);
-		assert.match(output, /Reran as PTY Beta|Rerunning PTY Beta/);
-		assert.match(output, /Stopped [0-9]+ running task/);
-	});
+`,
+        65,
+      );
+      assert.match(output, /PTY Alpha/);
+      assert.match(output, /PTY Beta/);
+      assert.match(output, /Output path shown for PTY/);
+      assert.match(output, /Reran as PTY Beta|Rerunning PTY Beta/);
+      assert.match(output, /Stopped [0-9]+ running task/);
+    },
+  );
 
-	it("reruns completed, failed, and killed history tasks in a real dock", { timeout: 70_000 }, async (t) => {
-		if (!(await ptyInputSupported())) return void t.skip(PTY_SKIP_REASON);
-		const output = await runExpect(`
+  void it(
+    'reruns completed, failed, and killed history tasks in a real dock',
+    { timeout: 70_000 },
+    async (t) => {
+      if (!(await ptyInputSupported())) {
+        t.skip(PTY_SKIP_REASON);
+        return;
+      }
+      const output = await runExpect(
+        `
 send {/bg --name "PTY Done Rerun" printf done-rerun}
 send "\\r"
 expect {
@@ -350,18 +426,28 @@ expect {
   timeout { puts "RERUN_FAILED_ACTION_TIMEOUT"; exit 32 }
 }
 send "x"
-`, 55);
-		assert.match(output, /Reran as PTY Done Rerun|Rerunning PTY Done Rerun/);
-		assert.match(output, /Reran as PTY Bad Rerun|Rerunning PTY Bad Rerun/);
-		assert.match(output, /Reran as PTY Stop Rerun|Rerunning PTY Stop Rerun/);
-	});
+`,
+        55,
+      );
+      assert.match(output, /Reran as PTY Done Rerun|Rerunning PTY Done Rerun/);
+      assert.match(output, /Reran as PTY Bad Rerun|Rerunning PTY Bad Rerun/);
+      assert.match(output, /Reran as PTY Stop Rerun|Rerunning PTY Stop Rerun/);
+    },
+  );
 
-	it("covers /bg-tasks history, failed unread badges, and page keys", { timeout: 200_000 }, async (t) => {
-		if (!(await ptyInputSupported())) return void t.skip(PTY_SKIP_REASON);
-		const output = await runExpect(`
+  void it(
+    'covers /bg-tasks history, failed unread badges, and page keys',
+    { timeout: 200_000 },
+    async (t) => {
+      if (!(await ptyInputSupported())) {
+        t.skip(PTY_SKIP_REASON);
+        return;
+      }
+      const output = await runExpect(
+        `
 set send_slow {1 .004}
 for {set i 1} {$i <= 16} {incr i} {
-  send -s "/bg --name \\\"PTY Page $i\\\" printf page-$i"
+  send -s "/bg --name \\"PTY Page $i\\" printf page-$i"
   send "\\r"
   expect {
     -re "Started PTY Page $i" {}
@@ -393,9 +479,12 @@ expect {
   timeout { puts "PAGE_UP_TIMEOUT"; exit 26 }
 }
 send "x"
-`, 170);
-		assert.match(output, /PTY Fails/);
-		assert.match(output, /failed|unread/);
-		assert.match(output, /PTY Page/);
-	});
+`,
+        170,
+      );
+      assert.match(output, /PTY Fails/);
+      assert.match(output, /failed|unread/);
+      assert.match(output, /PTY Page/);
+    },
+  );
 });
