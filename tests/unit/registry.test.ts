@@ -5,6 +5,7 @@ import { readFileSync } from 'node:fs';
 import { mkdir, mkdtemp, readFile, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
+import { parseJsonText } from '../../src/core/common.js';
 import {
   BackgroundTaskRegistry,
   commandMayLaunchPiAgent,
@@ -22,7 +23,7 @@ function isJsonObject(value: unknown): value is JsonObject {
 }
 
 function parseJsonObject(text: string, message: string): JsonObject {
-  const parsed: unknown = JSON.parse(text);
+  const parsed = parseJsonText(text);
   assert.ok(isJsonObject(parsed), message);
   return parsed;
 }

@@ -13,6 +13,7 @@ import {
   SettingsManager,
   type AgentSession,
 } from '@earendil-works/pi-coding-agent';
+import { parseJsonText } from '../../src/core/common.js';
 import { isolatedTestEnv } from '../../src/testing/normalize.js';
 
 const backgroundExtensionPath = resolve('extensions/background-tasks.ts');
@@ -120,7 +121,7 @@ function isProviderEvent(value: unknown): value is ProviderEvent {
 }
 
 function parseProviderEvent(line: string): ProviderEvent {
-  const parsed: unknown = JSON.parse(line);
+  const parsed = parseJsonText(line);
   assert.ok(
     isProviderEvent(parsed),
     'scripted provider event must match the provider-event contract',

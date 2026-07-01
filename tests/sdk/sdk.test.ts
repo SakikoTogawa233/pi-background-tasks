@@ -16,7 +16,7 @@ import {
   type AgentSession,
   type ExtensionUIContext,
 } from '@earendil-works/pi-coding-agent';
-import type { BgTaskSnapshot, TaskStatus } from '../../src/core/common.js';
+import { parseJsonText, type BgTaskSnapshot, type TaskStatus } from '../../src/core/common.js';
 import { parsePackageInfo } from '../../src/core/update-check.js';
 
 const extensionPath = resolve('extensions/background-tasks.ts');
@@ -112,7 +112,7 @@ function isJsonObject(value: unknown): value is JsonObject {
 }
 
 function parseJsonObject(text: string, message: string): JsonObject {
-  const parsed: unknown = JSON.parse(text);
+  const parsed = parseJsonText(text);
   assert.ok(isJsonObject(parsed), message);
   return parsed;
 }
@@ -1095,7 +1095,7 @@ console.log(JSON.stringify({ type: "message_end", message: secondMessage }));
     assert.equal(offline.threw, false);
     assert.doesNotMatch(offline.status ?? '', /bg-update/);
 
-    const packageInfoPayload: unknown = JSON.parse(
+    const packageInfoPayload = parseJsonText(
       await readFile(new URL('../../package.json', import.meta.url), 'utf8'),
     );
     const currentVersion = parsePackageInfo(packageInfoPayload).version ?? '0.0.0';

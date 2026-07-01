@@ -4,6 +4,7 @@ import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { mkdir, mkdtemp, rm } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
+import { parseJsonText } from '../../src/core/common.js';
 import { isolatedTestEnv } from '../../src/testing/normalize.js';
 
 const extensionPath = resolve('extensions/background-tasks.ts');
@@ -24,8 +25,7 @@ function field(value: object, key: string): unknown {
 }
 
 function parseJsonValue(text: string): unknown {
-  const parsed: unknown = JSON.parse(text);
-  return parsed;
+  return parseJsonText(text);
 }
 
 function requireString(value: unknown, label: string): string {
