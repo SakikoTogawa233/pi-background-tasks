@@ -136,6 +136,7 @@ void describe('package', () => {
       'src/ui/background-tasks-manager.ts',
       'src/core/common.ts',
       'src/core/registry.ts',
+      'src/core/attested-pi-run.ts',
       'extensions/background-tasks.ts',
     ])
       assert.ok(existsSync(new URL(f, root)), f);
@@ -152,6 +153,7 @@ void describe('package', () => {
       '/bg-clear',
       '/bg-update',
       'bg_run',
+      'bg_run_pi_attested',
       'bg_status',
       'bg_logs',
       'bg_kill',
@@ -186,6 +188,7 @@ void describe('package', () => {
       'src/extension.ts',
       'src/core/common.ts',
       'src/core/registry.ts',
+      'src/core/attested-pi-run.ts',
       'src/ui/background-tasks-manager.ts',
       'src/testing/normalize.ts',
       'README.md',
@@ -236,6 +239,7 @@ void describe('package', () => {
         'extensions/background-tasks.ts',
         'src/extension.ts',
         'src/core/registry.ts',
+        'src/core/attested-pi-run.ts',
         'src/ui/background-tasks-manager.ts',
       ]) {
         assert.ok(existsSync(join(temp, 'node_modules', 'pi-background-tasks', f)), f);

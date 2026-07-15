@@ -13,11 +13,11 @@ This package follows:
 | Package | `pi-background-tasks` |
 | Extension entrypoint | `extensions/background-tasks.ts` |
 | Public commands | `/bg`, `/jobs`, `/logs`, `/kill`, `/tasks`, `/bg-tasks`, `/bg-clear`, `/bg-update` |
-| Public tools | `bg_run`, `bg_status`, `bg_logs`, `bg_kill` |
+| Public tools | `bg_run`, `bg_run_pi_attested`, `bg_status`, `bg_logs`, `bg_kill` |
 | Shortcuts | `Shift+Down`; optional fallback `Ctrl+Alt+C` |
 | Custom UI | footer status + focused bottom dock overlay |
 | Custom provider | no |
-| Runtime files/state | `.pi/tasks/<session-id>-<pid>/<task-id>.output`, `.pi/tasks/<session-id>-<pid>/<task-id>.json` |
+| Runtime files/state | `.pi/tasks/<session-id>-<pid>/<task-id>.output`, `.pi/tasks/<session-id>-<pid>/<task-id>.json`; attested Pi opt-in adds `.pi-events.jsonl`, `.stderr`, `.pi-telemetry-wrapper.cjs`, `.attestation.json` |
 
 ## Required gates
 
@@ -44,6 +44,7 @@ This package follows:
 | Kill running task | `/kill <id>` |  | yes | yes |  |  |  |  | SDK tool and RPC slash command. |
 | Open task manager fallback | `/tasks`, `/bg-tasks` |  |  | discovery | yes | yes |  |  | Component covers dock; PTY covers `/tasks` and `/bg-tasks`. |
 | Start background command from LLM tool | `bg_run` | yes | yes |  |  |  |  | yes | SDK starts named commands, verifies required `isAgent` schema/runtime behavior, and scripted provider verifies agent-loop tool calls with `isAgent:false` for scripts. |
+| Attested direct Pi producer | `bg_run_pi_attested` | yes | yes |  |  |  | type/schema |  | Unit covers 128-bit ids, exact direct argv, raw events/stderr, provider/model/session capture from Pi JSON, OAuth observation via ModelRegistry, prompt/report/source hash laws, completion visibility only after durable sidecar creation, malformed-event rejection, and no sidecar for ordinary tasks. SDK runs a fake Pi CLI through the public tool and verifies one complete flat attestation. |
 | Inspect task status | `bg_status` |  | yes |  |  |  |  |  | SDK polls exact IDs and validates shutdown state. |
 | Read task logs | `bg_logs` | yes | yes |  |  |  |  |  | SDK verifies content. |
 | Stop task from LLM tool | `bg_kill` |  | yes |  |  |  |  |  | Covers running kill and already-finished loud failure. |

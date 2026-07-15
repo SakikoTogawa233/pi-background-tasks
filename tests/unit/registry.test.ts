@@ -1,8 +1,9 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
-import { readFileSync } from 'node:fs';
-import { mkdir, mkdtemp, readFile, rm } from 'node:fs/promises';
+import { existsSync, readFileSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { parseJsonText } from '../../src/core/common.js';
@@ -14,6 +15,7 @@ import {
   type CompletionNotificationMessage,
   type CompletionNotificationOptions,
 } from '../../src/core/registry.js';
+import type { Api, Model } from '@earendil-works/pi-ai';
 import type { BgTask } from '../../src/core/common.js';
 
 type JsonObject = Record<PropertyKey, unknown>;
@@ -91,6 +93,7 @@ interface HarnessOptions {
   now?: () => number;
   env?: NodeJS.ProcessEnv;
   childFactory?: (pid: number) => FakeChild;
+  modelRegistry?: BackgroundTaskContext['modelRegistry'];
 }
 
 async function createHarness(options: HarnessOptions = {}) {
@@ -139,7 +142,7 @@ async function createHarness(options: HarnessOptions = {}) {
   const ctx: BackgroundTaskContext = {
     cwd,
     sessionId: 'registry-test',
-    modelRegistry: { getAll: () => [] },
+    modelRegistry: options.modelRegistry ?? { getAll: () => [] },
     model: undefined,
   };
   return {
@@ -156,8 +159,76 @@ async function createHarness(options: HarnessOptions = {}) {
   };
 }
 
+function git(cwd: string, args: string[]): void {
+  const result = spawnSync('git', args, { cwd, encoding: 'utf8' });
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+}
+
+async function initCleanGit(cwd: string): Promise<void> {
+  git(cwd, ['init']);
+  git(cwd, ['config', 'user.email', 'pi-bg@example.invalid']);
+  git(cwd, ['config', 'user.name', 'Pi BG Tests']);
+  await writeFile(join(cwd, 'README.md'), 'clean\n', 'utf8');
+  await writeFile(join(cwd, '.gitignore'), '.pi/\nreport.md\n', 'utf8');
+  git(cwd, ['add', 'README.md', '.gitignore']);
+  git(cwd, ['commit', '-m', 'init']);
+}
+
+function oauthModel(provider = 'openai-codex', modelId = 'gpt-5.5'): Model<Api> {
+  return {
+    id: modelId,
+    name: modelId,
+    api: provider === 'anthropic' ? 'anthropic-messages' : 'openai-codex-responses',
+    provider,
+    baseUrl: 'https://example.invalid',
+    reasoning: false,
+    input: ['text'],
+    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+    contextWindow: 100000,
+    maxTokens: 4096,
+  };
+}
+
+function oauthRegistry(model = oauthModel()): BackgroundTaskContext['modelRegistry'] {
+  return {
+    getAll: () => [model],
+    find: (provider, modelId) =>
+      provider === model.provider && modelId === model.id ? model : undefined,
+    isUsingOAuth: () => true,
+  };
+}
+
+function piJsonEvents(provider = 'openai-codex', model = 'gpt-5.5'): string {
+  return [
+    { type: 'session', version: 3, id: 'pi-session-unit', timestamp: '2026-01-01T00:00:00.000Z', cwd: '/unit' },
+    { type: 'agent_start' },
+    {
+      type: 'message_end',
+      message: {
+        role: 'assistant',
+        provider,
+        model,
+        usage: { input: 10, output: 4, cacheRead: 0, cacheWrite: 1, totalTokens: 15, cost: { total: 0.12 } },
+        content: [{ type: 'text', text: 'attested done' }],
+        stopReason: 'stop',
+      },
+    },
+    { type: 'agent_end', messages: [] },
+  ]
+    .map((event) => JSON.stringify(event))
+    .join('\n') + '\n';
+}
+
 async function cleanup(root: string) {
-  await rm(root, { recursive: true, force: true });
+  for (let attempt = 0; attempt < 5; attempt++) {
+    try {
+      await rm(root, { recursive: true, force: true });
+      return;
+    } catch (error) {
+      if (!(error instanceof Error) || !/ENOTEMPTY/.test(error.message) || attempt === 4) throw error;
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+  }
 }
 
 async function waitFor(
@@ -459,14 +530,15 @@ void describe('BackgroundTaskRegistry', () => {
       const { task, child } = await startFakeTask(metadataFailure, 'Metadata Failure');
       await rm(join(metadataFailure.cwd, '.pi'), { recursive: true, force: true });
       child.close(0, null);
-      await waitFor(() => task.status === 'completed', 'metadata failure task completion');
+      await waitFor(() => task.status === 'failed', 'metadata failure task completion');
       await waitFor(
         () => metadataFailure.notifications.length === 1,
         'notification despite metadata failure',
       );
       await waitFor(() => metadataFailure.errors.length > 0, 'metadata failure log');
       assert.equal(task.notified, true);
-      assert.match(metadataFailure.errors.flat().join(' '), /failed to (update )?metadata|ENOENT/);
+      assert.match(task.error ?? '', /Terminal metadata write failed/);
+      assert.match(metadataFailure.errors.flat().join(' '), /failed to (write failed terminal|write|update )?metadata|ENOENT/);
     } finally {
       await cleanup(metadataFailure.root);
     }
@@ -534,7 +606,12 @@ void describe('BackgroundTaskRegistry', () => {
       assert.equal(task.model, 'openai-codex/gpt-5.5');
       child.close(0, null);
       await waitFor(() => task.status === 'completed', 'telemetry task completion');
-      const metadata = await readJsonEventually(task.metadataAbsPath);
+      let metadata = await readJsonEventually(task.metadataAbsPath);
+      for (let attempt = 0; attempt < 20; attempt++) {
+        metadata = await readJsonEventually(task.metadataAbsPath);
+        if (JSON.stringify(metadata['tokenUsage']) === JSON.stringify(task.tokenUsage)) break;
+        await new Promise((resolve) => setTimeout(resolve, 25));
+      }
       assert.deepEqual(metadata['tokenUsage'], task.tokenUsage);
       const metadataToolUsage = requiredJsonObject(
         metadata['toolUsage'],
@@ -630,6 +707,118 @@ void describe('BackgroundTaskRegistry', () => {
       assert.deepEqual(task.contextUsage, { tokens: 321, contextWindow: 1000, percent: 32.1 });
       child.close(0, null);
       await waitFor(() => task.status === 'completed', 'xml telemetry task completion');
+    } finally {
+      await cleanup(h.root);
+    }
+  });
+
+  void it('produces a direct-spawn attested Pi sidecar with raw events, stderr, hashes, and exact argv', async () => {
+    const h = await createHarness({ modelRegistry: oauthRegistry() });
+    try {
+      await initCleanGit(h.cwd);
+      const task = await h.registry.startAttestedPiTask(h.ctx, {
+        name: 'Unit Attested',
+        provider: 'openai-codex',
+        model: 'gpt-5.5',
+        prompt: 'write report.md',
+        reportPath: 'report.md',
+        extraPiArgs: ['--no-extensions'],
+      });
+      await writeFile(join(h.cwd, 'report.md'), 'unit report\n', 'utf8');
+      assert.match(task.id, /^b[0-9a-f]{32}$/);
+      const spawn = lastSpawn(h);
+      assert.equal(spawn.shell, 'pi');
+      assert.deepEqual(spawn.args, [
+        '--mode',
+        'json',
+        '--provider',
+        'openai-codex',
+        '--model',
+        'gpt-5.5',
+        '--no-extensions',
+        'write report.md',
+      ]);
+      spawn.child.writeStdout(piJsonEvents());
+      spawn.child.writeStderr('diagnostic\n');
+      spawn.child.close(0, null);
+      await waitFor(() => task.status === 'completed', 'attested sidecar completion');
+      assert.ok(task.attestationAbsPath, 'attestation path should be recorded on task');
+      assert.equal(
+        existsSync(task.attestationAbsPath ?? ''),
+        true,
+        'completed must not become externally visible before the attestation is durable',
+      );
+      const attestation = parseJsonObject(
+        await readFile(task.attestationAbsPath, 'utf8'),
+        'attestation sidecar must be an object',
+      );
+      assert.equal(attestation['schema_version'], 'phase2.pi_task_attestation.v1');
+      assert.equal(requiredJsonObject(attestation['lifecycle'], 'lifecycle')['status'], 'completed');
+      const invocation = requiredJsonObject(attestation['invocation'], 'invocation');
+      assert.equal(invocation['pi_session_id'], 'pi-session-unit');
+      assert.equal(invocation['provider'], 'openai-codex');
+      assert.equal(invocation['model_id'], 'gpt-5.5');
+      assert.equal(invocation['credential_kind'], 'oauth');
+      assert.equal(invocation['direct_api_key'], false);
+      assert.deepEqual(invocation['argv'], ['pi', ...spawn.args]);
+      const sourceHashes = requiredJsonObject(attestation['source_hashes'], 'source hashes');
+      const artifacts = requiredJsonObject(attestation['artifacts'], 'artifacts');
+      assert.equal(
+        requiredJsonObject(artifacts['task_output'], 'task output artifact')['sha256'],
+        sourceHashes['output_sha256'],
+      );
+      assert.equal(
+        requiredJsonObject(artifacts['stderr'], 'stderr artifact')['sha256'],
+        sourceHashes['stderr_sha256'],
+      );
+      assert.equal(
+        requiredJsonObject(artifacts['transcript'], 'transcript artifact')['sha256'],
+        sourceHashes['events_sha256'],
+      );
+      assert.match(await readFile(task.outputAbsPath, 'utf8'), /attested done/);
+      assert.match(await readFile(task.eventsAbsPath ?? '', 'utf8'), /pi-session-unit/);
+      assert.match(await readFile(task.stderrAbsPath ?? '', 'utf8'), /diagnostic/);
+      const metadata = parseJsonObject(
+        await readFile(task.metadataAbsPath, 'utf8'),
+        'metadata must remain parseable after attestation',
+      );
+      assert.equal(metadata['bytesWritten'], readFileSync(task.outputAbsPath).length);
+    } finally {
+      await cleanup(h.root);
+    }
+  });
+
+  void it('rejects malformed attested Pi events and does not emit a sidecar', async () => {
+    const h = await createHarness({ modelRegistry: oauthRegistry() });
+    try {
+      await initCleanGit(h.cwd);
+      const task = await h.registry.startAttestedPiTask(h.ctx, {
+        name: 'Bad Attested',
+        provider: 'openai-codex',
+        model: 'gpt-5.5',
+        prompt: 'write report.md',
+        reportPath: 'report.md',
+      });
+      await writeFile(join(h.cwd, 'report.md'), 'unit report\n', 'utf8');
+      lastSpawn(h).child.writeStdout('{"type":"session","id":"s","cwd":"/tmp"}\n');
+      lastSpawn(h).child.close(0, null);
+      await waitFor(() => task.status === 'failed', 'malformed attested failure');
+      assert.match(task.error ?? '', /agent_start|assistant|agent_end|session/i);
+      assert.equal(existsSync(task.attestationAbsPath ?? ''), false);
+    } finally {
+      await cleanup(h.root);
+    }
+  });
+
+  void it('keeps ordinary bg_run tasks free of attestation sidecars', async () => {
+    const h = await createHarness();
+    try {
+      const { task, child } = await startFakeTask(h, 'Ordinary No Sidecar');
+      child.writeStdout('ordinary\n');
+      child.close(0, null);
+      await waitFor(() => task.status === 'completed', 'ordinary completion');
+      assert.equal(task.attestationPath, undefined);
+      assert.equal(existsSync(task.outputAbsPath.replace(/\.output$/, '.attestation.json')), false);
     } finally {
       await cleanup(h.root);
     }

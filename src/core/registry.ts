@@ -1,8 +1,9 @@
 import { spawn as nodeSpawn, type SpawnOptions } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import { createWriteStream, existsSync } from 'node:fs';
-import { mkdir, writeFile } from 'node:fs/promises';
+import { mkdir, realpath, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
+import type { Api, Model } from '@earendil-works/pi-ai';
 import type { ExtensionContext } from '@earendil-works/pi-coding-agent';
 import { formatSize } from '@earendil-works/pi-coding-agent';
 import {
@@ -26,12 +27,29 @@ import {
   type BgTaskSnapshot,
   type JsonObject,
   type KillKind,
+  type StartAttestedPiTaskOptions,
   type StartTaskOptions,
   type TaskContextUsage,
   type TaskStatus,
   type TaskTokenUsage,
   type TaskToolUsage,
 } from './common.js';
+import {
+  ATTESTED_TASK_ID_PATTERN,
+  buildAttestedPiArgv,
+  buildPiTaskAttestation,
+  closeAndFsyncOutputStream,
+  gitAuthoritySnapshot,
+  gitRepoRoot,
+  makeAttestedTaskId,
+  makeAttestedTaskPaths,
+  observePiOAuth,
+  parsePiJsonEvents,
+  resolveReportPath,
+  spawnAndCapturePi,
+  writeFileFsynced,
+  writeJsonAtomic,
+} from './attested-pi-run.js';
 
 export const MAX_OUTPUT_BYTES = Number(process.env['PI_BG_MAX_OUTPUT_BYTES'] ?? 20 * 1024 * 1024);
 export const KILL_GRACE_MS = 3000;
@@ -39,10 +57,15 @@ export const STOP_WAIT_MS = KILL_GRACE_MS + 1500;
 export const MAX_RECENT_TASKS = 100;
 const TELEMETRY_BUFFER_CHARS = 512 * 1024;
 
+export interface BackgroundTaskModelRegistry extends Pick<ExtensionContext['modelRegistry'], 'getAll'> {
+  find?: (provider: string, modelId: string) => Model<Api> | undefined;
+  isUsingOAuth?: (model: Model<Api>) => boolean;
+}
+
 export interface BackgroundTaskContext {
   cwd: string;
   sessionId?: string;
-  modelRegistry: Pick<ExtensionContext['modelRegistry'], 'getAll'>;
+  modelRegistry: BackgroundTaskModelRegistry;
   model?: ExtensionContext['model'] | undefined;
 }
 
@@ -118,6 +141,11 @@ interface ModelWindowIndex {
 
 function defaultTaskId(): string {
   return `b${randomBytes(4).toString('hex')}`;
+}
+
+function dirNameFromDisplay(path: string): string {
+  const parts = path.split(/[\\/]/);
+  return parts.length >= 2 ? (parts.at(-2) ?? '') : '';
 }
 
 export function commandMayLaunchPiAgent(
@@ -396,8 +424,14 @@ child.on("error", (error) => {
 });
 child.on("close", (code, signal) => {
   if (parsed.parseJson && buffer.trim()) processLine(buffer);
-  if (signal) process.kill(process.pid, signal);
-  process.exit(code ?? 0);
+  // Never call process.exit() here: the final message telemetry may still be
+  // buffered on wrapper stdout, and forced exit can publish a stale context
+  // snapshot from the preceding assistant turn. exitCode lets Node drain the
+  // pipe; signal termination is deferred through the same stdout barrier.
+  process.stdout.write("", () => {
+    if (signal) process.kill(process.pid, signal);
+    else process.exitCode = code ?? 0;
+  });
 });
 
 function processLine(line) {
@@ -786,6 +820,274 @@ export class BackgroundTaskRegistry {
     }
   }
 
+  async startAttestedPiTask(
+    ctx: BackgroundTaskContext,
+    request: StartAttestedPiTaskOptions,
+  ): Promise<BgTask> {
+    if (this.shuttingDown)
+      throw new Error('Cannot start an attested Pi task while Pi is shutting down');
+
+    const dir = await this.ensureRuntimeDir(ctx);
+    const id = makeAttestedTaskId();
+    if (!ATTESTED_TASK_ID_PATTERN.test(id)) throw new Error('Generated attested task id is invalid');
+    const paths = makeAttestedTaskPaths(dir.abs, dir.display, id);
+    const argv = buildAttestedPiArgv(request);
+    const promptBytes = Buffer.from(request.prompt, 'utf8');
+    const reportAbsPath = await resolveReportPath(ctx.cwd, request.reportPath);
+    const auth = observePiOAuth(ctx, request.provider, request.model);
+    const repoRootRealpath = await gitRepoRoot(ctx.cwd);
+    const cwdRealpath = await realpath(ctx.cwd);
+    const startAuthority = await gitAuthoritySnapshot(ctx.cwd);
+    if (!startAuthority.clean) throw new Error('Attested Pi task requires a clean worktree at start');
+    const timeoutSeconds =
+      typeof request.timeoutSeconds === 'number' &&
+      Number.isFinite(request.timeoutSeconds) &&
+      request.timeoutSeconds > 0
+        ? Math.floor(request.timeoutSeconds)
+        : undefined;
+
+    const task: BgTask = {
+      id,
+      name: normalizeTaskName(request.name) ?? 'Attested Pi task',
+      command: argv.map(shellQuote).join(' '),
+      status: 'running',
+      outputPath: paths.outputPath,
+      outputAbsPath: paths.outputAbsPath,
+      metadataAbsPath: paths.metadataAbsPath,
+      eventsAbsPath: paths.eventsAbsPath,
+      stderrAbsPath: paths.stderrAbsPath,
+      wrapperAbsPath: paths.wrapperAbsPath,
+      attestationAbsPath: paths.attestationAbsPath,
+      cwd: ctx.cwd,
+      startTime: this.now(),
+      exitCode: undefined,
+      pid: undefined,
+      bytesWritten: 0,
+      isAgent: true,
+      notified: false,
+      notifyOnCompletion: false,
+      triggerOnCompletion: false,
+      timeoutSeconds,
+      attestationPath: paths.attestationPath,
+      attestedPi: {
+        eventsPath: paths.eventsPath,
+        stderrPath: paths.stderrPath,
+        wrapperPath: paths.wrapperPath,
+        attestationPath: paths.attestationPath,
+      },
+      waiters: [],
+    };
+    this.tasks.set(id, task);
+
+    await writeFileFsynced(paths.outputAbsPath, '');
+    await writeFileFsynced(paths.eventsAbsPath, '');
+    await writeFileFsynced(paths.stderrAbsPath, '');
+    await writeFileFsynced(
+      paths.wrapperAbsPath,
+      'direct-spawn attested Pi task; no shell telemetry wrapper is used\n',
+    );
+    await this.writeMetadata(task);
+
+    const captured = spawnAndCapturePi(this.spawn, argv, {
+      cwd: ctx.cwd,
+      detached: this.platform !== 'win32',
+      stdio: ['ignore', 'pipe', 'pipe'],
+      env: this.env,
+      windowsHide: true,
+    });
+    task.child = captured.child;
+    task.pid = captured.child.pid;
+    await this.writeMetadata(task);
+    this.onChange();
+
+    captured.child.on('error', (error) => {
+      void this.finalizeAttestedPiTask(
+        task,
+        paths,
+        argv,
+        cwdRealpath,
+        repoRootRealpath,
+        startAuthority,
+        auth,
+        promptBytes,
+        reportAbsPath,
+        captured.stdoutChunks,
+        captured.stderrChunks,
+        'failed',
+        null,
+        null,
+        error.message,
+      );
+    });
+
+    captured.child.on('close', (code, signalName) => {
+      let status: TaskStatus = (code ?? 0) === 0 && signalName === null ? 'completed' : 'failed';
+      let error: string | undefined;
+      if (task.killKind === 'timeout') {
+        status = 'failed';
+        error = task.error ?? `Timed out after ${String(timeoutSeconds)}s`;
+      } else if (task.killKind === 'user' || task.killKind === 'shutdown') {
+        status = 'killed';
+        error = task.error;
+      } else if (status === 'failed') {
+        const exitCode = code === null ? 'null' : String(code);
+        error = `Exited with code ${exitCode}${signalName ? ` (${signalName})` : ''}`;
+      }
+      void this.finalizeAttestedPiTask(
+        task,
+        paths,
+        argv,
+        cwdRealpath,
+        repoRootRealpath,
+        startAuthority,
+        auth,
+        promptBytes,
+        reportAbsPath,
+        captured.stdoutChunks,
+        captured.stderrChunks,
+        status,
+        code,
+        signalName,
+        error,
+      );
+    });
+
+    if (timeoutSeconds !== undefined) {
+      task.timeoutHandle = setTimeout(() => {
+        if (task.status !== 'running') return;
+        task.killKind = 'timeout';
+        task.error = `Timed out after ${String(timeoutSeconds)}s`;
+        try {
+          this.requestKill(task, 'SIGTERM');
+        } catch (error) {
+          void this.finalizeAttestedPiTask(
+            task,
+            paths,
+            argv,
+            cwdRealpath,
+            repoRootRealpath,
+            startAuthority,
+            auth,
+            promptBytes,
+            reportAbsPath,
+            captured.stdoutChunks,
+            captured.stderrChunks,
+            'failed',
+            null,
+            null,
+            error instanceof Error ? error.message : String(error),
+          );
+        }
+      }, timeoutSeconds * 1000);
+    }
+
+    return task;
+  }
+
+  private async finalizeAttestedPiTask(
+    task: BgTask,
+    paths: ReturnType<typeof makeAttestedTaskPaths>,
+    argv: string[],
+    cwdRealpath: string,
+    repoRootRealpath: string,
+    startAuthority: Awaited<ReturnType<typeof gitAuthoritySnapshot>>,
+    auth: ReturnType<typeof observePiOAuth>,
+    promptBytes: Buffer,
+    reportAbsPath: string,
+    stdoutChunks: Buffer[],
+    stderrChunks: Buffer[],
+    status: TaskStatus,
+    exitCode: number | null,
+    signal: NodeJS.Signals | null,
+    error?: string,
+  ): Promise<void> {
+    if (task.finalized) return;
+    task.finalized = true;
+    if (task.timeoutHandle) clearTimeout(task.timeoutHandle);
+    let finalStatus = status;
+    task.exitCode = exitCode;
+    task.signal = signal;
+    task.endTime = this.now();
+    if (error) task.error = error;
+
+    const rawEvents = Buffer.concat(stdoutChunks);
+    const rawStderr = Buffer.concat(stderrChunks);
+    await writeFileFsynced(paths.eventsAbsPath, rawEvents);
+    await writeFileFsynced(paths.stderrAbsPath, rawStderr);
+
+    let parsed: ReturnType<typeof parsePiJsonEvents> | undefined;
+    if (finalStatus === 'completed') {
+      try {
+        parsed = parsePiJsonEvents(rawEvents);
+        task.model = parsed.providerScopedModelId;
+        task.tokenUsage = {
+          input: parsed.tokenUsage.input,
+          output: parsed.tokenUsage.output,
+          cacheRead: parsed.tokenUsage.cacheRead,
+          cacheWrite: parsed.tokenUsage.cacheWrite,
+          totalTokens: parsed.tokenUsage.totalTokens,
+        };
+        if (parsed.tokenUsage.costTotal !== undefined)
+          task.tokenUsage.costTotal = parsed.tokenUsage.costTotal;
+        task.toolUsage = parsed.toolUsage;
+        const outputBytes = Buffer.from(parsed.humanTranscript, 'utf8');
+        task.bytesWritten = outputBytes.length;
+        await writeFileFsynced(paths.outputAbsPath, outputBytes);
+      } catch (parseError) {
+        finalStatus = 'failed';
+        task.error = parseError instanceof Error ? parseError.message : String(parseError);
+        const outputBytes = Buffer.from(`[attested Pi task error: ${task.error}]\n`, 'utf8');
+        task.bytesWritten = outputBytes.length;
+        await writeFileFsynced(paths.outputAbsPath, outputBytes);
+      }
+    } else {
+      const outputBytes = Buffer.from(rawStderr.toString('utf8'), 'utf8');
+      task.bytesWritten = outputBytes.length;
+      await writeFileFsynced(paths.outputAbsPath, outputBytes);
+    }
+
+    try {
+      if (finalStatus === 'completed' && parsed) {
+        const finishAuthority = await gitAuthoritySnapshot(task.cwd);
+        const completedSnapshot: BgTaskSnapshot = { ...snapshot(task), status: 'completed' };
+        await this.writeMetadataSnapshot(task, completedSnapshot);
+        const attestation = await buildPiTaskAttestation({
+          task: completedSnapshot,
+          paths,
+          sessionDir: dirNameFromDisplay(paths.outputPath),
+          argv,
+          cwdRealpath,
+          repoRootRealpath,
+          startAuthority,
+          finishAuthority,
+          parsedEvents: parsed,
+          auth,
+          prompt: promptBytes,
+          reportAbsPath,
+        });
+        await writeJsonAtomic(paths.attestationAbsPath, attestation);
+      } else {
+        await this.writeMetadataSnapshot(task, { ...snapshot(task), status: finalStatus });
+      }
+    } catch (attestationError) {
+      finalStatus = 'failed';
+      task.error = attestationError instanceof Error ? attestationError.message : String(attestationError);
+      await this.writeMetadataSnapshot(task, { ...snapshot(task), status: 'failed' }).catch(
+        (metadataError: unknown) => {
+          this.logger.error(
+            `[background-tasks] failed to write failed attested metadata for ${task.id}:`,
+            metadataError,
+          );
+        },
+      );
+    }
+
+    task.status = finalStatus;
+    for (const waiter of task.waiters.splice(0)) waiter();
+    this.onChange();
+    this.pruneOldTasks();
+  }
+
   resolveTask(idOrPrefix: string): BgTask {
     const id = idOrPrefix.trim();
     if (!id) throw new Error('Task ID is required');
@@ -870,7 +1172,17 @@ export class BackgroundTaskRegistry {
   }
 
   private async writeMetadata(task: BgTask): Promise<void> {
-    await writeFile(task.metadataAbsPath, `${JSON.stringify(snapshot(task), null, 2)}\n`, 'utf8');
+    await this.writeMetadataSnapshot(task, snapshot(task));
+  }
+
+  private async writeMetadataSnapshot(task: BgTask, value: BgTaskSnapshot): Promise<void> {
+    const write = async () => {
+      await writeJsonAtomic(task.metadataAbsPath, value);
+    };
+    const previous = task.metadataWriteChain ?? Promise.resolve();
+    const next = previous.then(write, write);
+    task.metadataWriteChain = next.catch(() => undefined);
+    await next;
   }
 
   private ingestTelemetry(task: BgTask, text: string): void {
@@ -1201,25 +1513,46 @@ export class BackgroundTaskRegistry {
     if (task.finalized) return;
     task.finalized = true;
     if (task.timeoutHandle) clearTimeout(task.timeoutHandle);
-    task.status = status;
+    let finalStatus = status;
+    let finalError = error;
     task.exitCode = exitCode;
     task.signal = signal ?? null;
+
+    // Keep status="running" until the final wrapped-agent fragment has been
+    // consumed and the output plus terminal metadata are durable. Publishing a
+    // terminal state earlier lets bg_status observe the previous assistant
+    // turn's context snapshot and recreates the same false-completion race the
+    // attested producer is required to prevent.
+    try {
+      if (task.telemetryWrapped) this.flushAgentStdout(task);
+      if (task.stream && !task.stream.destroyed) await closeAndFsyncOutputStream(task.stream);
+    } catch (finalizeError) {
+      finalStatus = 'failed';
+      const message = finalizeError instanceof Error ? finalizeError.message : String(finalizeError);
+      finalError = finalError ? `${finalError}; final output durability failed: ${message}` : `Final output durability failed: ${message}`;
+    }
+
+    task.status = finalStatus;
     task.endTime = this.now();
-    if (error) task.error = error;
-    if (task.telemetryWrapped) this.flushAgentStdout(task);
-    if (task.stream && !task.stream.destroyed) task.stream.end();
-
-    for (const waiter of task.waiters.splice(0)) waiter();
-
+    if (finalError) task.error = finalError;
     try {
       await this.writeMetadata(task);
     } catch (metadataError) {
+      task.status = 'failed';
+      task.error = `Terminal metadata write failed: ${metadataError instanceof Error ? metadataError.message : String(metadataError)}`;
       this.logger.error(
         `[background-tasks] failed to write metadata for ${task.id}:`,
         metadataError,
       );
+      await this.writeMetadata(task).catch((retryError: unknown) => {
+        this.logger.error(
+          `[background-tasks] failed to write failed terminal metadata for ${task.id}:`,
+          retryError,
+        );
+      });
     }
 
+    for (const waiter of task.waiters.splice(0)) waiter();
     this.onChange();
     try {
       this.notifyCompletion(task);

@@ -53,12 +53,28 @@ export interface BgTaskSnapshot {
   tokenUsage?: TaskTokenUsage | undefined;
   toolUsage?: TaskToolUsage | undefined;
   model?: string | undefined;
+  attestationPath?: string | undefined;
+}
+
+export interface AttestedPiTaskFiles {
+  eventsPath: string;
+  stderrPath: string;
+  wrapperPath: string;
+  attestationPath: string;
+}
+
+export interface AttestedPiTaskSnapshot extends BgTaskSnapshot {
+  attestedPi?: AttestedPiTaskFiles | undefined;
 }
 
 export interface BgTask extends Omit<BgTaskSnapshot, 'name'> {
   name: string;
   outputAbsPath: string;
   metadataAbsPath: string;
+  eventsAbsPath?: string | undefined;
+  stderrAbsPath?: string | undefined;
+  wrapperAbsPath?: string | undefined;
+  attestationAbsPath?: string | undefined;
   child?: BackgroundTaskChildProcess | undefined;
   stream?: WriteStream | undefined;
   timeoutHandle?: NodeJS.Timeout | undefined;
@@ -71,6 +87,9 @@ export interface BgTask extends Omit<BgTaskSnapshot, 'name'> {
   telemetryWrapped?: boolean | undefined;
   /** Partial trailing stdout line held between chunks while reconstructing wrapped-agent control lines. */
   agentStdoutBuffer?: string | undefined;
+  attestationPath?: string | undefined;
+  attestedPi?: AttestedPiTaskFiles | undefined;
+  metadataWriteChain?: Promise<void> | undefined;
   waiters: Array<() => void>;
 }
 
@@ -102,6 +121,17 @@ export interface StartTaskOptions {
   timeoutSeconds?: number | undefined;
   notifyOnCompletion?: boolean | undefined;
   triggerOnCompletion?: boolean | undefined;
+}
+
+export interface StartAttestedPiTaskOptions {
+  name: string;
+  provider: string;
+  model: string;
+  prompt: string;
+  reportPath: string;
+  extraPiArgs?: string[] | undefined;
+  thinking?: string | undefined;
+  timeoutSeconds?: number | undefined;
 }
 
 export const DEFAULT_LOG_BYTES = Math.min(DEFAULT_MAX_BYTES, 50 * 1024);
@@ -469,6 +499,7 @@ export function snapshot(task: BgTask): BgTaskSnapshot {
     tokenUsage: task.tokenUsage,
     toolUsage: task.toolUsage,
     model: task.model,
+    attestationPath: task.attestationPath,
   };
 }
 

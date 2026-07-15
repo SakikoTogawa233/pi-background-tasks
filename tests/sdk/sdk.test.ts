@@ -117,6 +117,11 @@ function parseJsonObject(text: string, message: string): JsonObject {
   return parsed;
 }
 
+function requiredJsonObject(value: unknown, message: string): JsonObject {
+  assert.ok(isJsonObject(value), message);
+  return value;
+}
+
 function isBgTaskSnapshot(value: unknown): value is BgTaskSnapshot {
   return (
     isJsonObject(value) &&
@@ -245,8 +250,31 @@ async function readJsonEventually(path: string): Promise<JsonObject> {
   return parseJsonObject(last, 'metadata JSON should be an object');
 }
 
+async function readJsonWithStatus(path: string, status: string): Promise<JsonObject> {
+  let metadata = await readJsonEventually(path);
+  for (let attempt = 0; attempt < 40; attempt++) {
+    metadata = await readJsonEventually(path);
+    if (metadata['status'] === status) return metadata;
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  return metadata;
+}
+
+async function cleanupRoot(root: string): Promise<void> {
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  for (let attempt = 0; attempt < 5; attempt++) {
+    try {
+      await rm(root, { recursive: true, force: true });
+      return;
+    } catch (error) {
+      if (!(error instanceof Error) || !/ENOTEMPTY/.test(error.message) || attempt === 4) throw error;
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+  }
+}
+
 afterEach(async () => {
-  for (const r of roots.splice(0)) await rm(r, { recursive: true, force: true });
+  for (const r of roots.splice(0)) await cleanupRoot(r);
 });
 
 function makeStatusUi(
@@ -312,6 +340,21 @@ interface SettledFooterOptions {
   env: EnvOverrides;
   registryPayload: string;
   registryStatus?: number;
+}
+
+function git(cwd: string, args: string[]): void {
+  const result = spawnSync('git', args, { cwd, encoding: 'utf8' });
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+}
+
+async function initCleanGit(cwd: string): Promise<void> {
+  git(cwd, ['init']);
+  git(cwd, ['config', 'user.email', 'pi-bg@example.invalid']);
+  git(cwd, ['config', 'user.name', 'Pi BG Tests']);
+  await writeFile(join(cwd, 'README.md'), 'clean\n', 'utf8');
+  await writeFile(join(cwd, '.gitignore'), '.pi/\nbin/\nreport.md\n', 'utf8');
+  git(cwd, ['add', 'README.md', '.gitignore']);
+  git(cwd, ['commit', '-m', 'init']);
 }
 
 function restoreEnvValue(key: string, value: string | undefined): void {
@@ -406,10 +449,7 @@ void describe('sdk', () => {
       assert.ok(existsSync(join(cwd, t.outputPath)));
       const metadataPath = join(cwd, t.outputPath.replace(/\.output$/, '.json'));
       assert.ok(existsSync(metadataPath));
-      const metadata = parseJsonObject(
-        await readFile(metadataPath, 'utf8'),
-        'SDK metadata should be an object',
-      );
+      const metadata = await readJsonWithStatus(metadataPath, 'completed');
       assert.equal(metadata['status'], 'completed');
       assert.equal(metadata['name'], 'SDK Echo');
       assert.equal(metadata['isAgent'], false);
@@ -417,6 +457,115 @@ void describe('sdk', () => {
       assert.match(resultText(logs), /sdk-ok/);
       await assert.rejects(() => exec(session, 'bg_kill', { taskId: t.id }), /not running/);
     } finally {
+      await session.extensionRunner.emit({ type: 'session_shutdown', reason: 'quit' });
+      session.dispose();
+    }
+  });
+
+  void it('runs the structured bg_run_pi_attested tool and writes a complete flat attestation', async () => {
+    const { session, cwd } = await harness();
+    const oldPath = process.env['PATH'];
+    try {
+      await initCleanGit(cwd);
+      session.modelRegistry.registerProvider('openai-codex', {
+        name: 'OpenAI Codex Test OAuth',
+        baseUrl: 'https://example.invalid',
+        apiKey: 'PI_BG_TEST_KEY',
+        api: 'openai-codex-responses',
+        models: [
+          {
+            id: 'gpt-5.5',
+            name: 'GPT 5.5',
+            reasoning: false,
+            input: ['text'],
+            cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+            contextWindow: 100000,
+            maxTokens: 4096,
+          },
+        ],
+      });
+      const originalOAuth = session.modelRegistry.isUsingOAuth.bind(session.modelRegistry);
+      session.modelRegistry.isUsingOAuth = (model) =>
+        model.provider === 'openai-codex' && model.id === 'gpt-5.5' ? true : originalOAuth(model);
+      const bin = join(cwd, 'bin');
+      await mkdir(bin, { recursive: true });
+      const fakePi = join(bin, 'pi');
+      await writeFile(
+        fakePi,
+        `#!/usr/bin/env node
+const { writeFileSync } = require('node:fs');
+const args = process.argv.slice(2);
+if (args[0] !== '--mode' || args[1] !== 'json') process.exit(10);
+writeFileSync('report.md', 'sdk report\\n');
+const provider = args[args.indexOf('--provider') + 1];
+const model = args[args.indexOf('--model') + 1];
+const events = [
+  { type: 'session', version: 3, id: 'pi-session-sdk', timestamp: '2026-01-01T00:00:00.000Z', cwd: process.cwd() },
+  { type: 'agent_start' },
+  { type: 'message_end', message: { role: 'assistant', provider, model, usage: { input: 20, output: 10, cacheRead: 0, cacheWrite: 0, totalTokens: 30, cost: { total: 0.44 } }, content: [{ type: 'text', text: 'sdk attested done' }], stopReason: 'stop' } },
+  { type: 'agent_end', messages: [] },
+];
+for (const event of events) console.log(JSON.stringify(event));
+console.error('sdk stderr');
+`,
+        'utf8',
+      );
+      await chmod(fakePi, 0o755);
+      process.env['PATH'] = `${bin}:${oldPath ?? ''}`;
+
+      const result = await exec(session, 'bg_run_pi_attested', {
+        name: 'SDK Attested',
+        provider: 'openai-codex',
+        model: 'gpt-5.5',
+        prompt: 'produce sdk attestation',
+        reportPath: 'report.md',
+        extraPiArgs: ['--no-extensions'],
+      });
+      const task = await wait(session, taskFromResult(result).id, 100);
+      assert.equal(task.status, 'completed');
+      assert.match(task.id, /^b[0-9a-f]{32}$/);
+      assert.equal(task.model, 'openai-codex/gpt-5.5');
+      assert.deepEqual(task.tokenUsage, {
+        input: 20,
+        output: 10,
+        cacheRead: 0,
+        cacheWrite: 0,
+        totalTokens: 30,
+        costTotal: 0.44,
+      });
+      const attestationPath = join(cwd, task.outputPath.replace(/\.output$/, '.attestation.json'));
+      for (let attempt = 0; attempt < 100 && !existsSync(attestationPath); attempt++) {
+        await new Promise((resolve) => setTimeout(resolve, 25));
+      }
+      assert.ok(existsSync(attestationPath));
+      const attestation = parseJsonObject(
+        await readFile(attestationPath, 'utf8'),
+        'SDK attestation should be JSON',
+      );
+      const invocation = requiredJsonObject(attestation['invocation'], 'invocation');
+      assert.equal(invocation['pi_session_id'], 'pi-session-sdk');
+      assert.deepEqual(invocation['argv'], [
+        'pi',
+        '--mode',
+        'json',
+        '--provider',
+        'openai-codex',
+        '--model',
+        'gpt-5.5',
+        '--no-extensions',
+        'produce sdk attestation',
+      ]);
+      assert.equal(invocation['credential_kind'], 'oauth');
+      const artifacts = requiredJsonObject(attestation['artifacts'], 'artifacts');
+      const sourceHashes = requiredJsonObject(attestation['source_hashes'], 'source hashes');
+      assert.equal(
+        requiredJsonObject(artifacts['task_output'], 'task output')['sha256'],
+        sourceHashes['output_sha256'],
+      );
+      assert.match(await readFile(join(cwd, task.outputPath), 'utf8'), /sdk attested done/);
+      assert.match(await readFile(join(cwd, task.outputPath.replace(/\.output$/, '.stderr')), 'utf8'), /sdk stderr/);
+    } finally {
+      restoreEnvValue('PATH', oldPath);
       await session.extensionRunner.emit({ type: 'session_shutdown', reason: 'quit' });
       session.dispose();
     }
@@ -602,10 +751,18 @@ void describe('sdk', () => {
       assert.match(resultText(status), /tokens=1\.3k/);
       assert.match(resultText(status), /tools=2 failed=1/);
       const metadataPath = join(cwd, t.outputPath.replace(/\.output$/, '.json'));
-      const metadata = parseJsonObject(
+      let metadata = parseJsonObject(
         await readFile(metadataPath, 'utf8'),
         'telemetry metadata should be an object',
       );
+      for (let attempt = 0; attempt < 40; attempt++) {
+        metadata = parseJsonObject(
+          await readFile(metadataPath, 'utf8'),
+          'telemetry metadata should be an object',
+        );
+        if (metadata['contextUsage'] !== undefined) break;
+        await new Promise((resolve) => setTimeout(resolve, 25));
+      }
       assert.deepEqual(metadata['contextUsage'], {
         tokens: 50_000,
         contextWindow: 200_000,
@@ -980,7 +1137,7 @@ console.log(JSON.stringify({ type: "message_end", message: secondMessage }));
       assert.equal(t.status, 'failed');
       assert.match(t.error ?? '', /ENOENT|no such file/i);
       const metadataPath = join(cwd, t.outputPath.replace(/\.output$/, '.json'));
-      const metadata = await readJsonEventually(metadataPath);
+      const metadata = await readJsonWithStatus(metadataPath, 'failed');
       assert.equal(metadata['status'], 'failed');
     } finally {
       restoreEnvValue('SHELL', previousShell);

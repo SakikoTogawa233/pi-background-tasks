@@ -2,7 +2,7 @@
 
 Claude-Code-like explicit background shell task manager for [Pi](https://pi.dev/).
 
-This package adds named, tracked background shell jobs with durable output files, bounded log reads, kill/timeout safety, task-owned context-window/token/tool-use/model telemetry, explicit Pi-agent telemetry wrapping for tasks marked as agents, a focused footer-dock task manager, `/tasks` fallback UI, and completion notifications that can wake the agent when LLM-launched work finishes.
+This package adds named, tracked background shell jobs with durable output files, bounded log reads, kill/timeout safety, task-owned context-window/token/tool-use/model telemetry, explicit Pi-agent telemetry wrapping for tasks marked as agents, a focused footer-dock task manager, `/tasks` fallback UI, and completion notifications that can wake the agent when LLM-launched work finishes. A terminal task status is published only after trailing wrapped-agent telemetry is consumed and final output plus terminal metadata have completed their durability writes.
 
 ## Install
 
@@ -89,11 +89,14 @@ The lookup runs at most once per session on `session_start`, is time-boxed, and 
 ## LLM tools
 
 - `bg_run` — start named long-running commands without blocking the conversation.
+- `bg_run_pi_attested` — opt-in structured direct-spawn Pi agent task that emits a strict local attestation sidecar after successful completion.
 - `bg_status` — inspect one task or all recent tasks.
 - `bg_logs` — read bounded task output.
 - `bg_kill` — stop a running task.
 
 `bg_run` requires a concise `name` for the footer dock, the shell `command`, and required `isAgent: boolean`. Set `isAgent: true` only when the background task launches an LLM/agent process (for example `pi -p ...` or `pi --mode json ...`); set `isAgent: false` for scripts, tests, dev servers, sleeps, and ordinary shell commands. It defaults to `triggerOnCompletion: true`, so completion notifications trigger a follow-up agent turn. Tasks marked with `isAgent: true` that launch print/json child Pi agents through the normal shell command name are telemetry-wrapped; set `PI_BG_DISABLE_PI_TELEMETRY=1` only when raw Pi stdout is required. The task snapshot and metadata expose `isAgent`, `contextUsage` (latest reported child assistant turn), cumulative `tokenUsage` (`input`, `output`, `cacheRead`, `cacheWrite`, `totalTokens`), cumulative `toolUsage` (`total`, `failed`, `byName`), and `model` (the LLM identifier reported by the child assistant turns, preferring the fully-qualified `provider/model` form) when reported by the child task. User-launched `/bg` jobs are display-only by default unless `--agent` is provided; UI reruns preserve the original task's `isAgent` value.
+
+`bg_run_pi_attested` is separate from `bg_run` and never accepts a shell command. It takes structured `provider`, `model`, `prompt`, optional literal extra Pi argv, and a relative `reportPath`; launches exactly one direct `pi --mode json` child; records raw Pi JSON events, separate stderr, exact argv/cwd, prompt/report hashes, observed Pi session/provider/model, and `ModelRegistry.isUsingOAuth` credential class. It forbids direct API-key/auth-file launch arguments and emits no partial attestation: failures remain ordinary failed tasks with no sidecar.
 
 ## Runtime files
 
@@ -104,11 +107,21 @@ Task output and metadata are written under the current project:
 .pi/tasks/<session-id>-<pid>/<task-id>.json
 ```
 
-These are runtime artifacts and should remain gitignored.
+For attested Pi tasks only, the task id is `b` plus 32 random hex characters (128 bits) and additional flat siblings are written in the same directory:
+
+```text
+.pi/tasks/<session-id>-<pid>/<task-id>.pi-events.jsonl
+.pi/tasks/<session-id>-<pid>/<task-id>.stderr
+.pi/tasks/<session-id>-<pid>/<task-id>.pi-telemetry-wrapper.cjs
+.pi/tasks/<session-id>-<pid>/<task-id>.attestation.json
+```
+
+The attestation sidecar uses `schema_version: "phase2.pi_task_attestation.v1"` and is written last, after metadata/output/events/stderr/wrapper/report bytes are closed and hashed. An attested task does not become externally visible as `completed` until final metadata and the sidecar are durable. These are local runtime artifacts and should remain gitignored.
 
 ## Safety model
 
 - Commands are spawned and tracked with `child_process.spawn`; the package does not rely on shell `&`.
+- Attested Pi tasks are a local, unsigned, same-user-writable attestation path for downstream gates. They bind source bytes and observed Pi/ModelRegistry facts; they are not cryptographic proof against a malicious local user, compromised Pi binary, or compromised provider.
 - stdout/stderr are captured to task output files.
 - Model-visible logs are bounded and point to full output files.
 - POSIX process groups are used for process-tree kill where possible, with child-process fallback.
