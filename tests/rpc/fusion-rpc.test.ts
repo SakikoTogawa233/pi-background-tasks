@@ -6,7 +6,7 @@ import { existsSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { parseJsonText } from '../../src/core/common.js';
-import { installFusionFakePi, resolveRealPiCli } from '../../src/testing/fusion-fake-pi.js';
+import { installFusionFakePi, resolveRealPiCli } from '../helpers/fusion-fake-pi.js';
 import { isolatedTestEnv } from '../../src/testing/normalize.js';
 
 const backgroundTasksExtensionPath = resolve('extensions/background-tasks.ts');

@@ -1,12 +1,13 @@
 # Publishing pi-background-tasks
 
-This package is ready for both npm publishing and standalone git publishing. Version 0.7.0 adds Fusion public surfaces (`/fusion`, `/fusion-models`, `fusion_brainstorm`) in addition to the background-task surfaces.
+Release checklist for npm publishing and standalone git publishing. Version 0.7.0 adds Fusion public surfaces (`/fusion`, `/fusion-models`, `fusion_brainstorm`) in addition to the background-task surfaces. Do not advertise the GitHub install target until the standalone repository has the exact release commit and tag.
 
 ## Preconditions
 
 - npm account with publish rights for `pi-background-tasks`.
 - Standalone GitHub repository, expected: `github.com/ismailsaleekh/pi-background-tasks`.
 - Clean worktree.
+- Final repair commit present in the standalone package repository; do not push from automated repair runs unless the operator explicitly requests it.
 
 ## Verify
 
@@ -33,7 +34,7 @@ npm publish --access public
 Pi install smoke after publish:
 
 ```bash
-pi -e npm:pi-background-tasks@0.7.0 --offline --no-tools --no-session -p "/jobs"
+PI_CODING_AGENT_DIR=$(mktemp -d) pi -e npm:pi-background-tasks@0.7.0 --offline --no-tools --no-session -p "/jobs"
 pi install npm:pi-background-tasks@0.7.0
 ```
 
@@ -43,20 +44,18 @@ Because Pi git package installs treat the repository root as the package root, d
 
 ```bash
 cd packages/pi-background-tasks
-git init
-git add .
-git commit -m "Release pi-background-tasks"
-git branch -M main
-git remote add origin git@github.com:ismailsaleekh/pi-background-tasks.git
-git push -u origin main
+git status --short --branch
+git log --oneline -3
+git remote -v
+git push origin main
 git tag v0.7.0
 git push origin v0.7.0
 ```
 
-Pi install smoke after git tag:
+Pi install smoke after git tag, using an isolated Pi agent directory so no local checkout or user `~/.pi` state is involved:
 
 ```bash
-pi -e git:github.com/ismailsaleekh/pi-background-tasks@v0.7.0 --offline --no-tools --no-session -p "/jobs"
+PI_CODING_AGENT_DIR=$(mktemp -d) pi -e git:github.com/ismailsaleekh/pi-background-tasks@v0.7.0 --offline --no-tools --no-session -p "/jobs"
 pi install git:github.com/ismailsaleekh/pi-background-tasks@v0.7.0
 ```
 

@@ -1,6 +1,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  boundedEvaluationErrors,
   parseFusionEvaluation,
   validateFusionEvaluation,
 } from '../../src/core/fusion/evaluation.js';
@@ -90,7 +91,7 @@ void describe('fusion evaluation schema', () => {
     if (!blankResult.ok) assert.match(blankResult.errors.join('\n'), /non-blank/);
   });
 
-  void it('requires conflict positions from at least two distinct candidates', () => {
+  void it('requires conflict positions from distinct candidates without duplicate IDs', () => {
     const invalid = validEvaluation();
     invalid['conflicts'] = [
       {
@@ -104,7 +105,31 @@ void describe('fusion evaluation schema', () => {
     ];
     const result = validateFusionEvaluation(invalid);
     assert.equal(result.ok, false);
-    if (!result.ok) assert.match(result.errors.join('\n'), /two distinct/);
+    if (!result.ok) assert.match(result.errors.join('\n'), /two distinct|unique/);
+
+    const duplicateWithTwoIds = validEvaluation();
+    duplicateWithTwoIds['conflicts'] = [
+      {
+        topic: 'scope',
+        positions: [
+          { candidate_id: 'A', position: 'small' },
+          { candidate_id: 'A', position: 'duplicate small' },
+          { candidate_id: 'B', position: 'broad' },
+        ],
+        resolution: 'compare real disagreement',
+      },
+    ];
+    const duplicateResult = validateFusionEvaluation(duplicateWithTwoIds);
+    assert.equal(duplicateResult.ok, false);
+    if (!duplicateResult.ok) assert.match(duplicateResult.errors.join('\n'), /unique/);
+  });
+
+  void it('bounds validation errors for repair prompts and user-facing failures', () => {
+    const errors = Array.from({ length: 200 }, (_, index) => `error-${String(index)}-${'x'.repeat(800)}`);
+    const bounded = boundedEvaluationErrors(errors);
+    assert.ok(bounded.length < errors.length);
+    assert.ok(bounded.join('').length < 4300);
+    assert.match(bounded.at(-1) ?? '', /omitted/);
   });
 
   void it('throws a typed error for invalid parsed content', () => {

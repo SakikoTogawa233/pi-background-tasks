@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import type { Api, Model } from '@earendil-works/pi-ai';
@@ -13,6 +13,7 @@ import {
   saveFusionModelConfig,
   type FusionModelRegistry,
 } from '../../src/core/fusion/config.js';
+import { parseJsonText } from '../../src/core/common.js';
 import { FUSION_MODEL_CONFIG_SCHEMA_VERSION, FusionError } from '../../src/core/fusion/types.js';
 
 function model(provider: string, id: string, contextWindow = 1000): Model<Api> {
@@ -152,6 +153,38 @@ void describe('fusion model config', () => {
         assert.equal(error.code, 'config_conflict');
         return true;
       });
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  void it('serializes concurrent saves so one stale writer fails instead of replacing the other', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'pi-fusion-config-race-'));
+    try {
+      const path = join(dir, 'fusion-models.json');
+      const loaded = await loadFusionModelConfig(path);
+      const first = parseFusionModelConfig({
+        ...defaultFusionModelConfig(),
+        candidates: ['openai-codex/one', CURRENT_MODEL_SELECTION, CURRENT_MODEL_SELECTION],
+      });
+      const second = parseFusionModelConfig({
+        ...defaultFusionModelConfig(),
+        candidates: ['openai-codex/two', CURRENT_MODEL_SELECTION, CURRENT_MODEL_SELECTION],
+      });
+      const results = await Promise.allSettled([
+        saveFusionModelConfig(path, first, loaded.revision),
+        saveFusionModelConfig(path, second, loaded.revision),
+      ]);
+      assert.equal(results.filter((result) => result.status === 'fulfilled').length, 1);
+      const rejected = results.find((result) => result.status === 'rejected');
+      assert.ok(rejected);
+      if (rejected.status === 'rejected') {
+        assert.ok(rejected.reason instanceof FusionError);
+        assert.equal(rejected.reason.code, 'config_conflict');
+      }
+      const saved = parseFusionModelConfig(parseJsonText(await readFile(path, 'utf8')));
+      assert.ok(saved.candidates[0] === 'openai-codex/one' || saved.candidates[0] === 'openai-codex/two');
+      assert.deepEqual((await readdir(dir)).filter((entry) => entry.endsWith('.lock')), []);
     } finally {
       await rm(dir, { recursive: true, force: true });
     }

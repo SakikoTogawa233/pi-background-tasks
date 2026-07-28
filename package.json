@@ -35,8 +35,7 @@
     "TESTING.md",
     "TEST_PLAN.md",
     "PUBLISHING.md",
-    "LICENSE",
-    "scripts/"
+    "LICENSE"
   ],
   "scripts": {
     "typecheck": "tsc --noEmit",
@@ -50,7 +49,7 @@
     "test:pty": "tsx --test tests/pty/**/*.test.ts",
     "test:agent-loop": "tsx --test --test-concurrency=1 tests/scripted-provider/**/*.test.ts",
     "test:full": "npm run test && npm run test:pty && npm run test:agent-loop",
-    "smoke": "pi --no-extensions -e ./extensions/background-tasks.ts --offline --no-tools --no-session -p \"/jobs\"",
+    "smoke": "tsx scripts/smoke.ts",
     "pack:dry-run": "npm pack --dry-run",
     "lint": "cd ../.. && npm run quality:ts:lint",
     "format:check": "cd ../.. && npm run quality:ts:format",

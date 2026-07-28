@@ -63,7 +63,7 @@ const systemPrompt = argValue('--system-prompt') || '';
 let stdin = '';
 try { stdin = readFileSync(0, 'utf8'); } catch (error) { stdin = ''; }
 let stage = 'candidate';
-if (systemPrompt.includes('repair one invalid')) stage = 'evaluation-repair';
+if (systemPrompt.includes('invalid blind-evaluation JSON response')) stage = 'evaluation-repair';
 else if (systemPrompt.includes('strict blind evaluator')) stage = 'evaluation';
 else if (systemPrompt.includes('final synthesis process')) stage = 'merge';
 appendFileSync(logPath, JSON.stringify({ stage, provider, model, args, stdin, systemPrompt, cwd: process.cwd(), env: { PI_SESSION_ID: process.env.PI_SESSION_ID || null, PI_PROVIDER: process.env.PI_PROVIDER || null, PI_MODEL: process.env.PI_MODEL || null, PI_SKIP_VERSION_CHECK: process.env.PI_SKIP_VERSION_CHECK || null } }) + '\\n');

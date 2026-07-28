@@ -1,10 +1,11 @@
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
-import { mkdir, mkdtemp, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { parseJsonText } from '../src/core/common.js';
 import { isolatedTestEnv } from '../src/testing/normalize.js';
+import { installFusionFakePi } from '../tests/helpers/fusion-fake-pi.js';
 
 const requiredVersions = ['0.75.5', '0.81.1', '0.82.1'] as const;
 const root = new URL('../', import.meta.url).pathname;
@@ -32,6 +33,47 @@ function run(command: string, args: readonly string[], cwd: string, env: NodeJS.
     throw new Error(`${command} ${args.join(' ')} failed in ${cwd}\n${result.stdout}\n${result.stderr}`);
   }
   return result.stdout;
+}
+
+async function runRpcPromptUntil(
+  command: string,
+  args: readonly string[],
+  cwd: string,
+  env: NodeJS.ProcessEnv,
+  prompt: string,
+  expected: RegExp,
+): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const child = spawn(command, [...args], { cwd, env, stdio: ['pipe', 'pipe', 'pipe'] });
+    let stdout = '';
+    let stderr = '';
+    let settled = false;
+    const finish = (error: Error | undefined) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      child.kill('SIGTERM');
+      if (error === undefined) resolve(stdout);
+      else reject(error);
+    };
+    const timer = setTimeout(() => {
+      finish(new Error(`RPC prompt timed out\n${stdout}\n${stderr}`));
+    }, 20_000);
+    child.stdout.on('data', (chunk: Buffer) => {
+      stdout += chunk.toString('utf8');
+      if (expected.test(stdout)) finish(undefined);
+    });
+    child.stderr.on('data', (chunk: Buffer) => {
+      stderr += chunk.toString('utf8');
+    });
+    child.on('error', (error) => {
+      finish(error);
+    });
+    child.on('close', (code) => {
+      if (!settled && code !== 0) finish(new Error(`RPC prompt exited ${code === null ? 'null' : String(code)}\n${stdout}\n${stderr}`));
+    });
+    child.stdin.end(`${JSON.stringify({ type: 'prompt', message: prompt, id: 'compat-rpc-prompt' })}\n`);
+  });
 }
 
 function parsePack(text: string): PackFileEntry {
@@ -66,6 +108,17 @@ async function smokeVersion(version: string, tarballPath: string): Promise<void>
     if (!existsSync(extension)) throw new Error(`package extension missing for ${version}: ${extension}`);
     const agentDir = join(temp, 'agent');
     await mkdir(agentDir, { recursive: true });
+    const fake = await installFusionFakePi(temp, { mergedText: `compat fusion ${version}` });
+    const scriptedProviderPath = join(root, 'tests', 'scripted-provider', 'scripted-provider-extension.ts');
+    const env: NodeJS.ProcessEnv = {
+      ...process.env,
+      ...isolatedTestEnv,
+      PATH: `${fake.binDir}:${process.env['PATH'] ?? ''}`,
+      PI_CODING_AGENT_DIR: agentDir,
+      PI_CODING_AGENT_SESSION_DIR: join(temp, 'sessions'),
+      PI_BG_SCRIPTED_API_KEY: 'scripted-api-key',
+      PI_BG_SCRIPTED_SCENARIO: 'display-only-bg',
+    };
     run(
       process.execPath,
       [
@@ -80,12 +133,51 @@ async function smokeVersion(version: string, tarballPath: string): Promise<void>
         '/jobs',
       ],
       temp,
-      {
-        ...process.env,
-        ...isolatedTestEnv,
-        PI_CODING_AGENT_DIR: agentDir,
-        PI_CODING_AGENT_SESSION_DIR: join(temp, 'sessions'),
-      },
+      env,
+    );
+    run(
+      process.execPath,
+      [
+        cli,
+        '--no-extensions',
+        '-e',
+        scriptedProviderPath,
+        '-e',
+        extension,
+        '--offline',
+        '--no-tools',
+        '--no-session',
+        '--model',
+        'pi-bg-scripted/scripted-model',
+        '-p',
+        '/fusion compatibility prompt',
+      ],
+      temp,
+      env,
+    );
+    const childCalls = await readFile(fake.logPath, 'utf8');
+    const childCallCount = childCalls.trim().length === 0 ? 0 : childCalls.trim().split('\n').length;
+    if (childCallCount !== 5) throw new Error(`Fusion compatibility expected five child calls for ${version}, saw ${String(childCallCount)}`);
+    await runRpcPromptUntil(
+      process.execPath,
+      [
+        cli,
+        '--mode',
+        'rpc',
+        '--no-extensions',
+        '-e',
+        extension,
+        '--offline',
+        '--no-tools',
+        '--no-session',
+        '--no-skills',
+        '--no-prompt-templates',
+        '--no-context-files',
+      ],
+      temp,
+      env,
+      '/fusion-models',
+      /requires Pi TUI mode/,
     );
   } finally {
     await rm(temp, { recursive: true, force: true });

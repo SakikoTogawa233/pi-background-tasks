@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { existsSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, rmSync } from 'node:fs';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { spawnSync } from 'node:child_process';
 import { join } from 'node:path';
@@ -92,6 +92,36 @@ async function text(file: string): Promise<string> {
   return readFile(new URL(file, root), 'utf8');
 }
 
+function makeIsolatedEnvRoot(prefix: string): string {
+  const rootDir = mkdtempSync(join(tmpdir(), prefix));
+  mkdirSync(join(rootDir, 'home'), { recursive: true });
+  mkdirSync(join(rootDir, 'cache'), { recursive: true });
+  mkdirSync(join(rootDir, 'config'), { recursive: true });
+  return rootDir;
+}
+
+function removeIsolatedEnvRoot(rootDir: string): void {
+  rmSync(rootDir, { recursive: true, force: true });
+}
+
+function isolatedNpmEnv(rootDir: string): NodeJS.ProcessEnv {
+  return {
+    PATH: process.env['PATH'] ?? '',
+    HOME: join(rootDir, 'home'),
+    USERPROFILE: join(rootDir, 'home'),
+    XDG_CONFIG_HOME: join(rootDir, 'config'),
+    NPM_CONFIG_CACHE: join(rootDir, 'cache'),
+    NPM_CONFIG_USERCONFIG: join(rootDir, 'npmrc'),
+    NPM_CONFIG_REGISTRY: 'http://127.0.0.1.invalid/',
+    npm_config_cache: join(rootDir, 'cache'),
+    npm_config_userconfig: join(rootDir, 'npmrc'),
+    PI_OFFLINE: '1',
+    PI_SKIP_VERSION_CHECK: '1',
+    PI_TELEMETRY: '0',
+    CI: '1',
+  };
+}
+
 function parsePackEntries(stdout: string): NpmPackEntry[] {
   const parsed = parseJsonValue(stdout);
   assert.ok(Array.isArray(parsed), 'npm pack output must be an array');
@@ -124,7 +154,7 @@ void describe('package', () => {
     assert.match(p.scripts['test:compat'] ?? '', /test-compat/);
     assert.ok(p.files.includes('extensions/'));
     assert.ok(p.files.includes('src/'));
-    assert.ok(p.files.includes('scripts/'));
+    assert.ok(!p.files.includes('scripts/'));
     assert.ok(p.peerDependencies['@earendil-works/pi-coding-agent']);
     assert.ok(p.peerDependencies['@earendil-works/pi-tui']);
     assert.ok(p.peerDependencies['typebox']);
@@ -208,6 +238,7 @@ void describe('package', () => {
     for (const file of fusionFiles) {
       const source = await text(file);
       assert.doesNotMatch(source, /@earendil-works\/pi-ai\/compat/);
+      assert.doesNotMatch(source, /import\s*\{[^}]*\b(?:complete|stream|streamSimple)\b[^}]*}\s*from\s*['"]@earendil-works\/pi-ai/);
       assert.doesNotMatch(source, /\.pi\/extensions/);
       assert.doesNotMatch(source, /ai-pipeline/);
     }
@@ -223,11 +254,13 @@ void describe('package', () => {
   });
 
   void it('packs exactly the runtime/docs payload and excludes tests/artifacts', () => {
+    const envRoot = makeIsolatedEnvRoot('pi-bg-pack-env-');
     const r = spawnSync('npm', ['pack', '--dry-run', '--json'], {
       cwd: root,
       encoding: 'utf8',
-      env: { ...process.env, NPM_CONFIG_CACHE: '/tmp/pi-npm-cache' },
+      env: isolatedNpmEnv(envRoot),
     });
+    removeIsolatedEnvRoot(envRoot);
     assert.equal(r.status, 0, r.stderr);
     const firstEntry = parsePackEntries(r.stdout)[0];
     assert.ok(firstEntry, 'npm pack must return one entry');
@@ -251,8 +284,6 @@ void describe('package', () => {
       'src/core/fusion/artifacts.ts',
       'src/core/fusion/orchestrator.ts',
       'src/testing/normalize.ts',
-      'src/testing/fusion-fake-pi.ts',
-      'scripts/test-compat.ts',
       'README.md',
       'TESTING.md',
       'TEST_PLAN.md',
@@ -262,6 +293,7 @@ void describe('package', () => {
     ])
       assert.ok(files.includes(f), f);
     assert.ok(!files.some((f) => f.startsWith('tests/')), 'tests must not ship');
+    assert.ok(!files.some((f) => f.startsWith('scripts/')), 'release-only scripts must not ship');
     assert.ok(!files.some((f) => f.includes('node_modules')), 'node_modules must not ship');
     assert.ok(!files.some((f) => f.endsWith('.tgz')), 'nested tarballs must not ship');
   });
@@ -269,11 +301,13 @@ void describe('package', () => {
   void it('local tarball installs with the expected package files', async () => {
     const temp = await mkdtemp(join(tmpdir(), 'pi-bg-pack-'));
     let tarball: URL | undefined;
+    const packEnvRoot = makeIsolatedEnvRoot('pi-bg-pack-env-');
+    const installEnvRoot = makeIsolatedEnvRoot('pi-bg-install-env-');
     try {
       const pack = spawnSync('npm', ['pack', '--json'], {
         cwd: root,
         encoding: 'utf8',
-        env: { ...process.env, NPM_CONFIG_CACHE: '/tmp/pi-npm-cache' },
+        env: isolatedNpmEnv(packEnvRoot),
       });
       assert.equal(pack.status, 0, pack.stderr);
       const firstEntry = parsePackEntries(pack.stdout)[0];
@@ -283,16 +317,16 @@ void describe('package', () => {
       const init = spawnSync('npm', ['init', '-y'], {
         cwd: temp,
         encoding: 'utf8',
-        env: { ...process.env, NPM_CONFIG_CACHE: '/tmp/pi-npm-cache' },
+        env: isolatedNpmEnv(installEnvRoot),
       });
       assert.equal(init.status, 0, init.stderr);
       const install = spawnSync(
         'npm',
-        ['install', '--ignore-scripts', '--no-audit', '--no-fund', tarballPath],
+        ['install', '--legacy-peer-deps', '--offline', '--ignore-scripts', '--no-audit', '--no-fund', tarballPath],
         {
           cwd: temp,
           encoding: 'utf8',
-          env: { ...process.env, NPM_CONFIG_CACHE: '/tmp/pi-npm-cache' },
+          env: isolatedNpmEnv(installEnvRoot),
         },
       );
       assert.equal(install.status, 0, install.stderr);
@@ -313,6 +347,8 @@ void describe('package', () => {
       }
     } finally {
       await rm(temp, { recursive: true, force: true });
+      removeIsolatedEnvRoot(packEnvRoot);
+      removeIsolatedEnvRoot(installEnvRoot);
       if (tarball) await rm(tarball, { force: true });
     }
   });

@@ -1,7 +1,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { existsSync } from 'node:fs';
-import { mkdtemp, readFile, rm, stat } from 'node:fs/promises';
+import { mkdtemp, readFile, readdir, rm, stat } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { parseJsonText } from '../../src/core/common.js';
@@ -94,6 +94,12 @@ void describe('fusion artifacts', () => {
       const firstAttempt = attempts[0];
       assert.ok(typeof firstAttempt === 'object' && firstAttempt !== null);
       assert.equal(field(firstAttempt, 'response_path'), 'candidate-1.attempt-1.response.md');
+      assert.equal(field(firstAttempt, 'provider'), 'p');
+      assert.equal(field(firstAttempt, 'qualifiedId'), 'p/a');
+      const usageRecord = field(firstAttempt, 'usage');
+      assert.ok(typeof usageRecord === 'object' && usageRecord !== null);
+      assert.equal(field(usageRecord, 'totalTokens'), 3);
+      assert.deepEqual((await readdir(store.artifactDirAbs)).filter((entry) => entry.endsWith('.tmp')), []);
       const artifacts = field(manifest, 'artifacts');
       assert.ok(typeof artifacts === 'object' && artifacts !== null);
       assert.ok(Reflect.has(artifacts, 'canonical-input.json'));
@@ -150,6 +156,10 @@ void describe('fusion artifacts', () => {
         error: 'boom',
         status: 'failed',
         responseKind: 'md',
+        provider: 'p',
+        model: 'b',
+        qualifiedId: 'p/b',
+        usage: { input: 2, output: 3, cacheRead: 0, cacheWrite: 0, totalTokens: 5 },
       });
       await store.writeError('failed', 'boom');
       assert.ok(existsSync(join(store.artifactDirAbs, 'error.json')));
@@ -161,6 +171,10 @@ void describe('fusion artifacts', () => {
       const firstAttempt = attempts[0];
       assert.ok(typeof firstAttempt === 'object' && firstAttempt !== null);
       assert.equal(field(firstAttempt, 'status'), 'failed');
+      assert.equal(field(firstAttempt, 'qualifiedId'), 'p/b');
+      const failedUsage = field(firstAttempt, 'usage');
+      assert.ok(typeof failedUsage === 'object' && failedUsage !== null);
+      assert.equal(field(failedUsage, 'totalTokens'), 5);
     } finally {
       await rm(root, { recursive: true, force: true });
     }

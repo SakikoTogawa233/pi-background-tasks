@@ -247,6 +247,39 @@ async function fsyncDirectory(path: string): Promise<void> {
   }
 }
 
+async function delay(ms: number): Promise<void> {
+  await new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function withConfigLock<T>(path: string, fn: () => Promise<T>): Promise<T> {
+  const dir = dirname(path);
+  const lockPath = join(dir, `.${basename(path)}.lock`);
+  const started = Date.now();
+  let handle: Awaited<ReturnType<typeof open>> | undefined;
+  while (handle === undefined) {
+    try {
+      handle = await open(lockPath, 'wx', 0o600);
+    } catch (error) {
+      if (!errorHasCode(error, 'EEXIST')) throw error;
+      if (Date.now() - started > 10_000) {
+        throw new FusionError(`timed out waiting for fusion model config lock: ${path}`, {
+          code: 'config_conflict',
+          childCreated: false,
+        });
+      }
+      await delay(25);
+    }
+  }
+  try {
+    await handle.writeFile(`${String(process.pid)}\n`);
+    await handle.sync();
+    return await fn();
+  } finally {
+    await handle.close();
+    await rm(lockPath, { force: true });
+  }
+}
+
 function prettyConfig(config: FusionModelConfigV1): string {
   const sorted = {
     schema_version: config.schema_version,
@@ -269,30 +302,30 @@ export async function saveFusionModelConfig(
   expectedRevision: FusionModelConfigRevision,
 ): Promise<FusionModelConfigRevision> {
   parseFusionModelConfig(config);
-  const current = await revisionForPath(path);
-  if (!revisionsMatch(expectedRevision, current)) {
-    throw new FusionError(`fusion model config changed on disk: ${path}`, {
-      code: 'config_conflict',
-      childCreated: false,
-    });
-  }
   const dir = dirname(path);
   await mkdir(dir, { recursive: true, mode: 0o700 });
-  await chmod(dir, 0o700).catch((error: unknown) => {
-    if (!errorHasCode(error, 'ENOENT')) throw error;
+  await chmod(dir, 0o700);
+  return withConfigLock(path, async () => {
+    const current = await revisionForPath(path);
+    if (!revisionsMatch(expectedRevision, current)) {
+      throw new FusionError(`fusion model config changed on disk: ${path}`, {
+        code: 'config_conflict',
+        childCreated: false,
+      });
+    }
+    const tmp = join(dir, `.${basename(path)}.${String(process.pid)}.${randomBytes(6).toString('hex')}.tmp`);
+    const text = prettyConfig(config);
+    try {
+      await writeFile(tmp, text, { encoding: 'utf8', mode: 0o600 });
+      await fsyncFile(tmp);
+      renameSync(tmp, path);
+      await fsyncDirectory(dir);
+    } catch (error) {
+      await rm(tmp, { force: true });
+      throw error;
+    }
+    return revisionForPath(path);
   });
-  const tmp = join(dir, `.${basename(path)}.${String(process.pid)}.${randomBytes(6).toString('hex')}.tmp`);
-  const text = prettyConfig(config);
-  try {
-    await writeFile(tmp, text, { encoding: 'utf8', mode: 0o600 });
-    await fsyncFile(tmp);
-    renameSync(tmp, path);
-    await fsyncDirectory(dir);
-  } catch (error) {
-    await rm(tmp, { force: true }).catch(() => undefined);
-    throw error;
-  }
-  return revisionForPath(path);
 }
 
 export function describeFusionModelConfig(config: FusionModelConfigV1): string {

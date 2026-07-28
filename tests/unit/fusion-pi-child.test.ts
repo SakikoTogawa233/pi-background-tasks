@@ -249,6 +249,39 @@ void describe('fusion Pi child runner', () => {
     assert.equal(harness.records.length, 0);
   });
 
+  void it('catches an abort that fires during spawn before listener attachment', async () => {
+    const controller = new AbortController();
+    const child = new FakeChild(333);
+    const records: SpawnRecord[] = [];
+    const run = runPiChild({
+      stage: 'candidate',
+      slot: 1,
+      attempt: 1,
+      cwd: '/tmp/project',
+      model: resolvedModel(),
+      systemPrompt: 'system',
+      userPrompt: 'prompt',
+      spawn: (command, args, options) => {
+        records.push({ command, args, options, child });
+        controller.abort();
+        return child;
+      },
+      signal: controller.signal,
+      platform: 'win32',
+      killGraceMs: 20,
+      sigkillWaitMs: 20,
+    });
+    await tick();
+    assert.equal(records.length, 1);
+    assert.deepEqual(child.killCalls, ['SIGTERM']);
+    child.close(null, 'SIGTERM');
+    await assert.rejects(run, (error: unknown) => {
+      assert.ok(error instanceof FusionChildRunError);
+      assert.equal(error.code, 'child_cancelled');
+      return true;
+    });
+  });
+
   void it('rejects non-stop final reasons, model mismatch, and missing newline', () => {
     const parser = new FusionPiJsonEventParser('p', 'm');
     parser.push(Buffer.from('{"type":"session","id":"s","cwd":"/tmp"}\n{"type":"message_end","message":{"role":"assistant","provider":"p","model":"m","content":[{"type":"text","text":"x"}],"stopReason":"toolUse"}}\n'));
@@ -288,6 +321,89 @@ void describe('fusion Pi child runner', () => {
       return true;
     });
     assert.deepEqual(child.killCalls, ['SIGTERM']);
+  });
+
+  void it('surfaces cleanup failures even when child kill fallback succeeds', async () => {
+    const child = new FakeChild(321);
+    const harness = makeSpawn(child);
+    const run = runPiChild({
+      stage: 'candidate',
+      slot: 2,
+      attempt: 1,
+      cwd: '/tmp/project',
+      model: resolvedModel(),
+      systemPrompt: 'system',
+      userPrompt: 'prompt',
+      spawn: harness.spawn,
+      platform: 'linux',
+      killProcess: () => false,
+      killGraceMs: 20,
+      sigkillWaitMs: 20,
+    });
+    await tick();
+    child.stdout.emitData('{broken}\n');
+    child.close(null, 'SIGTERM');
+    await assert.rejects(run, (error: unknown) => {
+      assert.ok(error instanceof FusionChildRunError);
+      assert.equal(error.code, 'child_event_invalid');
+      assert.match(error.message, /process cleanup issues/);
+      assert.match(error.message, /process group kill returned false/);
+      return true;
+    });
+  });
+
+  void it('fails instead of reporting completion when a killed child never closes', async () => {
+    const child = new FakeChild(654);
+    const harness = makeSpawn(child);
+    const run = runPiChild({
+      stage: 'merge',
+      attempt: 1,
+      cwd: '/tmp/project',
+      model: resolvedModel(),
+      systemPrompt: 'system',
+      userPrompt: 'prompt',
+      spawn: harness.spawn,
+      platform: 'win32',
+      stdoutLimitBytes: 4,
+      killGraceMs: 10,
+      sigkillWaitMs: 10,
+    });
+    await tick();
+    child.stdout.emitData('abcdef');
+    await assert.rejects(run, (error: unknown) => {
+      assert.ok(error instanceof FusionChildRunError);
+      assert.equal(error.code, 'child_output_cap');
+      assert.match(error.message, /did not emit close/);
+      return true;
+    });
+    assert.deepEqual(child.killCalls, ['SIGTERM', 'SIGKILL']);
+  });
+
+  void it('carries observed usage on child exit failures', async () => {
+    const child = new FakeChild(111);
+    const harness = makeSpawn(child);
+    const run = runPiChild({
+      stage: 'evaluation',
+      attempt: 1,
+      cwd: '/tmp/project',
+      model: resolvedModel(),
+      systemPrompt: 'system',
+      userPrompt: 'prompt',
+      spawn: harness.spawn,
+      platform: 'win32',
+      killGraceMs: 20,
+      sigkillWaitMs: 20,
+    });
+    await tick();
+    child.stdout.emitData(piEvents());
+    child.close(42, null);
+    await assert.rejects(run, (error: unknown) => {
+      assert.ok(error instanceof FusionChildRunError);
+      assert.equal(error.code, 'child_exit_failed');
+      assert.equal(error.usage.totalTokens, 21);
+      assert.equal(error.qualifiedId, 'openai-codex/gpt-5.5');
+      return true;
+    });
   });
 
   void it('rejects output caps and keeps captured prefixes', async () => {

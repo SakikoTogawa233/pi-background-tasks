@@ -147,7 +147,9 @@ void describe('fusion orchestrator', () => {
       assert.equal(calls[3]?.stage, 'evaluation');
       assert.equal(calls[4]?.attempt, 2);
       assert.equal(calls[5]?.stage, 'merge');
-      assert.equal(calls.filter((call) => call.stage === 'candidate')[0]?.userPrompt, calls.filter((call) => call.stage === 'candidate')[1]?.userPrompt);
+      const candidatePrompts = calls.filter((call) => call.stage === 'candidate').map((call) => call.userPrompt);
+      assert.equal(candidatePrompts[0], candidatePrompts[1]);
+      assert.equal(candidatePrompts[1], candidatePrompts[2]);
       const manifestPath = join(root, result.details.artifact_dir, 'manifest.json');
       const manifest = parseObject(await readFile(manifestPath, 'utf8'));
       assert.equal(field(manifest, 'state'), 'completed');
@@ -160,6 +162,37 @@ void describe('fusion orchestrator', () => {
       assert.equal(field(map, 'B'), 3);
       assert.equal(field(map, 'C'), 1);
       assert.equal(await readFile(join(root, result.details.artifact_dir, 'merged.md'), 'utf8'), 'merged final');
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  void it('does not launch candidates when the workflow signal is already aborted', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'pi-fusion-orchestrator-abort-'));
+    try {
+      const calls: RunPiChildOptions[] = [];
+      const controller = new AbortController();
+      controller.abort();
+      const orchestrator = new FusionOrchestrator({
+        childRunner: async (options) => {
+          calls.push(options);
+          return childResult(options, 'unexpected');
+        },
+      });
+      const canonical = canonicalInput();
+      await assert.rejects(
+        orchestrator.run({
+          source: 'tool',
+          cwd: root,
+          canonicalInput: canonical,
+          canonicalInputSerialized: JSON.stringify(canonical),
+          config: defaultFusionModelConfig(),
+          models: models(),
+          signal: controller.signal,
+        }),
+        /cancelled before launch/,
+      );
+      assert.equal(calls.length, 0);
     } finally {
       await rm(root, { recursive: true, force: true });
     }
@@ -210,6 +243,52 @@ void describe('fusion orchestrator', () => {
       );
       assert.equal(calls.filter((call) => call.stage === 'candidate').length, 3);
       assert.equal(calls.some((call) => call.stage === 'evaluation' || call.stage === 'merge'), false);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  void it('persists usage and bounded schema errors when both evaluator attempts fail', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'pi-fusion-orchestrator-eval-fail-'));
+    try {
+      const runner: FusionChildRunner = async (options) => {
+        if (options.stage === 'candidate') return childResult(options, `candidate-${String(options.slot)}`);
+        if (options.stage === 'evaluation') return childResult(options, JSON.stringify({ schema_version: FUSION_EVALUATION_SCHEMA_VERSION, bad: true }));
+        return childResult(options, 'unexpected merge');
+      };
+      const orchestrator = new FusionOrchestrator({ childRunner: runner });
+      const canonical = canonicalInput();
+      let thrown: unknown;
+      try {
+        await orchestrator.run({
+          source: 'command',
+          cwd: root,
+          canonicalInput: canonical,
+          canonicalInputSerialized: JSON.stringify(canonical),
+          config: defaultFusionModelConfig(),
+          models: models(),
+        });
+      } catch (error) {
+        thrown = error;
+      }
+      assert.ok(thrown instanceof FusionError);
+      assert.equal(thrown.code, 'evaluation_invalid');
+      assert.match(thrown.message, /schema repair failed/);
+      assert.doesNotMatch(thrown.message, /unexpected merge/);
+      const artifactDir = thrown.artifactDir;
+      assert.ok(artifactDir);
+      const manifest = parseObject(await readFile(join(root, artifactDir, 'manifest.json'), 'utf8'));
+      assert.equal(field(manifest, 'state'), 'failed');
+      const usageRecord = field(manifest, 'usage');
+      assert.ok(typeof usageRecord === 'object' && usageRecord !== null);
+      assert.equal(field(usageRecord, 'totalTokens'), 10);
+      const attempts = field(manifest, 'attempts');
+      assert.ok(Array.isArray(attempts));
+      assert.equal(attempts.length, 5);
+      for (const attempt of attempts) {
+        assert.ok(typeof attempt === 'object' && attempt !== null);
+        assert.ok(typeof field(attempt, 'usage') === 'object');
+      }
     } finally {
       await rm(root, { recursive: true, force: true });
     }

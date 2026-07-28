@@ -13,6 +13,8 @@ import {
 } from './types.js';
 
 const MAX_REPAIR_ERROR_CHARS = 500;
+const MAX_REPAIR_ERROR_COUNT = 24;
+const MAX_REPAIR_ERROR_TOTAL_CHARS = 4000;
 
 export type FusionEvaluationValidationResult =
   | { ok: true; value: FusionEvaluationV1 }
@@ -138,6 +140,7 @@ function parseConflict(value: unknown, label: string, errors: string[]): FusionC
     }
     const distinctIds = new Set(positions.map((position) => position.candidate_id));
     if (distinctIds.size < 2) errors.push(`${label}.positions must include at least two distinct candidates`);
+    if (distinctIds.size !== positions.length) errors.push(`${label}.positions candidate_id values must be unique`);
   }
   const resolution = nonBlankString(value['resolution'], `${label}.resolution`, errors);
   if (topic === undefined || resolution === undefined || !Array.isArray(positionsRaw)) return undefined;
@@ -268,7 +271,7 @@ export function parseFusionEvaluation(text: string): FusionEvaluationV1 {
   }
   const result = validateFusionEvaluation(parsed);
   if (!result.ok) {
-    throw new FusionError(`evaluation output failed schema validation: ${result.errors.join('; ')}`, {
+    throw new FusionError(`evaluation output failed schema validation: ${formatEvaluationErrors(result.errors)}`, {
       code: 'evaluation_invalid',
       stage: 'evaluation',
     });
@@ -277,7 +280,21 @@ export function parseFusionEvaluation(text: string): FusionEvaluationV1 {
 }
 
 export function boundedEvaluationErrors(errors: readonly string[]): readonly string[] {
-  return errors.map((error) =>
-    error.length <= MAX_REPAIR_ERROR_CHARS ? error : `${error.slice(0, MAX_REPAIR_ERROR_CHARS - 1)}…`,
-  );
+  const bounded: string[] = [];
+  let total = 0;
+  for (const error of errors) {
+    if (bounded.length >= MAX_REPAIR_ERROR_COUNT) break;
+    const perError = error.length <= MAX_REPAIR_ERROR_CHARS ? error : `${error.slice(0, MAX_REPAIR_ERROR_CHARS - 1)}…`;
+    const remaining = MAX_REPAIR_ERROR_TOTAL_CHARS - total;
+    if (remaining <= 0) break;
+    const next = perError.length <= remaining ? perError : `${perError.slice(0, Math.max(0, remaining - 1))}…`;
+    bounded.push(next);
+    total += next.length;
+  }
+  if (errors.length > bounded.length) bounded.push(`… ${String(errors.length - bounded.length)} more validation errors omitted`);
+  return bounded;
+}
+
+export function formatEvaluationErrors(errors: readonly string[]): string {
+  return boundedEvaluationErrors(errors).join('; ');
 }

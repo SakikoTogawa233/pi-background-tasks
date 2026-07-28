@@ -95,7 +95,7 @@ The lookup runs at most once per session on `session_start`, is time-boxed, and 
 - `bg_status` — inspect one task or all recent tasks.
 - `bg_logs` — read bounded task output.
 - `bg_kill` — stop a running task.
-- `fusion_brainstorm({prompt})` — always-active tool that runs the Fusion workflow and returns the exact merged text as the tool result for the parent agent to consume. It has no eligibility, quota, routine, or justification gate; the only public parameter is required `prompt`. Tool context capture excludes the current assistant tool-call leaf when Pi is executing that `fusion_brainstorm` call, so the nested children do not see the in-progress tool call or sibling calls.
+- `fusion_brainstorm({prompt})` — always-active tool that runs the Fusion workflow and returns the exact merged text as the tool result for the parent agent to consume, with standard nested usage attached when the host Pi supports tool-result usage. Its closed public schema has exactly one required parameter, `prompt`; extra keys are rejected. It has no eligibility, quota, routine, or justification gate. Tool context capture excludes the current assistant tool-call leaf when Pi is executing that `fusion_brainstorm` call, so the nested children do not see the in-progress tool call or sibling calls.
 
 `bg_run` requires a concise `name` for the footer dock, the shell `command`, and required `isAgent: boolean`. Set `isAgent: true` only when the background task launches an LLM/agent process (for example `pi -p ...` or `pi --mode json ...`); set `isAgent: false` for scripts, tests, dev servers, sleeps, and ordinary shell commands. It defaults to `triggerOnCompletion: true`, so completion notifications trigger a follow-up agent turn. Tasks marked with `isAgent: true` that launch print/json child Pi agents through the normal shell command name are telemetry-wrapped; set `PI_BG_DISABLE_PI_TELEMETRY=1` only when raw Pi stdout is required. The task snapshot and metadata expose `isAgent`, `contextUsage` (latest reported child assistant turn), cumulative `tokenUsage` (`input`, `output`, `cacheRead`, `cacheWrite`, `totalTokens`), cumulative `toolUsage` (`total`, `failed`, `byName`), and `model` (the LLM identifier reported by the child assistant turns, preferring the fully-qualified `provider/model` form) when reported by the child task. User-launched `/bg` jobs are display-only by default unless `--agent` is provided; UI reruns preserve the original task's `isAgent` value.
 
@@ -112,9 +112,9 @@ Model configuration is global under the Pi agent directory:
 fusion-models.json
 ```
 
-Missing config means all five slots are `$current`. Malformed config, stale explicit models, unavailable current models, and concurrent selector write conflicts fail loudly before child inference. Candidate identities are anonymized before evaluation; provider/model metadata stays in local artifacts, not in evaluator prompts.
+Missing config means all five slots are `$current`. Malformed config, stale explicit models, unavailable current models, and concurrent selector write conflicts fail loudly before child inference. Selector saves use an inter-process lock plus revision re-read before rename so simultaneous dialogs cannot silently overwrite each other. Candidate identities are anonymized before evaluation; provider/model metadata stays in local artifacts, not in evaluator prompts.
 
-Progress is surfaced through `fusion` status updates, TUI cancellable loader UI for `/fusion`, and partial `fusion_brainstorm` tool updates. Session shutdown or reload aborts all live Fusion children and waits for their cleanup.
+Progress is surfaced through `fusion` status updates, TUI cancellable loader UI for `/fusion`, and partial `fusion_brainstorm` tool updates. Session shutdown or reload tracks the whole invocation from entry, aborts live or initializing Fusion runs, and waits for cleanup. Captured conversation context is serialized as lossless text (no summarization-oriented 2,000-character tool-result truncation); provider context-window failures remain loud child failures rather than hidden local truncation.
 
 ## Extension EventBus API
 
@@ -158,7 +158,7 @@ Fusion writes private debugging artifacts under:
 .pi/fusion/<session-id>-<pid>/<run-id>/
 ```
 
-Each run contains `manifest.json`, `canonical-input.json`, candidate/evaluation/merge prompts, raw child JSONL events, stderr, responses, `blind-candidates.json`, `evaluation.json`, `merged.md`, and `error.json` for failed/cancelled runs. These artifacts are local evidence only; they are not shown in `/jobs` or the background-task dock.
+Each run contains `manifest.json`, `canonical-input.json`, candidate/evaluation/merge prompts, raw child JSONL events, stderr, responses, `blind-candidates.json`, `evaluation.json`, `merged.md`, and `error.json` for failed/cancelled runs. Artifact files are written by private temp-file/fsync/rename, and manifests persist cumulative child usage plus per-attempt observed usage/model data for both successful and failed runs. These artifacts are local evidence only; they are not shown in `/jobs` or the background-task dock.
 
 For attested Pi tasks only, the task id is `b` plus 32 random hex characters (128 bits) and additional flat siblings are written in the same directory:
 
@@ -195,6 +195,7 @@ Smoke and release checks:
 ```bash
 npm run smoke
 npm run pack:dry-run
+npm run test:compat
 ```
 
 Full interactive QA gate:

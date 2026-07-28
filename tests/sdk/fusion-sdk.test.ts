@@ -28,7 +28,7 @@ import {
   FUSION_RESULT_SCHEMA_VERSION,
   type FusionResultDetails,
 } from '../../src/core/fusion/types.js';
-import { installFusionFakePi } from '../../src/testing/fusion-fake-pi.js';
+import { installFusionFakePi } from '../helpers/fusion-fake-pi.js';
 import { isolatedTestEnv, stripAnsi } from '../../src/testing/normalize.js';
 
 const backgroundTasksExtensionPath = resolve('extensions/background-tasks.ts');
@@ -257,6 +257,12 @@ function command(session: AgentSession, name: string) {
   return found;
 }
 
+function commandContext(session: AgentSession, mode?: string) {
+  const ctx = session.extensionRunner.createCommandContext();
+  if (mode !== undefined) Object.defineProperty(ctx, 'mode', { value: mode, configurable: true });
+  return ctx;
+}
+
 function baseUi(session: AgentSession): ExtensionUIContext {
   return session.extensionRunner.getUIContext();
 }
@@ -289,7 +295,11 @@ void describe('fusion SDK integration', { concurrency: false }, () => {
     const h = await harness();
     try {
       assert.ok(h.session.getActiveToolNames().includes('fusion_brainstorm'));
-      assert.ok(h.session.getToolDefinition('fusion_brainstorm'));
+      const fusionTool = h.session.getToolDefinition('fusion_brainstorm');
+      assert.ok(fusionTool);
+      assert.equal(Reflect.get(fusionTool.parameters, 'additionalProperties'), false);
+      assert.ok(fusionTool.prepareArguments);
+      assert.throws(() => fusionTool.prepareArguments?.({ prompt: 'x', extra: true }), /only prompt/);
       const commandNames = h.session.extensionRunner.getRegisteredCommands().map((cmd) => cmd.invocationName);
       assert.ok(commandNames.includes('fusion'));
       assert.ok(commandNames.includes('fusion-models'));
@@ -305,7 +315,7 @@ void describe('fusion SDK integration', { concurrency: false }, () => {
         },
       });
 
-      await command(h.session, 'fusion').handler('  command prompt\nwith body  ', h.session.extensionRunner.createCommandContext());
+      await command(h.session, 'fusion').handler('  command prompt\nwith body  ', commandContext(h.session, 'print'));
       const calls = await invocations(h.fakeLogPath);
       assert.equal(calls.length, 5);
       assert.equal(calls.filter((call) => call.stage === 'candidate').length, 3);
@@ -393,6 +403,9 @@ void describe('fusion SDK integration', { concurrency: false }, () => {
       );
       assert.equal(result.content[0]?.type === 'text' ? result.content[0].text : '', 'SDK fused answer.');
       assert.ok(isFusionResultDetails(result.details));
+      const resultUsage = Reflect.get(result, 'usage');
+      assert.ok(isRecord(resultUsage));
+      assert.equal(resultUsage['totalTokens'], 115);
       assert.ok(updates.some((update) => /candidates 3\/3 complete/.test(update)));
       assert.ok(updates.some((update) => /merging final answer/.test(update)));
 
@@ -439,6 +452,19 @@ void describe('fusion SDK integration', { concurrency: false }, () => {
     }
   });
 
+  void it('rejects /fusion-models without UI instead of using the no-op notifier', async () => {
+    const h = await harness();
+    try {
+      await assert.rejects(
+        command(h.session, 'fusion-models').handler('', commandContext(h.session)),
+        /requires Pi TUI mode/,
+      );
+      assert.equal((await invocations(h.fakeLogPath)).length, 0);
+    } finally {
+      await disposeHarness(h);
+    }
+  });
+
   void it('supports no-argument editor flow, editor cancellation, selector save, and invalid config without child calls', async () => {
     const h = await harness();
     try {
@@ -447,7 +473,7 @@ void describe('fusion SDK integration', { concurrency: false }, () => {
         ...originalUi,
         editor: () => Promise.resolve(' editor prompt '),
       });
-      await command(h.session, 'fusion').handler('', h.session.extensionRunner.createCommandContext());
+      await command(h.session, 'fusion').handler('', commandContext(h.session, 'print'));
       assert.equal((await invocations(h.fakeLogPath)).length, 5);
 
       await writeFile(h.fakeLogPath, '', 'utf8');
@@ -455,7 +481,7 @@ void describe('fusion SDK integration', { concurrency: false }, () => {
         ...baseUi(h.session),
         editor: () => Promise.resolve(undefined),
       });
-      await command(h.session, 'fusion').handler('', h.session.extensionRunner.createCommandContext());
+      await command(h.session, 'fusion').handler('', commandContext(h.session, 'print'));
       assert.equal((await invocations(h.fakeLogPath)).length, 0);
 
       const selectorCustom: ExtensionUIContext['custom'] = (factory) => {
@@ -485,7 +511,6 @@ void describe('fusion SDK integration', { concurrency: false }, () => {
         custom: selectorCustom,
       });
       const selectorCtx = h.session.extensionRunner.createCommandContext();
-      Object.defineProperty(selectorCtx, 'mode', { value: 'tui', configurable: true });
       await command(h.session, 'fusion-models').handler('', selectorCtx);
       const savedConfigText = await readFile(join(h.agentDir, FUSION_MODEL_CONFIG_FILE), 'utf8');
       const savedConfig = parseJsonText(savedConfigText);

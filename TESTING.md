@@ -44,15 +44,12 @@ Smoke/release checks:
 ```bash
 npm run smoke
 npm run pack:dry-run
+npm run test:compat
 ```
 
-Current smoke:
+Current smoke is `tsx scripts/smoke.ts`. It creates a temporary Pi agent/session directory, sets offline/telemetry-suppression environment variables, and runs the package entrypoint with `/jobs`.
 
-```bash
-pi --no-extensions -e ./extensions/background-tasks.ts --offline --no-tools --no-session -p "/jobs"
-```
-
-Smoke proves loadability only; completion requires `npm run test`, `npm run test:full`, and `npm run pack:dry-run`.
+Smoke proves loadability only; completion requires `npm run test`, `npm run test:full`, `npm run pack:dry-run`, and the release-only compatibility gate when preparing a release.
 
 ## Required isolated environment
 
@@ -80,7 +77,7 @@ npm run test:rpc
 npm run test:agent-loop
 ```
 
-The Fusion SDK/RPC/scripted-provider tests install a deterministic fake child `pi` in a temp `PATH`. Parent Pi remains the real SDK/RPC runtime; only direct child `pi --mode json` calls are intercepted. `PI_CODING_AGENT_DIR` is pointed at the temp agent directory so `fusion-models.json` is never read from the user's real global Pi directory.
+The Fusion SDK/RPC/scripted-provider tests install a deterministic fake child `pi` in a temp `PATH` from `tests/helpers/fusion-fake-pi.ts`. Parent Pi remains the real SDK/RPC runtime; only direct child `pi --mode json` calls are intercepted. `PI_CODING_AGENT_DIR` is pointed at the temp agent directory so `fusion-models.json` is never read from the user's real global Pi directory. The release-only `npm run test:compat` packs the package, installs exact supported Pi versions, runs `/jobs`, runs `/fusion` through the installed package entrypoint with the fake child Pi, verifies five child invocations, and verifies `/fusion-models` rejects non-TUI mode.
 
 ## Coverage summary
 
@@ -96,7 +93,7 @@ Implemented coverage includes:
 - agent activity transcript: pure `parseAgentActivity`/`formatAgentActivityLine` coverage (assistant text, reasoning, tool start with arg summary, silent successful tool end, `✗ tool failed` errors, truncation, invalid/non-activity narrowing); registry-unit coverage that wrapped-agent stdout is reconstructed across split chunks into the human-readable transcript while telemetry/activity control JSON is stripped from the output file (telemetry fields still updated), stderr passes through, and the trailing partial line is flushed on finalize; SDK coverage that fake and real child `pi --mode json` runs surface `→ tool`/`✗ tool failed`/assistant text in `bg_logs` with no control JSON leaking into the visible output
 - safety: kill, already-finished kill failure, timeout failure, spawn failure, low output-cap failure, multi-task shutdown cleanup, process-group kill fallback, Windows child-kill behavior, SIGKILL escalation, duplicate finalization/notification races, metadata/notification failure handling, and pruning
 - agent loop: deterministic scripted-provider coverage for actual `bg_run` completion follow-up turns, `/bg` display-only behavior, `notifyOnCompletion:false`, failed-task notification error fields, and parent-model `fusion_brainstorm` tool use followed by normal parent response
-- package: manifest, docs, `pi.extensions`, exported `src/core/extension-api.ts`, peer dependency/import parity, packed runtime files, tarball-install smoke, and artifact exclusion
+- package: manifest, docs, `pi.extensions`, exported `src/core/extension-api.ts`, peer dependency/import parity, packed runtime files, tarball-install smoke, direct-completion import bans, test/helper/script/artifact exclusion, and isolated offline npm install environment for default package tests
 
 ## PTY notes
 
@@ -106,6 +103,7 @@ Implemented coverage includes:
 - A named `/bg` task appears in the dock when opened with xterm `Shift+Down` (`ESC [ 1 ; 2 B`).
 - Secondary dock keys work in a real TUI: arrows, page keys, detail/back, history, stop selected, stop-all confirmation, rerun, output path, and failed/unread history surfacing.
 - Detail output-tail scrolling works with real arrow/page keys: opening a 60-line task's detail and pressing `↑` shows the `lines X–Y of N` position indicator and pauses the live tail.
+- Fusion TUI surfaces work end to end: `/fusion <prompt>` renders the exact fake merged answer directly in the real TUI, and `/fusion-models` opens the five-slot selector.
 
 The detail-view `Model:` line and the compact `model <id>` dock row are also exercised deterministically by the component layer (`tests/component/background-tasks-manager.test.ts`), which is the lowest reliable layer for dock rendering.
 
@@ -134,4 +132,4 @@ Normalize volatile values before snapshotting: task IDs, session IDs, PIDs, time
 
 ## Remaining full exhaustive coverage work
 
-The Lane A residual hardening items and the explicit `isAgent` agent-vs-script classification are now covered by default unit/SDK gates plus full PTY and scripted-provider gates. `TEST_PLAN.md` remains the source of truth for future edge-case additions, especially any new telemetry surfaces added after this baseline.
+The Lane A residual hardening items, Fusion repair hardening, and the explicit `isAgent` agent-vs-script classification are covered by default unit/SDK/RPC/component/package gates plus full PTY and scripted-provider gates. `TEST_PLAN.md` remains the source of truth for future edge-case additions, especially any new telemetry surfaces added after this baseline.

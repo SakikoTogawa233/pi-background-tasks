@@ -1,4 +1,5 @@
 import type {
+  AgentToolResult,
   ExtensionAPI,
   ExtensionCommandContext,
   ExtensionContext,
@@ -45,6 +46,7 @@ const FUSION_COMMAND_USAGE = 'Usage: /fusion <prompt> (or run /fusion with no ar
 const FUSION_MODEL_COMMAND_NAME = 'fusion-models';
 
 type FusionToolDetails = FusionResultDetails | FusionProgressDetails;
+type FusionToolResultWithUsage = AgentToolResult<FusionToolDetails> & { usage: FusionResultDetails['usage'] };
 
 type CommandDialogResult =
   | { type: 'completed'; result: FusionRunResult }
@@ -76,9 +78,12 @@ interface FusionRequestDetails {
   source: 'command';
 }
 
-const FusionBrainstormParams = Type.Object({
-  prompt: Type.String({ description: 'Prompt to run through the five-model fusion workflow.' }),
-});
+const FusionBrainstormParams = Type.Object(
+  {
+    prompt: Type.String({ description: 'Prompt to run through the five-model fusion workflow.' }),
+  },
+  { additionalProperties: false },
+);
 
 type FusionBrainstormParamsValue = Static<typeof FusionBrainstormParams>;
 
@@ -97,7 +102,8 @@ function contextMode(ctx: object): string | undefined {
 
 function isTuiContext(ctx: ExtensionContext): boolean {
   const mode = contextMode(ctx);
-  return mode === 'tui' || mode === 'interactive';
+  if (mode === undefined) return ctx.hasUI && ctx.ui.custom.length > 0;
+  return mode === 'tui';
 }
 
 function qualifiedModelKey(model: { provider: string; id: string }): string {
@@ -236,6 +242,10 @@ function normalizeToolPrompt(value: unknown): string {
 
 function prepareFusionArguments(args: unknown): FusionBrainstormParamsValue {
   if (!isRecord(args)) throw new Error('fusion_brainstorm arguments must be an object');
+  const keys = Object.keys(args);
+  if (keys.length !== 1 || keys[0] !== 'prompt') {
+    throw new Error('fusion_brainstorm arguments must contain only prompt');
+  }
   return { prompt: normalizeToolPrompt(args['prompt']) };
 }
 
@@ -258,43 +268,56 @@ export function registerFusionExtension(pi: ExtensionAPI): void {
   const orchestrator = new FusionOrchestrator();
   const activeRuns = new Set<ActiveFusionRun>();
   let shuttingDown = false;
+  let lifecycleGeneration = 0;
 
   async function runFusion(request: FusionRunRequest): Promise<FusionRunResult> {
     if (shuttingDown) throw new Error('fusion extension is shutting down');
+    const generation = lifecycleGeneration;
     const controller = new AbortController();
-    const unlink = linkSignal(request.signal, controller);
-    const loaded = await loadFusionModelConfig();
-    const models = resolveFusionModels({
-      config: loaded.config,
-      modelRegistry: request.ctx.modelRegistry,
-      currentModel: request.ctx.model,
-      thinkingLevel: pi.getThinkingLevel(),
-    });
-    const contextOptions = request.toolCallId === undefined
-      ? {
-          source: request.source,
-          request: request.request,
-          toolName: FUSION_BRAINSTORM_TOOL_NAME,
-        }
-      : {
-          source: request.source,
-          request: request.request,
-          toolCallId: request.toolCallId,
-          toolName: FUSION_BRAINSTORM_TOOL_NAME,
-        };
-    const built = buildFusionCanonicalInput(request.ctx, contextOptions);
-    if (shuttingDown) throw new Error('fusion extension is shutting down');
     let resolveSettled: () => void = () => undefined;
     const settled = new Promise<void>((resolve) => {
       resolveSettled = resolve;
     });
     const active: ActiveFusionRun = { controller, settled };
     activeRuns.add(active);
+    const unlink = linkSignal(request.signal, controller);
+    const assertActive = () => {
+      if (controller.signal.aborted) throw new FusionError('fusion run cancelled before child launch', { code: 'child_cancelled', childCreated: false });
+      if (shuttingDown || lifecycleGeneration !== generation) throw new Error('fusion extension is shutting down');
+    };
     try {
+      assertActive();
+      const contextOptions = request.toolCallId === undefined
+        ? {
+            source: request.source,
+            request: request.request,
+            toolName: FUSION_BRAINSTORM_TOOL_NAME,
+          }
+        : {
+            source: request.source,
+            request: request.request,
+            toolCallId: request.toolCallId,
+            toolName: FUSION_BRAINSTORM_TOOL_NAME,
+          };
+      const built = buildFusionCanonicalInput(request.ctx, contextOptions);
+      const cwd = request.ctx.cwd;
+      const sessionId = request.ctx.sessionManager.getSessionId();
+      const modelRegistry = request.ctx.modelRegistry;
+      const currentModel = request.ctx.model;
+      const thinkingLevel = pi.getThinkingLevel();
+      const loaded = await loadFusionModelConfig();
+      assertActive();
+      const models = resolveFusionModels({
+        config: loaded.config,
+        modelRegistry,
+        currentModel,
+        thinkingLevel,
+      });
+      assertActive();
       return await orchestrator.run({
         source: request.source,
-        cwd: request.ctx.cwd,
-        sessionId: request.ctx.sessionManager.getSessionId(),
+        cwd,
+        sessionId,
         canonicalInput: built.input,
         canonicalInputSerialized: built.serialized,
         config: loaded.config,
@@ -427,8 +450,10 @@ export function registerFusionExtension(pi: ExtensionAPI): void {
   pi.registerCommand(FUSION_MODEL_COMMAND_NAME, {
     description: 'Open the five-slot global fusion model selector.',
     handler: async (_args, ctx) => {
-      if (!ctx.hasUI || !isTuiContext(ctx)) {
-        ctx.ui.notify('/fusion-models requires Pi TUI mode; it is unavailable in RPC, JSON, and print modes.', 'error');
+      const modeError = '/fusion-models requires Pi TUI mode; it is unavailable in RPC, JSON, and print modes.';
+      if (!ctx.hasUI) throw new Error(modeError);
+      if (!isTuiContext(ctx)) {
+        ctx.ui.notify(modeError, 'error');
         return;
       }
       const path = fusionModelConfigPath();
@@ -491,10 +516,12 @@ export function registerFusionExtension(pi: ExtensionAPI): void {
           onUpdate?.({ content: textContent(progressText(event)), details: makeProgressDetails(event) });
         },
       });
-      return {
+      const toolResult: FusionToolResultWithUsage = {
         content: textContent(result.mergedText),
         details: result.details,
+        usage: result.details.usage,
       };
+      return toolResult;
     },
     renderCall(args, theme) {
       const preview = args.prompt.replace(/\s+/g, ' ').trim();
@@ -510,6 +537,7 @@ export function registerFusionExtension(pi: ExtensionAPI): void {
 
   pi.on('session_start', () => {
     shuttingDown = false;
+    lifecycleGeneration += 1;
     const active = pi.getActiveTools();
     if (!active.includes(FUSION_BRAINSTORM_TOOL_NAME)) {
       pi.setActiveTools([...active, FUSION_BRAINSTORM_TOOL_NAME]);
@@ -518,6 +546,7 @@ export function registerFusionExtension(pi: ExtensionAPI): void {
 
   pi.on('session_shutdown', async (_event, ctx) => {
     shuttingDown = true;
+    lifecycleGeneration += 1;
     const runs = [...activeRuns];
     for (const run of runs) run.controller.abort();
     const settled = await Promise.allSettled(runs.map((run) => run.settled));

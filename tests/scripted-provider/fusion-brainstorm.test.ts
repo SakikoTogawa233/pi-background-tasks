@@ -15,7 +15,7 @@ import {
 } from '@earendil-works/pi-coding-agent';
 import { parseJsonText } from '../../src/core/common.js';
 import { FUSION_RESULT_SCHEMA_VERSION } from '../../src/core/fusion/types.js';
-import { installFusionFakePi } from '../../src/testing/fusion-fake-pi.js';
+import { installFusionFakePi } from '../helpers/fusion-fake-pi.js';
 import { isolatedTestEnv } from '../../src/testing/normalize.js';
 
 const backgroundTasksExtensionPath = resolve('extensions/background-tasks.ts');

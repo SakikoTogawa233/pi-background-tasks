@@ -7,6 +7,7 @@ import {
 } from '../../src/core/fusion/context.js';
 import {
   FUSION_CANDIDATE_SYSTEM_PROMPT,
+  FUSION_EVALUATION_REPAIR_SYSTEM_PROMPT,
   buildBlindEvaluationInput,
   buildCandidatePrompt,
   buildEvaluationPrompt,
@@ -59,6 +60,27 @@ void describe('fusion context and prompts', () => {
     assert.equal(buildCandidatePrompt(built.input), buildCandidatePrompt(built.input));
   });
 
+  void it('serializes tool results without summarization truncation', () => {
+    const session = SessionManager.inMemory('/tmp/project');
+    const longText = 'z'.repeat(3000);
+    session.appendMessage({ role: 'user', content: 'inspect tool output', timestamp: 1 });
+    session.appendMessage({
+      role: 'toolResult',
+      toolCallId: 'tool-long',
+      toolName: 'read',
+      content: [{ type: 'text', text: longText }],
+      details: { path: 'large.txt' },
+      isError: false,
+      timestamp: 2,
+    });
+    const built = buildFusionCanonicalInput(
+      { cwd: '/tmp/project', sessionManager: session, getSystemPrompt: () => 'system' },
+      { source: 'command', request: 'answer' },
+    );
+    assert.match(built.input.conversation_transcript, new RegExp(`z{${String(longText.length)}}`));
+    assert.doesNotMatch(built.input.conversation_transcript, /truncated/);
+  });
+
   void it('excludes the active tool-call leaf from tool context', () => {
     const session = SessionManager.inMemory('/tmp/project');
     session.appendMessage({ role: 'user', content: 'root question', timestamp: 1 });
@@ -101,5 +123,12 @@ void describe('fusion context and prompts', () => {
     assert.doesNotMatch(evalPrompt, /openai|anthropic|slot|provider|model/i);
     assert.doesNotMatch(mergePrompt, /openai|anthropic|slot|provider|model/i);
     assert.match(FUSION_CANDIDATE_SYSTEM_PROMPT, /same instruction/);
+  });
+
+  void it('gives the evaluation repair child the full closed schema and blind constraints', () => {
+    assert.match(FUSION_EVALUATION_REPAIR_SYSTEM_PROMPT, new RegExp(FUSION_EVALUATION_SCHEMA_VERSION));
+    assert.match(FUSION_EVALUATION_REPAIR_SYSTEM_PROMPT, /candidate_assessments/);
+    assert.match(FUSION_EVALUATION_REPAIR_SYSTEM_PROMPT, /Objects must be closed/);
+    assert.match(FUSION_EVALUATION_REPAIR_SYSTEM_PROMPT, /Preserve blindness/);
   });
 });

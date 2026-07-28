@@ -247,6 +247,10 @@ export interface FusionAttemptArtifactRecord {
   events_path?: string;
   stderr_path?: string;
   response_path?: string;
+  provider?: string;
+  model?: string;
+  qualifiedId?: string;
+  usage?: FusionUsage;
   error?: string;
 }
 

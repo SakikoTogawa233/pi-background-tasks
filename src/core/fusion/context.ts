@@ -1,9 +1,9 @@
 import {
   buildSessionContext,
   convertToLlm,
-  serializeConversation,
   type SessionEntry,
 } from '@earendil-works/pi-coding-agent';
+import type { Message } from '@earendil-works/pi-ai';
 import { canonicalJson } from '../attested-pi-run.js';
 import { isJsonObject } from '../common.js';
 import {
@@ -116,6 +116,42 @@ function effectiveLeafId(
   );
 }
 
+function textContentForTranscript(content: Message['content']): string {
+  if (typeof content === 'string') return content;
+  const parts: string[] = [];
+  for (const block of content) {
+    if (block.type === 'text') parts.push(block.text);
+    else if (block.type === 'image') parts.push(`[Image omitted from fusion text transcript: ${block.mimeType}]`);
+  }
+  return parts.join('');
+}
+
+function serializeFusionConversation(messages: readonly Message[]): string {
+  const parts: string[] = [];
+  for (const message of messages) {
+    if (message.role === 'user') {
+      const content = textContentForTranscript(message.content);
+      if (content.length > 0) parts.push(`[User]: ${content}`);
+    } else if (message.role === 'assistant') {
+      const thinkingParts: string[] = [];
+      const textParts: string[] = [];
+      const toolCalls: string[] = [];
+      for (const block of message.content) {
+        if (block.type === 'thinking') thinkingParts.push(block.thinking);
+        else if (block.type === 'text') textParts.push(block.text);
+        else if (block.type === 'toolCall') toolCalls.push(`${block.name}(${canonicalJson(block.arguments)})`);
+      }
+      if (thinkingParts.length > 0) parts.push(`[Assistant thinking]: ${thinkingParts.join('\n')}`);
+      if (textParts.length > 0) parts.push(`[Assistant]: ${textParts.join('\n')}`);
+      if (toolCalls.length > 0) parts.push(`[Assistant tool calls]: ${toolCalls.join('; ')}`);
+    } else {
+      const content = textContentForTranscript(message.content);
+      if (content.length > 0) parts.push(`[Tool result]: ${content}`);
+    }
+  }
+  return parts.join('\n\n');
+}
+
 export function buildFusionCanonicalInput(
   ctx: FusionContextSource,
   options: BuildFusionCanonicalInputOptions,
@@ -134,7 +170,7 @@ export function buildFusionCanonicalInput(
     schema_version: FUSION_INPUT_SCHEMA_VERSION,
     cwd: ctx.cwd,
     system_prompt: ctx.getSystemPrompt(),
-    conversation_transcript: serializeConversation(llmMessages),
+    conversation_transcript: serializeFusionConversation(llmMessages),
     request: options.request,
   };
   return { input, serialized: canonicalJson(input), transcriptLeafId: leafId };

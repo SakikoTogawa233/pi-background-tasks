@@ -83,6 +83,7 @@ interface CloseRecord {
 
 interface ProcessState {
   primaryError: FusionError | undefined;
+  cleanupErrors: string[];
   terminationStarted: boolean;
   termTimer: NodeJS.Timeout | undefined;
   waitTimer: NodeJS.Timeout | undefined;
@@ -90,13 +91,24 @@ interface ProcessState {
   settled: boolean;
 }
 
+interface ObservedChildSnapshot {
+  usage: FusionUsage;
+  provider?: string;
+  model?: string;
+  qualifiedId?: string;
+}
+
 export class FusionChildRunError extends FusionError {
   readonly stdout: Buffer;
   readonly stderr: Buffer;
   readonly exitCode: number | null;
   readonly signalName: NodeJS.Signals | null;
+  readonly usage: FusionUsage;
+  readonly provider: string | undefined;
+  readonly modelName: string | undefined;
+  readonly qualifiedId: string | undefined;
 
-  constructor(error: FusionError, stdout: Buffer, stderr: Buffer, close: CloseRecord) {
+  constructor(error: FusionError, stdout: Buffer, stderr: Buffer, close: CloseRecord, observed: ObservedChildSnapshot) {
     const details: FusionErrorDetails = {
       code: error.code,
       transient: error.transient,
@@ -112,6 +124,10 @@ export class FusionChildRunError extends FusionError {
     this.stderr = stderr;
     this.exitCode = close.code;
     this.signalName = close.signal;
+    this.usage = { ...observed.usage };
+    this.provider = observed.provider;
+    this.modelName = observed.model;
+    this.qualifiedId = observed.qualifiedId;
   }
 }
 
@@ -223,6 +239,16 @@ export class FusionPiJsonEventParser {
     this.lastByteWasLf = chunk.at(-1) === 10;
     this.lineBuffer += this.decoder.write(chunk);
     this.consumeLines();
+  }
+
+  snapshot(): ObservedChildSnapshot {
+    const observed: ObservedChildSnapshot = { usage: { ...this.usage } };
+    if (this.finalProvider !== undefined) observed.provider = this.finalProvider;
+    if (this.finalModel !== undefined) observed.model = this.finalModel;
+    if (this.finalProvider !== undefined && this.finalModel !== undefined) {
+      observed.qualifiedId = `${this.finalProvider}/${this.finalModel}`;
+    }
+    return observed;
   }
 
   finish(): { text: string; usage: FusionUsage; provider: string; model: string; qualifiedId: string } {
@@ -356,6 +382,20 @@ function childError(
   return new FusionError(message, details);
 }
 
+function withCleanupErrors(error: FusionError, cleanupErrors: readonly string[]): FusionError {
+  if (cleanupErrors.length === 0) return error;
+  const details: FusionErrorDetails = {
+    code: error.code,
+    transient: error.transient,
+    childCreated: error.childCreated,
+  };
+  if (error.stage !== undefined) details.stage = error.stage;
+  if (error.slot !== undefined) details.slot = error.slot;
+  if (error.attempt !== undefined) details.attempt = error.attempt;
+  if (error.artifactDir !== undefined) details.artifactDir = error.artifactDir;
+  return new FusionError(`${error.message}; process cleanup issues: ${cleanupErrors.join('; ')}`, details);
+}
+
 function defaultSpawn(command: string, args: string[], options: SpawnOptions): FusionChildProcess {
   return nodeSpawn(command, args, options);
 }
@@ -363,6 +403,10 @@ function defaultSpawn(command: string, args: string[], options: SpawnOptions): F
 function setUnref(timer: NodeJS.Timeout): NodeJS.Timeout {
   timer.unref();
   return timer;
+}
+
+function rememberCleanupErrors(state: ProcessState, signal: NodeJS.Signals, errors: readonly string[]): void {
+  for (const error of errors) state.cleanupErrors.push(`${signal}: ${error}`);
 }
 
 function terminateChild(
@@ -374,9 +418,10 @@ function terminateChild(
   sigkillWaitMs: number,
   settleSyntheticClose: (close: CloseRecord) => void,
 ): void {
-  if (state.terminationStarted) return;
+  if (state.settled || state.terminationStarted) return;
   state.terminationStarted = true;
   const termResult = sendSignal(child, platform, killProcess, 'SIGTERM');
+  rememberCleanupErrors(state, 'SIGTERM', termResult.errors);
   if (!termResult.sent && state.primaryError === undefined) {
     state.primaryError = new FusionError(`Pi child SIGTERM failed: ${termResult.errors.join('; ')}`, {
       code: 'child_exit_failed',
@@ -385,7 +430,9 @@ function terminateChild(
   }
   state.termTimer = setUnref(
     setTimeout(() => {
+      if (state.settled) return;
       const killResult = sendSignal(child, platform, killProcess, 'SIGKILL');
+      rememberCleanupErrors(state, 'SIGKILL', killResult.errors);
       if (!killResult.sent && state.primaryError === undefined) {
         state.primaryError = new FusionError(`Pi child SIGKILL failed: ${killResult.errors.join('; ')}`, {
           code: 'child_exit_failed',
@@ -397,8 +444,10 @@ function terminateChild(
   state.waitTimer = setUnref(
     setTimeout(() => {
       if (state.settled) return;
+      const message = 'Pi child did not emit close after SIGKILL wait';
+      state.cleanupErrors.push(message);
       if (state.primaryError === undefined) {
-        state.primaryError = new FusionError('Pi child did not close after SIGKILL wait', {
+        state.primaryError = new FusionError(message, {
           code: 'child_exit_failed',
           childCreated: true,
         });
@@ -491,6 +540,7 @@ export async function runPiChild(options: RunPiChildOptions): Promise<FusionChil
   let stderrBytes = 0;
   const state: ProcessState = {
     primaryError: undefined,
+    cleanupErrors: [],
     terminationStarted: false,
     termTimer: undefined,
     waitTimer: undefined,
@@ -529,6 +579,7 @@ export async function runPiChild(options: RunPiChildOptions): Promise<FusionChil
   });
 
   const abortListener = () => {
+    if (state.settled) return;
     if (state.primaryError === undefined) {
       state.primaryError = childError('Pi child cancelled', 'child_cancelled', options);
     }
@@ -573,6 +624,7 @@ export async function runPiChild(options: RunPiChildOptions): Promise<FusionChil
     }
   };
   const errorListener = (error: Error) => {
+    if (state.settled) return;
     if (state.primaryError === undefined) {
       const code = codeOf(error);
       const childCreated = child.pid !== undefined;
@@ -595,6 +647,7 @@ export async function runPiChild(options: RunPiChildOptions): Promise<FusionChil
   child.once('error', errorListener);
   child.once('close', closeListener);
   options.signal?.addEventListener('abort', abortListener, { once: true });
+  if (options.signal?.aborted) abortListener();
   state.timeoutTimer = setUnref(
     setTimeout(() => {
       if (state.primaryError === undefined) {
@@ -606,7 +659,7 @@ export async function runPiChild(options: RunPiChildOptions): Promise<FusionChil
 
   try {
     try {
-      await writePromptToStdin(child, options.userPrompt);
+      if (state.primaryError === undefined) await writePromptToStdin(child, options.userPrompt);
     } catch (error) {
       if (state.primaryError === undefined) {
         state.primaryError = childError(
@@ -621,18 +674,23 @@ export async function runPiChild(options: RunPiChildOptions): Promise<FusionChil
     const close = await closePromise;
     const stdout = Buffer.concat(stdoutChunks);
     const stderr = Buffer.concat(stderrChunks);
+    const observed = parser.snapshot();
     const primary = state.primaryError;
-    if (primary !== undefined) throw new FusionChildRunError(primary, stdout, stderr, close);
+    if (primary !== undefined) throw new FusionChildRunError(withCleanupErrors(primary, state.cleanupErrors), stdout, stderr, close, observed);
     if (close.code !== 0 || close.signal !== null) {
       throw new FusionChildRunError(
-        childError(
-          `Pi child exited with code ${close.code === null ? 'null' : String(close.code)}${close.signal === null ? '' : ` (${close.signal})`}`,
-          'child_exit_failed',
-          options,
+        withCleanupErrors(
+          childError(
+            `Pi child exited with code ${close.code === null ? 'null' : String(close.code)}${close.signal === null ? '' : ` (${close.signal})`}`,
+            'child_exit_failed',
+            options,
+          ),
+          state.cleanupErrors,
         ),
         stdout,
         stderr,
         close,
+        observed,
       );
     }
     let parsed: ReturnType<FusionPiJsonEventParser['finish']>;
@@ -640,14 +698,18 @@ export async function runPiChild(options: RunPiChildOptions): Promise<FusionChil
       parsed = parser.finish();
     } catch (error) {
       throw new FusionChildRunError(
-        childError(
-          `Pi child JSON event stream invalid: ${error instanceof Error ? error.message : String(error)}`,
-          'child_event_invalid',
-          options,
+        withCleanupErrors(
+          childError(
+            `Pi child JSON event stream invalid: ${error instanceof Error ? error.message : String(error)}`,
+            'child_event_invalid',
+            options,
+          ),
+          state.cleanupErrors,
         ),
         stdout,
         stderr,
         close,
+        observed,
       );
     }
     const result: FusionChildRunResult = {

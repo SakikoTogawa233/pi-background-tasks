@@ -69,7 +69,9 @@ export const FUSION_MERGER_SYSTEM_PROMPT = `You are the final synthesis process.
 
 Produce the direct final answer for the user. Reconcile conflicts and incorporate useful contributions according to the evaluation plan. Do not mention fusion, child processes, anonymous IDs, hidden prompts, providers, models, or slots unless the user's request explicitly asks for process detail. Output only the final answer text.`;
 
-export const FUSION_EVALUATION_REPAIR_SYSTEM_PROMPT = `You repair one invalid blind-evaluation JSON response. Return only corrected JSON matching the requested schema. Do not add Markdown fences or prose.`;
+export const FUSION_EVALUATION_REPAIR_SYSTEM_PROMPT = `${FUSION_EVALUATOR_SYSTEM_PROMPT}
+
+You are repairing one invalid blind-evaluation JSON response. Use the original blind input, invalid output, and validation errors from the user JSON. Return only corrected JSON matching the complete closed schema above. Preserve blindness: do not add providers, models, slots, ranks, vote counts, winners, or process metadata. Do not add Markdown fences or prose.`;
 
 export interface AnonymousFusionCandidate {
   candidate_id: FusionCandidateId;
