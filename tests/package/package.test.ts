@@ -136,6 +136,7 @@ void describe('package', () => {
       'src/ui/background-tasks-manager.ts',
       'src/core/common.ts',
       'src/core/registry.ts',
+      'src/core/extension-api.ts',
       'src/core/attested-pi-run.ts',
       'extensions/background-tasks.ts',
     ])
@@ -157,6 +158,10 @@ void describe('package', () => {
       'bg_status',
       'bg_logs',
       'bg_kill',
+      'pi-background-tasks:request:v1',
+      'pi-background-tasks:response:v1',
+      'pi-background-tasks:terminal:v1',
+      'src/core/extension-api.ts',
       'Shift+Down',
       'Ctrl+Alt+C',
     ]) {
@@ -188,6 +193,7 @@ void describe('package', () => {
       'src/extension.ts',
       'src/core/common.ts',
       'src/core/registry.ts',
+      'src/core/extension-api.ts',
       'src/core/attested-pi-run.ts',
       'src/ui/background-tasks-manager.ts',
       'src/testing/normalize.ts',
@@ -239,6 +245,7 @@ void describe('package', () => {
         'extensions/background-tasks.ts',
         'src/extension.ts',
         'src/core/registry.ts',
+        'src/core/extension-api.ts',
         'src/core/attested-pi-run.ts',
         'src/ui/background-tasks-manager.ts',
       ]) {

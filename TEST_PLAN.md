@@ -14,6 +14,7 @@ This package follows:
 | Extension entrypoint | `extensions/background-tasks.ts` |
 | Public commands | `/bg`, `/jobs`, `/logs`, `/kill`, `/tasks`, `/bg-tasks`, `/bg-clear`, `/bg-update` |
 | Public tools | `bg_run`, `bg_run_pi_attested`, `bg_status`, `bg_logs`, `bg_kill` |
+| Extension EventBus API | `pi-background-tasks:request:v1`, `pi-background-tasks:response:v1`, `pi-background-tasks:terminal:v1`; schemas exported from `src/core/extension-api.ts` |
 | Shortcuts | `Shift+Down`; optional fallback `Ctrl+Alt+C` |
 | Custom UI | footer status + focused bottom dock overlay |
 | Custom provider | no |
@@ -48,6 +49,8 @@ This package follows:
 | Inspect task status | `bg_status` |  | yes |  |  |  |  |  | SDK polls exact IDs and validates shutdown state. |
 | Read task logs | `bg_logs` | yes | yes |  |  |  |  |  | SDK verifies content. |
 | Stop task from LLM tool | `bg_kill` |  | yes |  |  |  |  |  | Covers running kill and already-finished loud failure. |
+| Extension request/response service | `pi-background-tasks:request:v1` → `pi-background-tasks:response:v1` | yes | yes |  |  |  | yes |  | Unit covers closed-frame validation, capability handshake, unknown keys, unknown operation, duplicate request IDs, missing `session_start`, shutdown refusal, strict `run.payload`, strict malformed frames, and unsubscribe. SDK loads the real extension with a shared `createEventBus()`, starts `printf api-ok`, reads bounded logs, lists status, starts and kills a real sleep task, and checks malformed/unknown/duplicate controls without model/provider calls. Package tests assert `src/core/extension-api.ts` ships. |
+| Terminal EventBus publication | `pi-background-tasks:terminal:v1` | yes | yes |  |  |  | yes |  | Registry unit proves exactly-one terminal snapshot after durable metadata and loud/retriable EventBus delivery failure; extension API unit proves one strict terminal frame correlated by task id after the run response for immediate, normal, failed, timeout, and killed tasks; SDK observes one terminal event for a completed task and one for a killed task through the real extension service. |
 | Completion notification | custom message `background-task-notification` | yes | yes |  | renderer via typecheck |  |  | yes | Unit covers duplicate/failing notification paths; SDK verifies XML/details; scripted provider verifies real follow-up turns, display-only `/bg`, `notifyOnCompletion:false`, and failed-task error fields. |
 | Footer status | `ctx.ui.setStatus` |  | load path + clear command/shortcut + mixed states/focused label |  | render semantics | yes |  |  | SDK verifies `/bg-clear` hint, failed/stopped/done combinations, running combinations, and focused label; PTY verifies Shift+Down dock path after footer-visible task. |
 | Explicit agent classification | required `bg_run.isAgent`, `/bg --agent`, task metadata | yes | yes |  |  |  |  | yes | `isAgent:true` is required only for LLM/agent tasks and enables Pi-agent telemetry wrapping when the command invokes plain `pi`; `isAgent:false` is required for scripts/non-agents and prevents wrapping even if the command text looks like `pi -p ...`. |

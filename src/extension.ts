@@ -37,6 +37,10 @@ import {
 } from './core/update-check.js';
 import { BackgroundTaskRegistry } from './core/registry.js';
 import {
+  installBackgroundTaskExtensionApi,
+  type BackgroundTaskExtensionService,
+} from './core/extension-api.js';
+import {
   BackgroundTasksManager,
   type BackgroundTaskForUi,
   type TaskManagerResult,
@@ -189,6 +193,7 @@ export default function backgroundTasksExtension(pi: ExtensionAPI): void {
   let latestKnownVersion: string | undefined;
   let updateCheckStarted = false;
 
+  let eventService: BackgroundTaskExtensionService | undefined;
   const registry = new BackgroundTaskRegistry({
     onChange: () => {
       updateUi();
@@ -196,6 +201,16 @@ export default function backgroundTasksExtension(pi: ExtensionAPI): void {
     sendCompletionNotification: (message, options) => {
       pi.sendMessage(message, options);
     },
+    publishTerminal: (task) => {
+      if (!eventService) throw new Error('Background task EventBus service is not installed');
+      eventService.publishTerminal(task);
+    },
+  });
+  eventService = installBackgroundTaskExtensionApi({
+    events: pi.events,
+    registry,
+    getContext: () => currentCtx,
+    isShuttingDown: () => registry.isShuttingDown(),
   });
 
   function unseenFinishedTasks(): BgTask[] {
@@ -435,23 +450,27 @@ export default function backgroundTasksExtension(pi: ExtensionAPI): void {
       clearInterval(statusInterval);
       statusInterval = undefined;
     }
-    const running = registry.allTasks().filter((task) => task.status === 'running');
-    if (running.length === 0) return;
+    try {
+      const running = registry.allTasks().filter((task) => task.status === 'running');
+      if (running.length === 0) return;
 
-    const failures: string[] = [];
-    await Promise.all(
-      running.map(async (task) => {
-        try {
-          await registry.stopTask(task, 'shutdown', 'Killed during Pi session shutdown/reload');
-        } catch (error) {
-          const message = `${task.id}: ${error instanceof Error ? error.message : String(error)}`;
-          failures.push(message);
-          console.error(`[background-tasks] shutdown cleanup failed for ${message}`);
-        }
-      }),
-    );
-    if (failures.length > 0 && ctx.hasUI) {
-      ctx.ui.notify(`Background task cleanup failed:\n${failures.join('\n')}`, 'error');
+      const failures: string[] = [];
+      await Promise.all(
+        running.map(async (task) => {
+          try {
+            await registry.stopTask(task, 'shutdown', 'Killed during Pi session shutdown/reload');
+          } catch (error) {
+            const message = `${task.id}: ${error instanceof Error ? error.message : String(error)}`;
+            failures.push(message);
+            console.error(`[background-tasks] shutdown cleanup failed for ${message}`);
+          }
+        }),
+      );
+      if (failures.length > 0 && ctx.hasUI) {
+        ctx.ui.notify(`Background task cleanup failed:\n${failures.join('\n')}`, 'error');
+      }
+    } finally {
+      eventService?.close();
     }
   });
 

@@ -32,8 +32,8 @@ npm publish --access public
 Pi install smoke after publish:
 
 ```bash
-pi -e npm:pi-background-tasks@0.6.0 --offline --no-tools --no-session -p "/jobs"
-pi install npm:pi-background-tasks@0.6.0
+pi -e npm:pi-background-tasks@0.6.1 --offline --no-tools --no-session -p "/jobs"
+pi install npm:pi-background-tasks@0.6.1
 ```
 
 ## Publish to git
@@ -48,15 +48,15 @@ git commit -m "Release pi-background-tasks"
 git branch -M main
 git remote add origin git@github.com:ismailsaleekh/pi-background-tasks.git
 git push -u origin main
-git tag v0.6.0
-git push origin v0.6.0
+git tag v0.6.1
+git push origin v0.6.1
 ```
 
 Pi install smoke after git tag:
 
 ```bash
-pi -e git:github.com/ismailsaleekh/pi-background-tasks@v0.6.0 --offline --no-tools --no-session -p "/jobs"
-pi install git:github.com/ismailsaleekh/pi-background-tasks@v0.6.0
+pi -e git:github.com/ismailsaleekh/pi-background-tasks@v0.6.1 --offline --no-tools --no-session -p "/jobs"
+pi install git:github.com/ismailsaleekh/pi-background-tasks@v0.6.1
 ```
 
 ## pi.dev/packages

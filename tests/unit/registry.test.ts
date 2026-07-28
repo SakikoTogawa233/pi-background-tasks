@@ -16,7 +16,7 @@ import {
   type CompletionNotificationOptions,
 } from '../../src/core/registry.js';
 import type { Api, Model } from '@earendil-works/pi-ai';
-import type { BgTask } from '../../src/core/common.js';
+import type { BgTask, BgTaskSnapshot } from '../../src/core/common.js';
 
 type JsonObject = Record<PropertyKey, unknown>;
 
@@ -88,6 +88,7 @@ interface HarnessOptions {
     message: CompletionNotificationMessage,
     options: CompletionNotificationOptions,
   ) => void;
+  publishTerminal?: (task: BgTaskSnapshot) => void;
   logger?: Pick<Console, 'error'>;
   makeTaskId?: () => string;
   now?: () => number;
@@ -130,6 +131,7 @@ async function createHarness(options: HarnessOptions = {}) {
       return child;
     },
   };
+  if (options.publishTerminal !== undefined) registryOptions.publishTerminal = options.publishTerminal;
   if (options.platform !== undefined) registryOptions.platform = options.platform;
   if (options.env !== undefined) registryOptions.env = options.env;
   if (options.maxRecentTasks !== undefined) registryOptions.maxRecentTasks = options.maxRecentTasks;
@@ -279,6 +281,24 @@ async function startFakeTask(
 }
 
 void describe('BackgroundTaskRegistry', () => {
+  void it('preserves full shell command bytes except surrounding whitespace', async () => {
+    const h = await createHarness({ platform: 'linux' });
+    try {
+      const command = `'${process.execPath}' '${join(h.cwd, 'bin', 'autopilot-agent-run.mjs')}' --spec '${join(h.cwd, 'specs', 'unit spec.json')}'`;
+      const task = await h.registry.startTask(h.ctx, `  ${command}  `, {
+        name: 'Quoted Runner',
+        isAgent: true,
+        notifyOnCompletion: false,
+      });
+      const spawn = lastSpawn(h);
+      assert.equal(task.command, command);
+      assert.equal(spawn.args.at(-1), command);
+      assert.equal(JSON.parse(readFileSync(task.metadataAbsPath, 'utf8')).command, command);
+    } finally {
+      await cleanup(h.root);
+    }
+  });
+
   void it('uses explicit isAgent to decide Pi telemetry wrapping', async () => {
     assert.equal(commandMayLaunchPiAgent('pi -p hello'), true);
     assert.equal(
@@ -498,6 +518,61 @@ void describe('BackgroundTaskRegistry', () => {
       assert.equal(capped.status, 'failed');
       assert.match(capped.error ?? '', /Output exceeded cap/);
       assert.equal(h.notifications.length, 2);
+    } finally {
+      await cleanup(h.root);
+    }
+  });
+
+  void it('publishes terminal snapshots exactly once after durable metadata', async () => {
+    const terminals: BgTaskSnapshot[] = [];
+    const metadataStatuses: unknown[] = [];
+    let metadataPath = '';
+    const h = await createHarness({
+      publishTerminal: (task) => {
+        terminals.push(task);
+        metadataStatuses.push(
+          parseJsonObject(readFileSync(metadataPath, 'utf8'), 'terminal metadata must be written')[
+            'status'
+          ],
+        );
+      },
+    });
+    try {
+      const { task, child } = await startFakeTask(h, 'Terminal Once');
+      metadataPath = task.metadataAbsPath;
+      child.close(0, null);
+      child.close(1, null);
+      await waitFor(() => task.status !== 'running', 'terminal status');
+      await waitFor(() => terminals.length === 1, 'single terminal publication');
+      const terminal = terminals[0];
+      assert.ok(terminal, 'terminal snapshot should be present');
+      assert.equal(terminal.id, task.id);
+      assert.equal(terminal.status, 'completed');
+      assert.deepEqual(metadataStatuses, ['completed']);
+    } finally {
+      await cleanup(h.root);
+    }
+  });
+
+  void it('keeps failed terminal EventBus delivery loud and retriable', async () => {
+    const terminals: BgTaskSnapshot[] = [];
+    let attempts = 0;
+    const h = await createHarness({
+      publishTerminal: (task) => {
+        attempts += 1;
+        if (attempts === 1) throw new Error('terminal bus unavailable');
+        terminals.push(task);
+      },
+    });
+    try {
+      const { task, child } = await startFakeTask(h, 'Terminal Retry');
+      child.close(0, null);
+      await waitFor(() => task.status === 'completed', 'terminal retry completion');
+      await waitFor(() => terminals.length === 1, 'terminal retry publication');
+      assert.equal(attempts, 2);
+      assert.equal(task.terminalPublished, true);
+      assert.equal(terminals[0]?.id, task.id);
+      assert.match(h.errors.flat().join(' '), /terminal publication failed|terminal bus unavailable/);
     } finally {
       await cleanup(h.root);
     }
@@ -728,6 +803,10 @@ void describe('BackgroundTaskRegistry', () => {
       assert.match(task.id, /^b[0-9a-f]{32}$/);
       const spawn = lastSpawn(h);
       assert.equal(spawn.shell, 'pi');
+      assert.equal(spawn.options.env?.['OPENAI_API_KEY'], undefined);
+      assert.equal(spawn.options.env?.['OPENAI_BASE_URL'], undefined);
+      assert.equal(spawn.options.env?.['ANTHROPIC_API_KEY'], undefined);
+      assert.equal(spawn.options.env?.['OPENROUTER_API_KEY'], undefined);
       assert.deepEqual(spawn.args, [
         '--mode',
         'json',
@@ -783,6 +862,65 @@ void describe('BackgroundTaskRegistry', () => {
         'metadata must remain parseable after attestation',
       );
       assert.equal(metadata['bytesWritten'], readFileSync(task.outputAbsPath).length);
+    } finally {
+      await cleanup(h.root);
+    }
+  });
+
+  void it('rejects duplicate thinking in attested Pi extra args before spawn', async () => {
+    const h = await createHarness({ modelRegistry: oauthRegistry() });
+    try {
+      await initCleanGit(h.cwd);
+      await assert.rejects(
+        h.registry.startAttestedPiTask(h.ctx, {
+          name: 'Duplicate Thinking',
+          provider: 'openai-codex',
+          model: 'gpt-5.5',
+          thinking: 'high',
+          prompt: 'write report.md',
+          reportPath: 'report.md',
+          extraPiArgs: ['--thinking', 'low'],
+        }),
+        /structured thinking field|duplicate Pi args/,
+      );
+      assert.equal(h.children.length, 0, 'duplicate thinking must fail before spawning pi');
+    } finally {
+      await cleanup(h.root);
+    }
+  });
+
+  void it('strips metered API environment from attested Pi child process', async () => {
+    const h = await createHarness({
+      modelRegistry: oauthRegistry(),
+      env: {
+        ...process.env,
+        OPENAI_API_KEY: 'metered-openai',
+        OPENAI_BASE_URL: 'https://api.openai.invalid',
+        ANTHROPIC_API_KEY: 'metered-anthropic',
+        ANTHROPIC_BASE_URL: 'https://api.anthropic.invalid',
+        OPENROUTER_API_KEY: 'metered-openrouter',
+        OPENROUTER_BASE_URL: 'https://openrouter.invalid',
+        PI_API_KEY: 'metered-pi',
+        PI_AUTH_FILE: '/tmp/forbidden-auth.json',
+      },
+    });
+    try {
+      await initCleanGit(h.cwd);
+      const task = await h.registry.startAttestedPiTask(h.ctx, {
+        name: 'Env Strip',
+        provider: 'openai-codex',
+        model: 'gpt-5.5',
+        prompt: 'write report.md',
+        reportPath: 'report.md',
+      });
+      await writeFile(join(h.cwd, 'report.md'), 'unit report\n', 'utf8');
+      const spawn = lastSpawn(h);
+      for (const key of ['OPENAI_API_KEY', 'OPENAI_BASE_URL', 'ANTHROPIC_API_KEY', 'ANTHROPIC_BASE_URL', 'OPENROUTER_API_KEY', 'OPENROUTER_BASE_URL', 'PI_API_KEY', 'PI_AUTH_FILE']) {
+        assert.equal(spawn.options.env?.[key], undefined, `${key} must be stripped`);
+      }
+      spawn.child.writeStdout(piJsonEvents());
+      spawn.child.close(0, null);
+      await waitFor(() => task.status === 'completed', 'attested env-strip completion');
     } finally {
       await cleanup(h.root);
     }

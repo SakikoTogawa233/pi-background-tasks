@@ -111,7 +111,28 @@ export function validateStructuredPiLaunchRequest(input: StructuredPiLaunchReque
     if (arg === '--provider' || arg.startsWith('--provider=') || arg === '--model' || arg.startsWith('--model=')) {
       throw new Error('Use structured provider/model fields, not duplicate Pi args');
     }
+    if (arg === '--thinking' || arg.startsWith('--thinking=')) {
+      throw new Error('Use the structured thinking field, not duplicate Pi args');
+    }
   }
+}
+
+const ATTESTED_PI_REMOVED_ENV_KEYS = [
+  'OPENROUTER_API_KEY',
+  'OPENROUTER_BASE_URL',
+  'OPENAI_API_KEY',
+  'OPENAI_BASE_URL',
+  'ANTHROPIC_API_KEY',
+  'ANTHROPIC_BASE_URL',
+  'PI_API_KEY',
+  'PI_API_BASE_URL',
+  'PI_AUTH_FILE',
+] as const;
+
+export function attestedPiChildEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  const out: NodeJS.ProcessEnv = { ...env };
+  for (const key of ATTESTED_PI_REMOVED_ENV_KEYS) Reflect.deleteProperty(out, key);
+  return out;
 }
 
 export function buildAttestedPiArgv(input: StructuredPiLaunchRequest): string[] {

@@ -9,14 +9,27 @@ import { createServer } from 'node:http';
 import {
   AuthStorage,
   createAgentSession,
+  createEventBus,
   DefaultResourceLoader,
   ModelRegistry,
   SessionManager,
   SettingsManager,
   type AgentSession,
+  type EventBus,
   type ExtensionUIContext,
 } from '@earendil-works/pi-coding-agent';
 import { parseJsonText, type BgTaskSnapshot, type TaskStatus } from '../../src/core/common.js';
+import {
+  BG_EXTENSION_CAPABILITIES,
+  BG_REQUEST_CHANNEL,
+  BG_REQUEST_SCHEMA,
+  BG_RESPONSE_CHANNEL,
+  BG_RESPONSE_SCHEMA,
+  BG_TERMINAL_CHANNEL,
+  BG_TERMINAL_SCHEMA,
+  type BackgroundTaskExtensionResponse,
+  type BackgroundTaskExtensionTerminal,
+} from '../../src/core/extension-api.js';
 import { parsePackageInfo } from '../../src/core/update-check.js';
 
 const extensionPath = resolve('extensions/background-tasks.ts');
@@ -32,7 +45,11 @@ function resolvePiCli(): string | undefined {
   return which.status === 0 ? which.stdout.trim() || undefined : undefined;
 }
 
-async function harness() {
+interface SdkHarnessOptions {
+  eventBus?: EventBus | undefined;
+}
+
+async function harness(options: SdkHarnessOptions = {}) {
   const root = await mkdtemp(join(tmpdir(), 'pi-bg-sdk-'));
   roots.push(root);
   const cwd = join(root, 'project');
@@ -50,6 +67,7 @@ async function harness() {
     noPromptTemplates: true,
     noContextFiles: true,
     noThemes: true,
+    ...(options.eventBus === undefined ? {} : { eventBus: options.eventBus }),
   });
   await loader.reload();
   const authStorage = AuthStorage.create(join(agentDir, 'auth.json'));
@@ -260,6 +278,77 @@ async function readJsonWithStatus(path: string, status: string): Promise<JsonObj
   return metadata;
 }
 
+function requireEventResponse(value: unknown): BackgroundTaskExtensionResponse {
+  assert.ok(isJsonObject(value), 'EventBus response must be an object');
+  assert.equal(value['schema_version'], BG_RESPONSE_SCHEMA);
+  assert.equal(typeof value['request_id'], 'string');
+  assert.equal(typeof value['operation'], 'string');
+  assert.equal(typeof value['ok'], 'boolean');
+  const hasResult = Object.prototype.hasOwnProperty.call(value, 'result');
+  const hasError = Object.prototype.hasOwnProperty.call(value, 'error');
+  assert.notEqual(hasResult, hasError, 'EventBus response must contain exactly one of result/error');
+  return value as BackgroundTaskExtensionResponse;
+}
+
+function requireOkResult(response: BackgroundTaskExtensionResponse): unknown {
+  assert.equal(response.ok, true, response.ok ? 'ok' : response.error);
+  return response.ok ? response.result : undefined;
+}
+
+function requireTerminal(value: unknown): BackgroundTaskExtensionTerminal {
+  assert.ok(isJsonObject(value), 'EventBus terminal must be an object');
+  assert.deepEqual(Object.keys(value).sort(), ['schema_version', 'task']);
+  assert.equal(value['schema_version'], BG_TERMINAL_SCHEMA);
+  return { schema_version: BG_TERMINAL_SCHEMA, task: requiredTask(value['task'], 'terminal task') };
+}
+
+function waitForEventResponse(
+  eventBus: EventBus,
+  requestId: string,
+): Promise<BackgroundTaskExtensionResponse> {
+  return new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      unsubscribe();
+      reject(new Error(`timed out waiting for EventBus response ${requestId}`));
+    }, 1500);
+    const unsubscribe = eventBus.on(BG_RESPONSE_CHANNEL, (data) => {
+      const response = requireEventResponse(data);
+      if (response.request_id !== requestId) return;
+      clearTimeout(timeout);
+      unsubscribe();
+      resolve(response);
+    });
+  });
+}
+
+async function emitEventRequest(
+  eventBus: EventBus,
+  requestId: string,
+  operation: string,
+  payload: Record<string, unknown>,
+): Promise<BackgroundTaskExtensionResponse> {
+  const pending = waitForEventResponse(eventBus, requestId);
+  eventBus.emit(BG_REQUEST_CHANNEL, {
+    schema_version: BG_REQUEST_SCHEMA,
+    request_id: requestId,
+    operation,
+    payload,
+  });
+  return pending;
+}
+
+async function waitForTerminalSnapshot(
+  terminals: readonly BgTaskSnapshot[],
+  taskId: string,
+): Promise<BgTaskSnapshot> {
+  for (let attempt = 0; attempt < 60; attempt++) {
+    const terminal = terminals.find((task) => task.id === taskId);
+    if (terminal) return terminal;
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  throw new Error(`timed out waiting for terminal ${taskId}`);
+}
+
 async function cleanupRoot(root: string): Promise<void> {
   await new Promise((resolve) => setTimeout(resolve, 50));
   for (let attempt = 0; attempt < 5; attempt++) {
@@ -457,6 +546,117 @@ void describe('sdk', () => {
       assert.match(resultText(logs), /sdk-ok/);
       await assert.rejects(() => exec(session, 'bg_kill', { taskId: t.id }), /not running/);
     } finally {
+      await session.extensionRunner.emit({ type: 'session_shutdown', reason: 'quit' });
+      session.dispose();
+    }
+  });
+
+  void it('serves real extension EventBus requests and terminal events through the shared registry', async () => {
+    const eventBus = createEventBus();
+    const terminals: BgTaskSnapshot[] = [];
+    const eventOrder: string[] = [];
+    const unsubscribeResponseOrder = eventBus.on(BG_RESPONSE_CHANNEL, (data) => {
+      const response = requireEventResponse(data);
+      if (response.request_id === 'sdk-run' || response.request_id === 'sdk-kill') {
+        eventOrder.push(`response:${response.request_id}`);
+      }
+    });
+    const unsubscribeTerminal = eventBus.on(BG_TERMINAL_CHANNEL, (data) => {
+      const task = requireTerminal(data).task;
+      terminals.push(task);
+      eventOrder.push(`terminal:${task.id}:${task.status}`);
+    });
+    const { session, cwd } = await harness({ eventBus });
+    try {
+      await session.extensionRunner.emit({ type: 'session_start', reason: 'startup' });
+      const caps = await emitEventRequest(eventBus, 'sdk-cap', 'capabilities', {});
+      assert.deepEqual(requireOkResult(caps), BG_EXTENSION_CAPABILITIES);
+
+      const run = await emitEventRequest(eventBus, 'sdk-run', 'run', {
+        name: 'EventBus Echo',
+        command: 'printf api-ok',
+        isAgent: false,
+        notifyOnCompletion: false,
+        triggerOnCompletion: false,
+      });
+      const task = requiredTask(requireOkResult(run), 'run result task');
+      assert.equal(task.name, 'EventBus Echo');
+      assert.ok(
+        task.status === 'running' || task.status === 'completed',
+        `immediate run response status should be a valid launch snapshot, got ${task.status}`,
+      );
+      assert.ok(existsSync(join(cwd, task.outputPath)));
+      const terminal = await waitForTerminalSnapshot(terminals, task.id);
+      assert.equal(terminal.status, 'completed');
+      assert.equal(terminals.filter((entry) => entry.id === task.id).length, 1);
+      assert.ok(
+        eventOrder.findIndex((entry) => entry === `terminal:${task.id}:completed`) >
+          eventOrder.indexOf('response:sdk-run'),
+        'completed terminal must follow the correlated run response',
+      );
+
+      const logs = await emitEventRequest(eventBus, 'sdk-logs', 'logs', {
+        taskId: task.id,
+        maxBytes: 100,
+        tail: true,
+      });
+      const logsResult = requiredJsonObject(requireOkResult(logs), 'logs result must be an object');
+      assert.match(String(logsResult['text']), /api-ok/u);
+      assert.equal(requiredTask(logsResult['task'], 'logs task').id, task.id);
+      assert.equal(logsResult['tail'], true);
+
+      const status = await emitEventRequest(eventBus, 'sdk-status', 'status', { taskId: task.id });
+      const statusResult = requiredJsonObject(
+        requireOkResult(status),
+        'status result must be an object',
+      );
+      const statusTasks = statusResult['tasks'];
+      assert.ok(Array.isArray(statusTasks), 'status tasks should be an array');
+      assert.equal(requiredTask(statusTasks[0], 'status task').status, 'completed');
+
+      const sleep = await emitEventRequest(eventBus, 'sdk-sleep', 'run', {
+        name: 'EventBus Sleep',
+        command: `exec ${shellQuote(process.execPath)} -e ${shellQuote('setTimeout(() => {}, 5000)')}`,
+        isAgent: false,
+        notifyOnCompletion: false,
+        triggerOnCompletion: false,
+      });
+      const sleepTask = requiredTask(requireOkResult(sleep), 'sleep run task');
+      const kill = await emitEventRequest(eventBus, 'sdk-kill', 'kill', { taskId: sleepTask.id });
+      const killResult = requiredJsonObject(requireOkResult(kill), 'kill result must be an object');
+      assert.equal(requiredTask(killResult['task'], 'kill task').status, 'killed');
+      const sleepTerminal = await waitForTerminalSnapshot(terminals, sleepTask.id);
+      assert.equal(sleepTerminal.status, 'killed');
+      assert.equal(terminals.filter((entry) => entry.id === sleepTask.id).length, 1);
+      assert.ok(
+        eventOrder.findIndex((entry) => entry === `terminal:${sleepTask.id}:killed`) >
+          eventOrder.indexOf('response:sdk-kill'),
+        'killed terminal must follow the kill response',
+      );
+
+      const malformed = await emitEventRequest(eventBus, 'sdk-malformed', 'run', {
+        name: 'Bad EventBus Run',
+        command: 'printf nope',
+        isAgent: false,
+        timeoutSeconds: null,
+        notifyOnCompletion: true,
+        triggerOnCompletion: true,
+      });
+      assert.equal(malformed.ok, false);
+      assert.match(malformed.ok ? '' : malformed.error, /positive integer/u);
+
+      const unknown = await emitEventRequest(eventBus, 'sdk-unknown', 'mystery', {});
+      assert.equal(unknown.ok, false);
+      assert.equal(unknown.operation, 'mystery');
+
+      const firstDuplicate = await emitEventRequest(eventBus, 'sdk-dup', 'capabilities', {});
+      assert.equal(firstDuplicate.ok, true);
+      const duplicate = await emitEventRequest(eventBus, 'sdk-dup', 'capabilities', {});
+      assert.equal(duplicate.ok, false);
+      assert.match(duplicate.ok ? '' : duplicate.error, /duplicate request_id/u);
+    } finally {
+      unsubscribeTerminal();
+      unsubscribeResponseOrder();
       await session.extensionRunner.emit({ type: 'session_shutdown', reason: 'quit' });
       session.dispose();
     }

@@ -3,7 +3,11 @@ import { open } from 'node:fs/promises';
 import { DEFAULT_MAX_BYTES } from '@earendil-works/pi-coding-agent';
 import type { BackgroundTaskChildProcess } from './registry.js';
 
-export type TaskStatus = 'running' | 'completed' | 'failed' | 'killed';
+export const TASK_STATUS_VALUES = ['running', 'completed', 'failed', 'killed'] as const;
+export const TERMINAL_TASK_STATUS_VALUES = ['completed', 'failed', 'killed'] as const;
+
+export type TaskStatus = (typeof TASK_STATUS_VALUES)[number];
+export type TerminalTaskStatus = (typeof TERMINAL_TASK_STATUS_VALUES)[number];
 export type KillKind = 'user' | 'timeout' | 'output_cap' | 'shutdown';
 
 export type JsonObject = Readonly<Record<PropertyKey, unknown>>;
@@ -82,6 +86,11 @@ export interface BgTask extends Omit<BgTaskSnapshot, 'name'> {
   killSignalSent?: boolean | undefined;
   capExceeded?: boolean | undefined;
   finalized?: boolean | undefined;
+  terminalPublished?: boolean | undefined;
+  terminalPublishInFlight?: boolean | undefined;
+  terminalPublishRetryHandle?: NodeJS.Timeout | undefined;
+  /** Optional protocol barrier used by EventBus run requests so early child exits cannot publish before the run response is observable. */
+  terminalPublicationGate?: Promise<void> | undefined;
   contextUsageBuffer?: string | undefined;
   /** True when this task launched a telemetry-wrapped Pi agent; its stdout carries control lines, not raw output. */
   telemetryWrapped?: boolean | undefined;
@@ -121,6 +130,8 @@ export interface StartTaskOptions {
   timeoutSeconds?: number | undefined;
   notifyOnCompletion?: boolean | undefined;
   triggerOnCompletion?: boolean | undefined;
+  /** @internal EventBus protocol barrier; callers should not set this outside the extension service. */
+  terminalPublicationGate?: Promise<void> | undefined;
 }
 
 export interface StartAttestedPiTaskOptions {

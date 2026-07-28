@@ -21,7 +21,9 @@ import {
   parseSemver,
   sanitizePathSegment,
   shellInvocation,
+  TASK_STATUS_VALUES,
   taskDisplayName,
+  TERMINAL_TASK_STATUS_VALUES,
   truncateChars,
 } from '../../src/core/common.js';
 
@@ -101,6 +103,8 @@ void describe('core', () => {
     assert.equal(normalizeMaxBytes(Number.NaN, 123), 123);
     assert.equal(normalizeMaxBytes(1.9, 123), 1);
     assert.equal(truncateChars('abcdef', 4), 'abc…');
+    assert.deepEqual([...TASK_STATUS_VALUES], ['running', 'completed', 'failed', 'killed']);
+    assert.deepEqual([...TERMINAL_TASK_STATUS_VALUES], ['completed', 'failed', 'killed']);
 
     const text = formatSnapshotList(
       [

@@ -20,7 +20,6 @@ import {
   shellInvocation,
   shellQuote,
   snapshot,
-  stripMatchingQuotes,
   taskDisplayName,
   type BgLogsDetails,
   type BgTask,
@@ -36,6 +35,7 @@ import {
 } from './common.js';
 import {
   ATTESTED_TASK_ID_PATTERN,
+  attestedPiChildEnv,
   buildAttestedPiArgv,
   buildPiTaskAttestation,
   closeAndFsyncOutputStream,
@@ -113,6 +113,7 @@ export type CompletionNotificationSender = (
 export interface BackgroundTaskRegistryOptions {
   onChange?: () => void;
   sendCompletionNotification: CompletionNotificationSender;
+  publishTerminal?: (task: BgTaskSnapshot) => void;
   spawn?: BackgroundTaskSpawn;
   killProcess?: KillProcessFn;
   platform?: NodeJS.Platform;
@@ -614,6 +615,7 @@ export class BackgroundTaskRegistry {
   private readonly logger: Pick<Console, 'error'>;
   private readonly onChange: () => void;
   private readonly sendCompletionNotification: CompletionNotificationSender;
+  private readonly publishTerminalSnapshot: (task: BgTaskSnapshot) => void;
 
   constructor(options: BackgroundTaskRegistryOptions) {
     this.spawn =
@@ -630,6 +632,7 @@ export class BackgroundTaskRegistry {
     this.logger = options.logger ?? console;
     this.onChange = options.onChange ?? noopOnChange;
     this.sendCompletionNotification = options.sendCompletionNotification;
+    this.publishTerminalSnapshot = options.publishTerminal ?? noopOnChange;
   }
 
   isShuttingDown(): boolean {
@@ -664,7 +667,7 @@ export class BackgroundTaskRegistry {
     command: string,
     options: StartTaskOptions = {},
   ): Promise<BgTask> {
-    const normalizedCommand = stripMatchingQuotes(command);
+    const normalizedCommand = command.trim();
     if (!normalizedCommand) throw new Error('Background command is empty');
     if (this.shuttingDown)
       throw new Error('Cannot start a background task while Pi is shutting down');
@@ -708,6 +711,7 @@ export class BackgroundTaskRegistry {
       notifyOnCompletion: options.notifyOnCompletion ?? true,
       triggerOnCompletion: options.triggerOnCompletion ?? false,
       timeoutSeconds,
+      terminalPublicationGate: options.terminalPublicationGate,
       waiters: [],
     };
     this.tasks.set(id, task);
@@ -892,7 +896,7 @@ export class BackgroundTaskRegistry {
       cwd: ctx.cwd,
       detached: this.platform !== 'win32',
       stdio: ['ignore', 'pipe', 'pipe'],
-      env: this.env,
+      env: attestedPiChildEnv(this.env),
       windowsHide: true,
     });
     task.child = captured.child;
@@ -1085,6 +1089,7 @@ export class BackgroundTaskRegistry {
     task.status = finalStatus;
     for (const waiter of task.waiters.splice(0)) waiter();
     this.onChange();
+    this.publishTerminal(task);
     this.pruneOldTasks();
   }
 
@@ -1464,6 +1469,58 @@ export class BackgroundTaskRegistry {
     });
   }
 
+  private publishTerminal(task: BgTask): void {
+    if (task.terminalPublished || task.terminalPublishInFlight) return;
+    task.terminalPublishInFlight = true;
+    if (task.terminalPublicationGate === undefined) {
+      this.tryPublishTerminalNow(task);
+      return;
+    }
+    void this.publishTerminalWhenReady(task);
+  }
+
+  private async publishTerminalWhenReady(task: BgTask): Promise<void> {
+    try {
+      await task.terminalPublicationGate;
+    } catch (error) {
+      this.handleTerminalPublishFailure(task, error);
+      return;
+    }
+    this.tryPublishTerminalNow(task);
+  }
+
+  private tryPublishTerminalNow(task: BgTask): void {
+    try {
+      if (task.terminalPublished) return;
+      this.publishTerminalSnapshot(snapshot(task));
+      task.terminalPublished = true;
+      if (task.terminalPublishRetryHandle) {
+        clearTimeout(task.terminalPublishRetryHandle);
+        task.terminalPublishRetryHandle = undefined;
+      }
+    } catch (error) {
+      this.handleTerminalPublishFailure(task, error);
+      return;
+    } finally {
+      task.terminalPublishInFlight = false;
+    }
+  }
+
+  private handleTerminalPublishFailure(task: BgTask, error: unknown): void {
+    this.logger.error(
+      `[background-tasks] terminal publication failed for ${task.id}:`,
+      error,
+    );
+    task.terminalPublishInFlight = false;
+    if (!task.terminalPublished && task.terminalPublishRetryHandle === undefined) {
+      task.terminalPublishRetryHandle = setTimeout(() => {
+        task.terminalPublishRetryHandle = undefined;
+        this.publishTerminal(task);
+      }, 100);
+      task.terminalPublishRetryHandle.unref();
+    }
+  }
+
   private notifyCompletion(task: BgTask): void {
     if (!task.notifyOnCompletion || task.notified || this.shuttingDown) return;
     task.notified = true;
@@ -1524,7 +1581,14 @@ export class BackgroundTaskRegistry {
     // turn's context snapshot and recreates the same false-completion race the
     // attested producer is required to prevent.
     try {
-      if (task.telemetryWrapped) this.flushAgentStdout(task);
+      if (task.telemetryWrapped) {
+        // Child-process close can be observed before the wrapper stdout listener has
+        // committed its last parsed telemetry batch. Wait for a short quiet window,
+        // then flush the trailing partial line, so completed status never races
+        // ahead of the final assistant-turn context/token/tool snapshot.
+        await new Promise<void>((resolve) => setTimeout(resolve, 25));
+        this.flushAgentStdout(task);
+      }
       if (task.stream && !task.stream.destroyed) await closeAndFsyncOutputStream(task.stream);
     } catch (finalizeError) {
       finalStatus = 'failed';
@@ -1532,12 +1596,13 @@ export class BackgroundTaskRegistry {
       finalError = finalError ? `${finalError}; final output durability failed: ${message}` : `Final output durability failed: ${message}`;
     }
 
-    task.status = finalStatus;
     task.endTime = this.now();
     if (finalError) task.error = finalError;
     try {
-      await this.writeMetadata(task);
+      await this.writeMetadataSnapshot(task, { ...snapshot(task), status: finalStatus });
+      task.status = finalStatus;
     } catch (metadataError) {
+      finalStatus = 'failed';
       task.status = 'failed';
       task.error = `Terminal metadata write failed: ${metadataError instanceof Error ? metadataError.message : String(metadataError)}`;
       this.logger.error(
@@ -1554,6 +1619,7 @@ export class BackgroundTaskRegistry {
 
     for (const waiter of task.waiters.splice(0)) waiter();
     this.onChange();
+    this.publishTerminal(task);
     try {
       this.notifyCompletion(task);
     } catch (notificationError) {

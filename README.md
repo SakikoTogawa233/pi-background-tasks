@@ -9,19 +9,19 @@ This package adds named, tracked background shell jobs with durable output files
 From npm after publish:
 
 ```bash
-pi install npm:pi-background-tasks@0.6.0
+pi install npm:pi-background-tasks@0.6.1
 ```
 
 From git after pushing this package to its standalone repository and tagging:
 
 ```bash
-pi install git:github.com/ismailsaleekh/pi-background-tasks@v0.6.0
+pi install git:github.com/ismailsaleekh/pi-background-tasks@v0.6.1
 ```
 
 For project-local install:
 
 ```bash
-pi install -l npm:pi-background-tasks@0.6.0
+pi install -l npm:pi-background-tasks@0.6.1
 ```
 
 ## Commands
@@ -97,6 +97,33 @@ The lookup runs at most once per session on `session_start`, is time-boxed, and 
 `bg_run` requires a concise `name` for the footer dock, the shell `command`, and required `isAgent: boolean`. Set `isAgent: true` only when the background task launches an LLM/agent process (for example `pi -p ...` or `pi --mode json ...`); set `isAgent: false` for scripts, tests, dev servers, sleeps, and ordinary shell commands. It defaults to `triggerOnCompletion: true`, so completion notifications trigger a follow-up agent turn. Tasks marked with `isAgent: true` that launch print/json child Pi agents through the normal shell command name are telemetry-wrapped; set `PI_BG_DISABLE_PI_TELEMETRY=1` only when raw Pi stdout is required. The task snapshot and metadata expose `isAgent`, `contextUsage` (latest reported child assistant turn), cumulative `tokenUsage` (`input`, `output`, `cacheRead`, `cacheWrite`, `totalTokens`), cumulative `toolUsage` (`total`, `failed`, `byName`), and `model` (the LLM identifier reported by the child assistant turns, preferring the fully-qualified `provider/model` form) when reported by the child task. User-launched `/bg` jobs are display-only by default unless `--agent` is provided; UI reruns preserve the original task's `isAgent` value.
 
 `bg_run_pi_attested` is separate from `bg_run` and never accepts a shell command. It takes structured `provider`, `model`, `prompt`, optional literal extra Pi argv, and a relative `reportPath`; launches exactly one direct `pi --mode json` child; records raw Pi JSON events, separate stderr, exact argv/cwd, prompt/report hashes, observed Pi session/provider/model, and `ModelRegistry.isUsingOAuth` credential class. It forbids direct API-key/auth-file launch arguments and emits no partial attestation: failures remain ordinary failed tasks with no sidecar.
+
+## Extension EventBus API
+
+Version `0.6.1` exposes a real extension-to-extension service over Pi's documented `pi.events` bus. This is not a `ctx` method and it does not call a second task manager: requests route to the same `BackgroundTaskRegistry` used by `bg_run`, `bg_status`, `bg_logs`, and `bg_kill`.
+
+Public constants are exported from `src/core/extension-api.ts`:
+
+| Purpose | Value |
+|---|---|
+| Request channel | `pi-background-tasks:request:v1` |
+| Response channel | `pi-background-tasks:response:v1` |
+| Terminal channel | `pi-background-tasks:terminal:v1` |
+| Request schema | `pi-background-tasks.extension-request.v1` |
+| Response schema | `pi-background-tasks.extension-response.v1` |
+| Terminal schema | `pi-background-tasks.extension-terminal.v1` |
+
+Requests are closed frames: `{ schema_version, request_id, operation, payload }`, where `operation` is one of `capabilities`, `run`, `status`, `logs`, or `kill`. Responses echo the same `request_id` and `operation`, set `ok`, and contain exactly one of `result` or bounded `error`. Malformed frames, unknown keys, duplicate request IDs, requests before `session_start`, and requests during shutdown receive `ok: false`; they are not silently dropped or rerouted to shell fallback behavior.
+
+`capabilities` returns exactly:
+
+```json
+{"api_version":1,"run":true,"run_is_agent":true,"run_completion_trigger":true,"status":true,"logs":true,"logs_bounded":true,"kill":true}
+```
+
+`run.payload` is the strict `bg_run` launch object: `name`, `command`, `isAgent`, `notifyOnCompletion`, `triggerOnCompletion`, plus optional positive-integer `timeoutSeconds`. The result is a `BgTaskSnapshot`. `status` returns `{ tasks }`; `logs` returns the existing bounded log detail fields plus bounded `text`; `kill` returns `{ task, message }`. Task status vocabulary is exactly `running`, `completed`, `failed`, or `killed`.
+
+Terminal events keep the strict paired-consumer frame `{ schema_version: "pi-background-tasks.extension-terminal.v1", task }`. They are correlated by `task.id`, published exactly once per task after final output and terminal metadata durability, and for EventBus `run`/`kill` requests they are held behind a response barrier so even an immediately exiting or immediately killed child cannot emit its terminal event until the correlated response has been delivered and one microtask turn has allowed consumers to bind the returned task id. Terminal EventBus delivery exceptions are logged loudly and retried; a task is marked terminal-published only after the EventBus emit returns successfully.
 
 ## Runtime files
 
