@@ -364,7 +364,7 @@ export class FusionArtifactStore {
     const promptRef = await this.writeArtifact(`${prefix}.prompt.txt`, input.prompt);
     const eventsRef = await this.writeArtifact(`${prefix}.events.jsonl`, input.stdout);
     const stderrRef = await this.writeArtifact(`${prefix}.stderr.txt`, input.stderr);
-    await this.writeArtifact(responseName(prefix, input.responseKind), '');
+    const responseRef = await this.writeArtifact(responseName(prefix, input.responseKind), '');
     await this.updateManifest((manifest) => {
       const record: FusionAttemptArtifactRecord = {
         stage: input.stage,
@@ -373,6 +373,7 @@ export class FusionArtifactStore {
         prompt_path: promptRef.path,
         events_path: eventsRef.path,
         stderr_path: stderrRef.path,
+        response_path: responseRef.path,
         error: input.error,
       };
       if (input.provider !== undefined) record.provider = input.provider;

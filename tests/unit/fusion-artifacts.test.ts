@@ -171,6 +171,7 @@ void describe('fusion artifacts', () => {
       const firstAttempt = attempts[0];
       assert.ok(typeof firstAttempt === 'object' && firstAttempt !== null);
       assert.equal(field(firstAttempt, 'status'), 'failed');
+      assert.equal(field(firstAttempt, 'response_path'), 'candidate-2.attempt-1.response.md');
       assert.equal(field(firstAttempt, 'qualifiedId'), 'p/b');
       const failedUsage = field(firstAttempt, 'usage');
       assert.ok(typeof failedUsage === 'object' && failedUsage !== null);

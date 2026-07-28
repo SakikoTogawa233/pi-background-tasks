@@ -91,6 +91,10 @@ function addUsage(target: FusionUsage, delta: FusionUsage): void {
   if (delta.costTotal !== undefined) target.costTotal = (target.costTotal ?? 0) + delta.costTotal;
 }
 
+function addFailedChildUsage(target: FusionUsage, error: unknown): void {
+  if (error instanceof FusionChildRunError) addUsage(target, error.usage);
+}
+
 function errorText(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
@@ -344,6 +348,7 @@ export class FusionOrchestrator {
       const merged = await this.runChildWithRetry(
         input,
         store,
+        usage,
         input.models.merger,
         'merge',
         FUSION_MERGER_SYSTEM_PROMPT,
@@ -414,6 +419,7 @@ export class FusionOrchestrator {
         const task = this.runChildWithRetry(
           input,
           store,
+          usage,
           model,
           'candidate',
           FUSION_CANDIDATE_SYSTEM_PROMPT,
@@ -489,6 +495,7 @@ export class FusionOrchestrator {
     const result = await this.runChildWithRetry(
       input,
       store,
+      usage,
       input.models.evaluator,
       'evaluation',
       systemPrompt,
@@ -508,6 +515,7 @@ export class FusionOrchestrator {
   private async runChildWithRetry(
     input: FusionWorkflowInput,
     store: FusionArtifactStore,
+    usage: FusionUsage,
     model: ResolvedFusionModel,
     stage: FusionStage,
     systemPrompt: string,
@@ -528,9 +536,11 @@ export class FusionOrchestrator {
         );
       } catch (error) {
         if (!signal.aborted && retryableSpawn(error, launchTry) && launchTry === 1) continue;
+        addFailedChildUsage(usage, error);
         await store.recordFailedAttempt(
           recordFailureInput(error, stage, slot, logicalAttempt, userPrompt, responseKind),
         );
+        await store.setUsage(usage);
         throw error;
       }
     }

@@ -371,7 +371,15 @@ void describe('fusion SDK integration', { concurrency: false }, () => {
   void it('returns the exact merged tool text, streams progress, and excludes the active tool-call assistant leaf', async () => {
     const h = await harness();
     try {
-      const user: UserMessage = { role: 'user', content: 'prior user context', timestamp: Date.now() };
+      const user: UserMessage = {
+        role: 'user',
+        content: [
+          { type: 'text', text: 'prior user context before image ' },
+          { type: 'image', data: 'sdk-raw-image-base64', mimeType: 'image/png' },
+          { type: 'text', text: ' after image context' },
+        ],
+        timestamp: Date.now(),
+      };
       h.session.sessionManager.appendMessage(user);
       const assistant: AssistantMessage = {
         role: 'assistant',
@@ -415,7 +423,10 @@ void describe('fusion SDK integration', { concurrency: false }, () => {
       const parsedInput = parseJsonText(candidate.stdin);
       assert.ok(isRecord(parsedInput), 'canonical input should be an object');
       assert.equal(parsedInput['request'], 'tool prompt');
-      assert.match(String(parsedInput['conversation_transcript']), /prior user context/);
+      assert.match(String(parsedInput['conversation_transcript']), /prior user context before image/);
+      assert.match(String(parsedInput['conversation_transcript']), /after image context/);
+      assert.match(String(parsedInput['conversation_transcript']), /\[Image omitted from fusion text transcript: image\/png\]/);
+      assert.doesNotMatch(String(parsedInput['conversation_transcript']), /sdk-raw-image-base64/);
       assert.doesNotMatch(String(parsedInput['conversation_transcript']), /partial assistant text/);
       assert.doesNotMatch(String(parsedInput['conversation_transcript']), /call-sibling|bg_status/);
     } finally {
@@ -440,7 +451,12 @@ void describe('fusion SDK integration', { concurrency: false }, () => {
         () => ({ type: 'resolved' as const }),
         (error: unknown) => ({ type: 'rejected' as const, error }),
       );
-      await waitForInvocationCount(h.fakeLogPath, 3);
+      const ready = await Promise.race([
+        waitForInvocationCount(h.fakeLogPath, 3).then(() => ({ type: 'ready' as const })),
+        observed,
+      ]);
+      if (ready.type === 'resolved') assert.fail('fusion completed before delayed child invocations were observed');
+      if (ready.type === 'rejected') throw new Error(`fusion rejected before child invocations were observed: ${errorMessage(ready.error)}`);
       await h.session.extensionRunner.emit({ type: 'session_shutdown', reason: 'reload' });
       const outcome = await observed;
       assert.equal(outcome.type, 'rejected');

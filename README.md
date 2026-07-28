@@ -114,7 +114,7 @@ fusion-models.json
 
 Missing config means all five slots are `$current`. Malformed config, stale explicit models, unavailable current models, and concurrent selector write conflicts fail loudly before child inference. Selector saves use an inter-process lock plus revision re-read before rename so simultaneous dialogs cannot silently overwrite each other. Candidate identities are anonymized before evaluation; provider/model metadata stays in local artifacts, not in evaluator prompts.
 
-Progress is surfaced through `fusion` status updates, TUI cancellable loader UI for `/fusion`, and partial `fusion_brainstorm` tool updates. Session shutdown or reload tracks the whole invocation from entry, aborts live or initializing Fusion runs, and waits for cleanup. Captured conversation context is serialized as lossless text (no summarization-oriented 2,000-character tool-result truncation); provider context-window failures remain loud child failures rather than hidden local truncation.
+Progress is surfaced through `fusion` status updates, TUI cancellable loader UI for `/fusion`, and partial `fusion_brainstorm` tool updates. Session shutdown or reload tracks the whole invocation from entry, aborts live or initializing Fusion runs, and waits for cleanup. Captured conversation context is serialized as a full text transcript with no summarization-oriented 2,000-character tool-result truncation. Image bytes/base64 are not forwarded to Fusion children; user/tool-result image blocks are replaced in the transcript with `[Image omitted from fusion text transcript: <mime-type>]`, so visual information must be described in text if the children need it. Provider context-window failures remain loud child failures rather than hidden local truncation.
 
 ## Extension EventBus API
 
@@ -158,7 +158,7 @@ Fusion writes private debugging artifacts under:
 .pi/fusion/<session-id>-<pid>/<run-id>/
 ```
 
-Each run contains `manifest.json`, `canonical-input.json`, candidate/evaluation/merge prompts, raw child JSONL events, stderr, responses, `blind-candidates.json`, `evaluation.json`, `merged.md`, and `error.json` for failed/cancelled runs. Artifact files are written by private temp-file/fsync/rename, and manifests persist cumulative child usage plus per-attempt observed usage/model data for both successful and failed runs. These artifacts are local evidence only; they are not shown in `/jobs` or the background-task dock.
+Each run contains `manifest.json`, `canonical-input.json`, candidate/evaluation/merge prompts, raw child JSONL events, stderr, responses, `blind-candidates.json`, `evaluation.json`, `merged.md`, and `error.json` for failed/cancelled runs. Artifact files are written by private temp-file/fsync/rename, and manifests persist cumulative child usage plus per-attempt observed usage/model data for successful, failed, and cancelled child attempts. These artifacts are local evidence only; they are not shown in `/jobs` or the background-task dock.
 
 For attested Pi tasks only, the task id is `b` plus 32 random hex characters (128 bits) and additional flat siblings are written in the same directory:
 

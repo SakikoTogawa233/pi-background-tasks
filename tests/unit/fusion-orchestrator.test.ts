@@ -12,10 +12,11 @@ import {
   type FusionCanonicalInputV1,
   type FusionChildRunResult,
   type FusionEvaluationV1,
+  type FusionUsage,
   type ResolvedFusionModel,
   type ResolvedFusionModels,
 } from '../../src/core/fusion/types.js';
-import type { RunPiChildOptions } from '../../src/core/fusion/pi-child.js';
+import { FusionChildRunError, type RunPiChildOptions } from '../../src/core/fusion/pi-child.js';
 
 function resolved(qualifiedId: string): ResolvedFusionModel {
   const slash = qualifiedId.indexOf('/');
@@ -82,6 +83,43 @@ function childResult(options: RunPiChildOptions, text: string): FusionChildRunRe
   return result;
 }
 
+function observedUsage(totalTokens: number): FusionUsage {
+  return {
+    input: totalTokens,
+    output: totalTokens + 1,
+    cacheRead: totalTokens + 2,
+    cacheWrite: totalTokens + 3,
+    totalTokens,
+    costTotal: totalTokens / 100,
+  };
+}
+
+function childRunError(
+  options: RunPiChildOptions,
+  message: string,
+  totalTokens: number,
+  code: FusionError['code'] = 'child_exit_failed',
+): FusionChildRunError {
+  const details = {
+    code,
+    stage: options.stage,
+    attempt: options.attempt,
+  };
+  const fusionError = new FusionError(message, options.slot === undefined ? details : { ...details, slot: options.slot });
+  return new FusionChildRunError(
+    fusionError,
+    Buffer.from('{"type":"session","id":"s","cwd":"/tmp"}\n'),
+    Buffer.alloc(0),
+    { code: code === 'child_exit_failed' ? 1 : null, signal: code === 'child_cancelled' ? 'SIGTERM' : null },
+    {
+      usage: observedUsage(totalTokens),
+      provider: options.model.provider,
+      model: options.model.model,
+      qualifiedId: options.model.qualifiedId,
+    },
+  );
+}
+
 function parseObject(text: string): object {
   const parsed = parseJsonText(text);
   assert.ok(typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed));
@@ -90,6 +128,110 @@ function parseObject(text: string): object {
 
 function field(record: object, key: string): unknown {
   return Reflect.get(record, key);
+}
+
+function objectValue(value: unknown, label: string): object {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) throw new Error(`${label} must be an object`);
+  return value;
+}
+
+function objectField(record: object, key: string): object {
+  return objectValue(field(record, key), key);
+}
+
+function numberField(record: object, key: string): number {
+  const value = field(record, key);
+  if (typeof value !== 'number') throw new Error(`${key} must be a number`);
+  return value;
+}
+
+function stringField(record: object, key: string): string {
+  const value = field(record, key);
+  if (typeof value !== 'string') throw new Error(`${key} must be a string`);
+  return value;
+}
+
+function attemptRecords(manifest: object): object[] {
+  const attempts = field(manifest, 'attempts');
+  if (!Array.isArray(attempts)) throw new Error('attempts must be an array');
+  return attempts.map((attempt, index) => objectValue(attempt, `attempt ${String(index)}`));
+}
+
+function usageFromRecord(record: object): FusionUsage {
+  const usage = objectField(record, 'usage');
+  const out: FusionUsage = {
+    input: numberField(usage, 'input'),
+    output: numberField(usage, 'output'),
+    cacheRead: numberField(usage, 'cacheRead'),
+    cacheWrite: numberField(usage, 'cacheWrite'),
+    totalTokens: numberField(usage, 'totalTokens'),
+  };
+  const costTotal = field(usage, 'costTotal');
+  if (costTotal !== undefined) {
+    if (typeof costTotal !== 'number') throw new Error('costTotal must be a number');
+    out.costTotal = costTotal;
+  }
+  return out;
+}
+
+function addExpectedUsage(target: FusionUsage, delta: FusionUsage): void {
+  target.input += delta.input;
+  target.output += delta.output;
+  target.cacheRead += delta.cacheRead;
+  target.cacheWrite += delta.cacheWrite;
+  target.totalTokens += delta.totalTokens;
+  if (delta.costTotal !== undefined) target.costTotal = (target.costTotal ?? 0) + delta.costTotal;
+}
+
+function assertManifestUsageEqualsAttemptSum(manifest: object): void {
+  const expected: FusionUsage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0 };
+  for (const attempt of attemptRecords(manifest)) addExpectedUsage(expected, usageFromRecord(attempt));
+  const actual = usageFromRecord(manifest);
+  assert.deepEqual(
+    {
+      input: actual.input,
+      output: actual.output,
+      cacheRead: actual.cacheRead,
+      cacheWrite: actual.cacheWrite,
+      totalTokens: actual.totalTokens,
+    },
+    {
+      input: expected.input,
+      output: expected.output,
+      cacheRead: expected.cacheRead,
+      cacheWrite: expected.cacheWrite,
+      totalTokens: expected.totalTokens,
+    },
+  );
+  if (expected.costTotal !== undefined) {
+    assert.ok(actual.costTotal !== undefined, 'aggregate costTotal must be present');
+    assert.ok(Math.abs(actual.costTotal - expected.costTotal) < 1e-12, 'aggregate costTotal must equal attempt sum');
+  } else {
+    assert.equal(actual.costTotal, undefined);
+  }
+}
+
+async function failedManifest(root: string, runner: FusionChildRunner): Promise<object> {
+  const orchestrator = new FusionOrchestrator({ childRunner: runner });
+  const canonical = canonicalInput();
+  let thrown: unknown;
+  try {
+    await orchestrator.run({
+      source: 'command',
+      cwd: root,
+      canonicalInput: canonical,
+      canonicalInputSerialized: JSON.stringify(canonical),
+      config: defaultFusionModelConfig(),
+      models: models(),
+    });
+  } catch (error) {
+    thrown = error;
+  }
+  assert.ok(thrown instanceof FusionError);
+  assert.ok(thrown.artifactDir, 'failed fusion error must include artifact dir');
+  const manifest = parseObject(await readFile(join(root, thrown.artifactDir, 'manifest.json'), 'utf8'));
+  assert.equal(field(manifest, 'state'), 'failed');
+  return manifest;
 }
 
 async function waitForCalls(calls: readonly RunPiChildOptions[], count: number): Promise<void> {
@@ -245,6 +387,86 @@ void describe('fusion orchestrator', () => {
       assert.equal(calls.some((call) => call.stage === 'evaluation' || call.stage === 'merge'), false);
     } finally {
       await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  void it('aggregates observed usage exactly once for failed and cancelled candidate attempts', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'pi-fusion-orchestrator-candidate-usage-'));
+    try {
+      const calls: RunPiChildOptions[] = [];
+      const runner: FusionChildRunner = async (options) => {
+        calls.push(options);
+        if (options.stage !== 'candidate') return childResult(options, 'unexpected later stage');
+        if (options.slot === 1) {
+          await waitForCalls(calls, 3);
+          throw childRunError(options, 'candidate one failed after usage', 5);
+        }
+        const slot = options.slot;
+        if (slot === undefined) throw new Error('candidate slot is required');
+        await new Promise<void>((_resolve, reject) => {
+          const failCancelled = () => {
+            reject(childRunError(options, `candidate ${String(slot)} cancelled after usage`, slot === 2 ? 7 : 11, 'child_cancelled'));
+          };
+          if (options.signal?.aborted === true) {
+            failCancelled();
+            return;
+          }
+          options.signal?.addEventListener('abort', failCancelled, { once: true });
+        });
+        return childResult(options, 'unreachable');
+      };
+      const manifest = await failedManifest(root, runner);
+      const attempts = attemptRecords(manifest);
+      assert.equal(attempts.length, 3);
+      assert.equal(attempts.filter((attempt) => stringField(attempt, 'stage') === 'candidate').length, 3);
+      assert.equal(attempts.filter((attempt) => stringField(attempt, 'status') === 'cancelled').length, 2);
+      assertManifestUsageEqualsAttemptSum(manifest);
+      assert.equal(numberField(objectField(manifest, 'usage'), 'totalTokens'), 23);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  void it('aggregates observed usage exactly once for failed evaluator, repair, and merger attempts', async () => {
+    const cases: Array<{ name: string; expectedTotalTokens: number; runner: FusionChildRunner }> = [
+      {
+        name: 'evaluator',
+        expectedTotalTokens: 19,
+        runner: async (options) => {
+          if (options.stage === 'candidate') return childResult(options, `candidate-${String(options.slot)}`);
+          if (options.stage === 'evaluation') throw childRunError(options, 'evaluator failed after usage', 13);
+          return childResult(options, 'unexpected merge');
+        },
+      },
+      {
+        name: 'repair',
+        expectedTotalTokens: 25,
+        runner: async (options) => {
+          if (options.stage === 'candidate') return childResult(options, `candidate-${String(options.slot)}`);
+          if (options.stage === 'evaluation' && options.attempt === 1) return childResult(options, '{"not":"valid"}');
+          if (options.stage === 'evaluation') throw childRunError(options, 'repair failed after usage', 17);
+          return childResult(options, 'unexpected merge');
+        },
+      },
+      {
+        name: 'merger',
+        expectedTotalTokens: 27,
+        runner: async (options) => {
+          if (options.stage === 'candidate') return childResult(options, `candidate-${String(options.slot)}`);
+          if (options.stage === 'evaluation') return childResult(options, JSON.stringify(evaluation()));
+          throw childRunError(options, 'merge failed after usage', 19);
+        },
+      },
+    ];
+    for (const item of cases) {
+      const root = await mkdtemp(join(tmpdir(), `pi-fusion-orchestrator-${item.name}-usage-`));
+      try {
+        const manifest = await failedManifest(root, item.runner);
+        assertManifestUsageEqualsAttemptSum(manifest);
+        assert.equal(numberField(objectField(manifest, 'usage'), 'totalTokens'), item.expectedTotalTokens, item.name);
+      } finally {
+        await rm(root, { recursive: true, force: true });
+      }
     }
   });
 

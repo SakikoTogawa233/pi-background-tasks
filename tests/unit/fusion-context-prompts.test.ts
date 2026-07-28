@@ -60,6 +60,40 @@ void describe('fusion context and prompts', () => {
     assert.equal(buildCandidatePrompt(built.input), buildCandidatePrompt(built.input));
   });
 
+  void it('serializes image-containing context as explicit text omissions without raw image data', () => {
+    const session = SessionManager.inMemory('/tmp/project');
+    session.appendMessage({
+      role: 'user',
+      content: [
+        { type: 'text', text: 'user text before image ' },
+        { type: 'image', data: 'raw-user-image-base64', mimeType: 'image/png' },
+        { type: 'text', text: ' user text after image' },
+      ],
+      timestamp: 1,
+    });
+    session.appendMessage({
+      role: 'toolResult',
+      toolCallId: 'tool-image',
+      toolName: 'image_tool',
+      content: [
+        { type: 'text', text: 'tool text before image ' },
+        { type: 'image', data: 'raw-tool-image-base64', mimeType: 'image/jpeg' },
+      ],
+      details: { ok: true },
+      isError: false,
+      timestamp: 2,
+    });
+    const built = buildFusionCanonicalInput(
+      { cwd: '/tmp/project', sessionManager: session, getSystemPrompt: () => 'system' },
+      { source: 'command', request: 'answer' },
+    );
+    assert.match(built.input.conversation_transcript, /user text before image/);
+    assert.match(built.input.conversation_transcript, /user text after image/);
+    assert.match(built.input.conversation_transcript, /\[Image omitted from fusion text transcript: image\/png\]/);
+    assert.match(built.input.conversation_transcript, /\[Image omitted from fusion text transcript: image\/jpeg\]/);
+    assert.doesNotMatch(built.serialized, /raw-user-image-base64|raw-tool-image-base64/);
+  });
+
   void it('serializes tool results without summarization truncation', () => {
     const session = SessionManager.inMemory('/tmp/project');
     const longText = 'z'.repeat(3000);

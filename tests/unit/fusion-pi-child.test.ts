@@ -268,8 +268,8 @@ void describe('fusion Pi child runner', () => {
       },
       signal: controller.signal,
       platform: 'win32',
-      killGraceMs: 20,
-      sigkillWaitMs: 20,
+      killGraceMs: 1000,
+      sigkillWaitMs: 1000,
     });
     await tick();
     assert.equal(records.length, 1);
