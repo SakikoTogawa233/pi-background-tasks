@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { parseJsonText } from '../../src/core/common.js';
@@ -8,6 +8,7 @@ import { FusionOrchestrator, type FusionChildRunner } from '../../src/core/fusio
 import { defaultFusionModelConfig } from '../../src/core/fusion/config.js';
 import {
   FUSION_EVALUATION_SCHEMA_VERSION,
+  FusionError,
   type FusionCanonicalInputV1,
   type FusionChildRunResult,
   type FusionEvaluationV1,
@@ -91,6 +92,15 @@ function field(record: object, key: string): unknown {
   return Reflect.get(record, key);
 }
 
+async function waitForCalls(calls: readonly RunPiChildOptions[], count: number): Promise<void> {
+  const start = Date.now();
+  while (Date.now() - start < 2000) {
+    if (calls.length >= count) return;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  throw new Error(`timed out waiting for ${String(count)} child calls`);
+}
+
 void describe('fusion orchestrator', () => {
   void it('runs parallel candidates, schema repair, and final merge', async () => {
     const root = await mkdtemp(join(tmpdir(), 'pi-fusion-orchestrator-'));
@@ -150,6 +160,110 @@ void describe('fusion orchestrator', () => {
       assert.equal(field(map, 'B'), 3);
       assert.equal(field(map, 'C'), 1);
       assert.equal(await readFile(join(root, result.details.artifact_dir, 'merged.md'), 'utf8'), 'merged final');
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  void it('cancels sibling candidates on first failure and never degrades to evaluation', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'pi-fusion-orchestrator-fail-'));
+    try {
+      const calls: RunPiChildOptions[] = [];
+      const runner: FusionChildRunner = async (options) => {
+        calls.push(options);
+        if (options.stage !== 'candidate') return childResult(options, 'unexpected later stage');
+        if (options.slot === 1) {
+          await waitForCalls(calls, 3);
+          throw new FusionError('candidate one failed', {
+            code: 'child_exit_failed',
+            stage: 'candidate',
+            slot: 1,
+            attempt: 1,
+          });
+        }
+        const slot = options.slot;
+        if (slot === undefined) throw new Error('candidate slot is required');
+        await new Promise<void>((_resolve, reject) => {
+          const signal = options.signal;
+          if (signal?.aborted === true) {
+            reject(new FusionError('candidate cancelled', { code: 'child_cancelled', stage: 'candidate', slot, attempt: 1 }));
+            return;
+          }
+          signal?.addEventListener('abort', () => {
+            reject(new FusionError('candidate cancelled', { code: 'child_cancelled', stage: 'candidate', slot, attempt: 1 }));
+          }, { once: true });
+        });
+        return childResult(options, 'unreachable');
+      };
+      const orchestrator = new FusionOrchestrator({ childRunner: runner });
+      const canonical = canonicalInput();
+      await assert.rejects(
+        orchestrator.run({
+          source: 'tool',
+          cwd: root,
+          canonicalInput: canonical,
+          canonicalInputSerialized: JSON.stringify(canonical),
+          config: defaultFusionModelConfig(),
+          models: models(),
+        }),
+        /candidate one failed/,
+      );
+      assert.equal(calls.filter((call) => call.stage === 'candidate').length, 3);
+      assert.equal(calls.some((call) => call.stage === 'evaluation' || call.stage === 'merge'), false);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  void it('retries only transient pre-creation spawn failures and supports concurrent workflows', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'pi-fusion-orchestrator-concurrent-'));
+    try {
+      const calls: RunPiChildOptions[] = [];
+      let transientThrown = false;
+      const runner: FusionChildRunner = async (options) => {
+        calls.push(options);
+        if (!transientThrown && options.stage === 'candidate' && options.slot === 1) {
+          transientThrown = true;
+          throw new FusionError('spawn EAGAIN', {
+            code: 'child_spawn_failed',
+            stage: 'candidate',
+            slot: 1,
+            attempt: 1,
+            transient: true,
+            childCreated: false,
+          });
+        }
+        if (options.stage === 'candidate') return childResult(options, `candidate-${String(options.slot)}`);
+        if (options.stage === 'evaluation') return childResult(options, JSON.stringify(evaluation()));
+        return childResult(options, `merged ${options.cwd.endsWith('a') ? 'a' : 'b'}`);
+      };
+      const orchestrator = new FusionOrchestrator({ childRunner: runner });
+      const canonical = canonicalInput();
+      const firstCwd = join(root, 'a');
+      const secondCwd = join(root, 'b');
+      await Promise.all([mkdir(firstCwd), mkdir(secondCwd)]);
+      const [first, second] = await Promise.all([
+        orchestrator.run({
+          source: 'command',
+          cwd: firstCwd,
+          canonicalInput: canonical,
+          canonicalInputSerialized: JSON.stringify(canonical),
+          config: defaultFusionModelConfig(),
+          models: models(),
+        }),
+        orchestrator.run({
+          source: 'command',
+          cwd: secondCwd,
+          canonicalInput: canonical,
+          canonicalInputSerialized: JSON.stringify(canonical),
+          config: defaultFusionModelConfig(),
+          models: models(),
+        }),
+      ]);
+      assert.equal(first.mergedText, 'merged a');
+      assert.equal(second.mergedText, 'merged b');
+      assert.equal(calls.filter((call) => call.stage === 'candidate' && call.slot === 1).length, 3);
+      assert.equal(calls.filter((call) => call.stage === 'merge').length, 2);
     } finally {
       await rm(root, { recursive: true, force: true });
     }

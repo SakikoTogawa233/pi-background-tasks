@@ -45,6 +45,7 @@ import {
   type BackgroundTaskForUi,
   type TaskManagerResult,
 } from './ui/background-tasks-manager.js';
+import { registerFusionExtension } from './fusion-extension.js';
 
 /**
  * Project-local Pi background task manager.
@@ -186,6 +187,8 @@ function renderPlainResult(result: TextToolResult, options: ToolRenderResultOpti
 }
 
 export default function backgroundTasksExtension(pi: ExtensionAPI): void {
+  registerFusionExtension(pi);
+
   const seenTaskIds = new Set<string>();
   let currentCtx: ExtensionContext | undefined;
   let dockOpen = false;

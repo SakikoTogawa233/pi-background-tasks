@@ -121,8 +121,10 @@ void describe('package', () => {
     assert.deepEqual(p.pi.extensions, ['./extensions/background-tasks.ts']);
     assert.match(p.scripts['test:agent-loop'] ?? '', /scripted-provider/);
     assert.match(p.scripts['test:full'] ?? '', /test:agent-loop/);
+    assert.match(p.scripts['test:compat'] ?? '', /test-compat/);
     assert.ok(p.files.includes('extensions/'));
     assert.ok(p.files.includes('src/'));
+    assert.ok(p.files.includes('scripts/'));
     assert.ok(p.peerDependencies['@earendil-works/pi-coding-agent']);
     assert.ok(p.peerDependencies['@earendil-works/pi-tui']);
     assert.ok(p.peerDependencies['typebox']);
@@ -134,14 +136,20 @@ void describe('package', () => {
       'LICENSE',
       'src/extension.ts',
       'src/ui/background-tasks-manager.ts',
+      'src/ui/fusion-model-selector.ts',
       'src/core/common.ts',
       'src/core/registry.ts',
       'src/core/extension-api.ts',
       'src/core/attested-pi-run.ts',
+      'src/core/fusion/orchestrator.ts',
+      'src/core/fusion/pi-child.ts',
+      'src/fusion-extension.ts',
       'extensions/background-tasks.ts',
     ])
       assert.ok(existsSync(new URL(f, root)), f);
 
+    const extensionSource = await text('src/extension.ts');
+    assert.match(extensionSource, /registerFusionExtension\(pi\)/);
     const readme = await text('README.md');
     const plan = await text('TEST_PLAN.md');
     for (const surface of [
@@ -164,6 +172,12 @@ void describe('package', () => {
       'src/core/extension-api.ts',
       'Shift+Down',
       'Ctrl+Alt+C',
+      '/fusion',
+      '/fusion-models',
+      'fusion_brainstorm',
+      'fusion-result',
+      'fusion-models.json',
+      '.pi/fusion',
     ]) {
       assert.match(
         readme,
@@ -176,6 +190,36 @@ void describe('package', () => {
         `TEST_PLAN missing ${surface}`,
       );
     }
+  });
+
+  void it('fusion production code avoids direct completion APIs and local adapters', async () => {
+    const fusionFiles = [
+      'src/fusion-extension.ts',
+      'src/core/fusion/config.ts',
+      'src/core/fusion/context.ts',
+      'src/core/fusion/prompts.ts',
+      'src/core/fusion/evaluation.ts',
+      'src/core/fusion/pi-child.ts',
+      'src/core/fusion/artifacts.ts',
+      'src/core/fusion/orchestrator.ts',
+      'src/ui/fusion-model-selector.ts',
+      'extensions/background-tasks.ts',
+    ];
+    for (const file of fusionFiles) {
+      const source = await text(file);
+      assert.doesNotMatch(source, /@earendil-works\/pi-ai\/compat/);
+      assert.doesNotMatch(source, /\.pi\/extensions/);
+      assert.doesNotMatch(source, /ai-pipeline/);
+    }
+    const child = await text('src/core/fusion/pi-child.ts');
+    for (const flag of [
+      '--no-tools',
+      '--no-extensions',
+      '--no-skills',
+      '--no-prompt-templates',
+      '--no-context-files',
+      '--no-session',
+    ]) assert.match(child, new RegExp(flag.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
   });
 
   void it('packs exactly the runtime/docs payload and excludes tests/artifacts', () => {
@@ -196,7 +240,19 @@ void describe('package', () => {
       'src/core/extension-api.ts',
       'src/core/attested-pi-run.ts',
       'src/ui/background-tasks-manager.ts',
+      'src/ui/fusion-model-selector.ts',
+      'src/fusion-extension.ts',
+      'src/core/fusion/types.ts',
+      'src/core/fusion/config.ts',
+      'src/core/fusion/context.ts',
+      'src/core/fusion/prompts.ts',
+      'src/core/fusion/evaluation.ts',
+      'src/core/fusion/pi-child.ts',
+      'src/core/fusion/artifacts.ts',
+      'src/core/fusion/orchestrator.ts',
       'src/testing/normalize.ts',
+      'src/testing/fusion-fake-pi.ts',
+      'scripts/test-compat.ts',
       'README.md',
       'TESTING.md',
       'TEST_PLAN.md',
@@ -244,10 +300,14 @@ void describe('package', () => {
         'package.json',
         'extensions/background-tasks.ts',
         'src/extension.ts',
+        'src/fusion-extension.ts',
         'src/core/registry.ts',
         'src/core/extension-api.ts',
         'src/core/attested-pi-run.ts',
+        'src/core/fusion/orchestrator.ts',
+        'src/core/fusion/pi-child.ts',
         'src/ui/background-tasks-manager.ts',
+        'src/ui/fusion-model-selector.ts',
       ]) {
         assert.ok(existsSync(join(temp, 'node_modules', 'pi-background-tasks', f)), f);
       }

@@ -1,6 +1,6 @@
 # Publishing pi-background-tasks
 
-This package is ready for both npm publishing and standalone git publishing.
+This package is ready for both npm publishing and standalone git publishing. Version 0.7.0 adds Fusion public surfaces (`/fusion`, `/fusion-models`, `fusion_brainstorm`) in addition to the background-task surfaces.
 
 ## Preconditions
 
@@ -15,7 +15,8 @@ cd packages/pi-background-tasks
 npm run test
 npm run test:full
 npm run smoke
-npm pack --dry-run
+npm run pack:dry-run
+npm run test:compat
 npm view pi-background-tasks name version --json
 ```
 
@@ -32,8 +33,8 @@ npm publish --access public
 Pi install smoke after publish:
 
 ```bash
-pi -e npm:pi-background-tasks@0.6.1 --offline --no-tools --no-session -p "/jobs"
-pi install npm:pi-background-tasks@0.6.1
+pi -e npm:pi-background-tasks@0.7.0 --offline --no-tools --no-session -p "/jobs"
+pi install npm:pi-background-tasks@0.7.0
 ```
 
 ## Publish to git
@@ -48,15 +49,15 @@ git commit -m "Release pi-background-tasks"
 git branch -M main
 git remote add origin git@github.com:ismailsaleekh/pi-background-tasks.git
 git push -u origin main
-git tag v0.6.1
-git push origin v0.6.1
+git tag v0.7.0
+git push origin v0.7.0
 ```
 
 Pi install smoke after git tag:
 
 ```bash
-pi -e git:github.com/ismailsaleekh/pi-background-tasks@v0.6.1 --offline --no-tools --no-session -p "/jobs"
-pi install git:github.com/ismailsaleekh/pi-background-tasks@v0.6.1
+pi -e git:github.com/ismailsaleekh/pi-background-tasks@v0.7.0 --offline --no-tools --no-session -p "/jobs"
+pi install git:github.com/ismailsaleekh/pi-background-tasks@v0.7.0
 ```
 
 ## pi.dev/packages

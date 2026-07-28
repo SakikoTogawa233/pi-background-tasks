@@ -12,13 +12,13 @@ This package follows:
 |---|---|
 | Package | `pi-background-tasks` |
 | Extension entrypoint | `extensions/background-tasks.ts` |
-| Public commands | `/bg`, `/jobs`, `/logs`, `/kill`, `/tasks`, `/bg-tasks`, `/bg-clear`, `/bg-update` |
-| Public tools | `bg_run`, `bg_run_pi_attested`, `bg_status`, `bg_logs`, `bg_kill` |
+| Public commands | `/bg`, `/jobs`, `/logs`, `/kill`, `/tasks`, `/bg-tasks`, `/bg-clear`, `/bg-update`, `/fusion`, `/fusion-models` |
+| Public tools | `bg_run`, `bg_run_pi_attested`, `bg_status`, `bg_logs`, `bg_kill`, `fusion_brainstorm` |
 | Extension EventBus API | `pi-background-tasks:request:v1`, `pi-background-tasks:response:v1`, `pi-background-tasks:terminal:v1`; schemas exported from `src/core/extension-api.ts` |
 | Shortcuts | `Shift+Down`; optional fallback `Ctrl+Alt+C` |
 | Custom UI | footer status + focused bottom dock overlay |
 | Custom provider | no |
-| Runtime files/state | `.pi/tasks/<session-id>-<pid>/<task-id>.output`, `.pi/tasks/<session-id>-<pid>/<task-id>.json`; attested Pi opt-in adds `.pi-events.jsonl`, `.stderr`, `.pi-telemetry-wrapper.cjs`, `.attestation.json` |
+| Runtime files/state | `.pi/tasks/<session-id>-<pid>/<task-id>.output`, `.pi/tasks/<session-id>-<pid>/<task-id>.json`; attested Pi opt-in adds `.pi-events.jsonl`, `.stderr`, `.pi-telemetry-wrapper.cjs`, `.attestation.json`; Fusion adds private `.pi/fusion/<session-id>-<pid>/<run-id>/` manifests/prompts/events/stderr/responses/evaluation/merged/error artifacts plus global `fusion-models.json` |
 
 ## Required gates
 
@@ -49,6 +49,10 @@ This package follows:
 | Inspect task status | `bg_status` |  | yes |  |  |  |  |  | SDK polls exact IDs and validates shutdown state. |
 | Read task logs | `bg_logs` | yes | yes |  |  |  |  |  | SDK verifies content. |
 | Stop task from LLM tool | `bg_kill` |  | yes |  |  |  |  |  | Covers running kill and already-finished loud failure. |
+| Fusion command direct result | `/fusion`, `fusion-result` custom message | yes | yes | yes |  |  | yes |  | Core unit covers deterministic context construction, direct child argv/stdin/event parsing, artifacts, and orchestration. SDK runs real `/fusion` against a fake child `pi`, verifies exactly five child JSON-mode invocations, hidden prompt persistence, visible exact merged custom message, no parent assistant rewrite, renderer output, progress/status behavior, no-argument editor flow, editor cancellation, and malformed config causing zero children. RPC verifies command discovery, `/fusion <prompt>` with U+2028/U+2029 content, custom-message result emission, no parent `agent_start`, no-argument editor protocol, malformed config/child failure visibility, and child isolation flags. |
+| Fusion tool result | `fusion_brainstorm({prompt})` | yes | yes |  |  |  | yes | yes | Tool is registered at load and re-added on `session_start`; no eligibility/quota/routine/justification gates are implemented. Unit/SDK cover active tool-call leaf exclusion, sibling-call exclusion, exact merged text delivery, progress updates, final details with usage/artifact/model snapshot, and invalid config zero-child failure. Scripted-provider coverage proves a deterministic parent model calls `fusion_brainstorm`, receives the exact merged tool result, exercises one evaluator schema-repair child after invalid first evaluator JSON, then responds normally. |
+| Fusion model selector | `/fusion-models`, `fusion-models.json`, `FusionModelSelector` | yes | yes | yes | yes |  | yes |  | Unit covers strict config parsing, duplicates, slash-containing model IDs, stale model failures, `$current`, atomic save and revision conflicts. Component covers all five slots, duplicate selection, searchable model list, stale display, reset/save/cancel, persistence errors, and width safety. SDK drives the real command in a synthetic TUI context and verifies duplicate `$current`/explicit model persistence. RPC verifies non-TUI rejection without hanging. |
+| Fusion child isolation/lifecycle | child `pi --mode json`, shutdown cleanup, `.pi/fusion` artifacts | yes | yes | yes |  |  | yes |  | Unit covers argv, env cleanup, stdin transport, LF JSONL parser, stdin failure, output caps, timeout/abort/process-group kill, manifest transitions, transient spawn retry, candidate sibling cancellation, concurrent workflows, and orchestrator cancellation. SDK/RPC verify actual public command/tool consumers launch direct child `pi` with all isolation flags. Session shutdown aborts active Fusion runs through the extension active-run set. |
 | Extension request/response service | `pi-background-tasks:request:v1` → `pi-background-tasks:response:v1` | yes | yes |  |  |  | yes |  | Unit covers closed-frame validation, capability handshake, unknown keys, unknown operation, duplicate request IDs, missing `session_start`, shutdown refusal, strict `run.payload`, strict malformed frames, and unsubscribe. SDK loads the real extension with a shared `createEventBus()`, starts `printf api-ok`, reads bounded logs, lists status, starts and kills a real sleep task, and checks malformed/unknown/duplicate controls without model/provider calls. Package tests assert `src/core/extension-api.ts` ships. |
 | Terminal EventBus publication | `pi-background-tasks:terminal:v1` | yes | yes |  |  |  | yes |  | Registry unit proves exactly-one terminal snapshot after durable metadata and loud/retriable EventBus delivery failure; extension API unit proves one strict terminal frame correlated by task id after the run response for immediate, normal, failed, timeout, and killed tasks; SDK observes one terminal event for a completed task and one for a killed task through the real extension service. |
 | Completion notification | custom message `background-task-notification` | yes | yes |  | renderer via typecheck |  |  | yes | Unit covers duplicate/failing notification paths; SDK verifies XML/details; scripted provider verifies real follow-up turns, display-only `/bg`, `notifyOnCompletion:false`, and failed-task error fields. |
@@ -97,7 +101,7 @@ Lane A residual hardening is now covered by automated tests. No remaining harden
 - [x] `npm run test` passes offline in isolated temp dirs.
 - [x] `npm run test:full` validates baseline real TUI/PTY behavior.
 - [x] `npm run pack:dry-run` passes.
-- [x] README claims and all plausible edge cases are exhaustively mapped in this test plan.
+- [x] README claims and all plausible edge cases are exhaustively mapped in this test plan, including Fusion command/tool/model-selector public surfaces.
 - [x] Every listed edge case has automated coverage at the lowest reliable layer.
 - [x] No real LLM/API/network dependency in default tests.
 - [x] No dependency on user/global `~/.pi/agent` for SDK/RPC/PTY tests.

@@ -1,4 +1,4 @@
-import type { ThinkingLevel } from '@earendil-works/pi-ai';
+export type FusionThinkingLevel = 'off' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max';
 
 export const FUSION_MODEL_CONFIG_SCHEMA_VERSION = 'pi-background-tasks.fusion-models.v1';
 export const FUSION_INPUT_SCHEMA_VERSION = 'pi-background-tasks.fusion-input.v1';
@@ -67,7 +67,7 @@ export interface ResolvedFusionModel {
   provider: string;
   model: string;
   qualifiedId: string;
-  thinkingLevel: ThinkingLevel;
+  thinkingLevel: FusionThinkingLevel;
   contextWindow: number;
 }
 

@@ -79,6 +79,7 @@ async function harness(scenario: Scenario) {
 }
 
 afterEach(async () => {
+  await new Promise((resolve) => setTimeout(resolve, 150));
   for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true });
 });
 

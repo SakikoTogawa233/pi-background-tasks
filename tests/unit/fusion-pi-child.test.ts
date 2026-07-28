@@ -22,10 +22,12 @@ class FakeReadable extends EventEmitter {
 class FakeStdin extends EventEmitter {
   readonly chunks: Buffer[] = [];
   ended = false;
+  writeError: Error | undefined;
 
   write(data: Buffer, callback: (error?: Error | null) => void): boolean {
     this.chunks.push(data);
-    queueMicrotask(() => callback());
+    const error = this.writeError;
+    queueMicrotask(() => callback(error));
     return true;
   }
 
@@ -258,6 +260,34 @@ void describe('fusion Pi child runner', () => {
     const noNewline = new FusionPiJsonEventParser('p', 'm');
     noNewline.push(Buffer.from('{"type":"session","id":"s","cwd":"/tmp"}'));
     assert.throws(() => noNewline.finish(), /newline-terminated/);
+  });
+
+  void it('rejects stdin write failures and terminates the child loudly', async () => {
+    const child = new FakeChild(456);
+    child.stdin.writeError = new Error('EPIPE');
+    const harness = makeSpawn(child);
+    const run = runPiChild({
+      stage: 'candidate',
+      slot: 3,
+      attempt: 1,
+      cwd: '/tmp/project',
+      model: resolvedModel(),
+      systemPrompt: 'system',
+      userPrompt: 'prompt',
+      spawn: harness.spawn,
+      platform: 'win32',
+      killGraceMs: 50,
+      sigkillWaitMs: 50,
+    });
+    await tick();
+    child.close(null, 'SIGTERM');
+    await assert.rejects(run, (error: unknown) => {
+      assert.ok(error instanceof FusionChildRunError);
+      assert.equal(error.code, 'child_stdin_failed');
+      assert.match(error.message, /EPIPE/);
+      return true;
+    });
+    assert.deepEqual(child.killCalls, ['SIGTERM']);
   });
 
   void it('rejects output caps and keeps captured prefixes', async () => {

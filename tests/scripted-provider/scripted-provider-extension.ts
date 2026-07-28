@@ -29,7 +29,8 @@ type Scenario =
   | 'notify-false'
   | 'failed-follow-up'
   | 'display-only-bg'
-  | 'json-tool-telemetry';
+  | 'json-tool-telemetry'
+  | 'fusion-brainstorm';
 type ScriptedStopReason = 'stop' | 'length' | 'toolUse';
 
 type JsonObject = Record<PropertyKey, unknown>;
@@ -51,7 +52,8 @@ function parseScenario(value: string | undefined): Scenario {
     value === 'notify-false' ||
     value === 'failed-follow-up' ||
     value === 'display-only-bg' ||
-    value === 'json-tool-telemetry'
+    value === 'json-tool-telemetry' ||
+    value === 'fusion-brainstorm'
   )
     return value;
   return 'bg-run-follow-up';
@@ -108,6 +110,22 @@ function summarizeMessage(message: Message): string {
 }
 
 function responseFor(scenario: Scenario, callCount: number): ScriptedAssistantMessage {
+  if (scenario === 'fusion-brainstorm') {
+    if (callCount === 1) {
+      return assistant(
+        [
+          toolCall(
+            'fusion_brainstorm',
+            { prompt: 'scripted fusion prompt' },
+            'call-fusion-brainstorm',
+          ),
+        ],
+        'toolUse',
+      );
+    }
+    return assistant([text('Parent observed fusion result from fusion_brainstorm.')], 'stop');
+  }
+
   if (scenario === 'json-tool-telemetry') {
     if (callCount === 1) {
       return assistant(

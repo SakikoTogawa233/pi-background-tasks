@@ -2,26 +2,26 @@
 
 Claude-Code-like explicit background shell task manager for [Pi](https://pi.dev/).
 
-This package adds named, tracked background shell jobs with durable output files, bounded log reads, kill/timeout safety, task-owned context-window/token/tool-use/model telemetry, explicit Pi-agent telemetry wrapping for tasks marked as agents, a focused footer-dock task manager, `/tasks` fallback UI, and completion notifications that can wake the agent when LLM-launched work finishes. A terminal task status is published only after trailing wrapped-agent telemetry is consumed and final output plus terminal metadata have completed their durability writes.
+This package adds named, tracked background shell jobs with durable output files, bounded log reads, kill/timeout safety, task-owned context-window/token/tool-use/model telemetry, explicit Pi-agent telemetry wrapping for tasks marked as agents, a focused footer-dock task manager, `/tasks` fallback UI, and completion notifications that can wake the agent when LLM-launched work finishes. It also ships Fusion: a direct child-Pi five-call synthesis workflow exposed as `/fusion`, `/fusion-models`, and the always-active `fusion_brainstorm` tool. A terminal task status is published only after trailing wrapped-agent telemetry is consumed and final output plus terminal metadata have completed their durability writes.
 
 ## Install
 
 From npm after publish:
 
 ```bash
-pi install npm:pi-background-tasks@0.6.1
+pi install npm:pi-background-tasks@0.7.0
 ```
 
 From git after pushing this package to its standalone repository and tagging:
 
 ```bash
-pi install git:github.com/ismailsaleekh/pi-background-tasks@v0.6.1
+pi install git:github.com/ismailsaleekh/pi-background-tasks@v0.7.0
 ```
 
 For project-local install:
 
 ```bash
-pi install -l npm:pi-background-tasks@0.6.1
+pi install -l npm:pi-background-tasks@0.7.0
 ```
 
 ## Commands
@@ -33,6 +33,8 @@ pi install -l npm:pi-background-tasks@0.6.1
 - `/tasks` or `/bg-tasks` — fallback command to open the task manager UI.
 - `/bg-clear` — clear finished background-task footer notices.
 - `/bg-update` — print update instructions when a newer published version exists (instruct-only; never self-installs).
+- `/fusion <prompt>` — run three candidate child Pi JSON-mode calls, one blind evaluator, and one merger, then append the merged answer directly as a visible `fusion-result` custom message without asking the parent model to rewrite it. Running `/fusion` without arguments opens a multiline editor in UI-capable modes; cancelling the editor does not spawn children.
+- `/fusion-models` — TUI-only five-slot global model selector (`Candidate 1`, `Candidate 2`, `Candidate 3`, `Evaluator`, `Merger`). It supports duplicate selections, `$current` defaults, slash-containing model ids, atomic saves to `fusion-models.json`, and rejects non-TUI modes immediately.
 
 ## Footer dock UX
 
@@ -93,14 +95,30 @@ The lookup runs at most once per session on `session_start`, is time-boxed, and 
 - `bg_status` — inspect one task or all recent tasks.
 - `bg_logs` — read bounded task output.
 - `bg_kill` — stop a running task.
+- `fusion_brainstorm({prompt})` — always-active tool that runs the Fusion workflow and returns the exact merged text as the tool result for the parent agent to consume. It has no eligibility, quota, routine, or justification gate; the only public parameter is required `prompt`. Tool context capture excludes the current assistant tool-call leaf when Pi is executing that `fusion_brainstorm` call, so the nested children do not see the in-progress tool call or sibling calls.
 
 `bg_run` requires a concise `name` for the footer dock, the shell `command`, and required `isAgent: boolean`. Set `isAgent: true` only when the background task launches an LLM/agent process (for example `pi -p ...` or `pi --mode json ...`); set `isAgent: false` for scripts, tests, dev servers, sleeps, and ordinary shell commands. It defaults to `triggerOnCompletion: true`, so completion notifications trigger a follow-up agent turn. Tasks marked with `isAgent: true` that launch print/json child Pi agents through the normal shell command name are telemetry-wrapped; set `PI_BG_DISABLE_PI_TELEMETRY=1` only when raw Pi stdout is required. The task snapshot and metadata expose `isAgent`, `contextUsage` (latest reported child assistant turn), cumulative `tokenUsage` (`input`, `output`, `cacheRead`, `cacheWrite`, `totalTokens`), cumulative `toolUsage` (`total`, `failed`, `byName`), and `model` (the LLM identifier reported by the child assistant turns, preferring the fully-qualified `provider/model` form) when reported by the child task. User-launched `/bg` jobs are display-only by default unless `--agent` is provided; UI reruns preserve the original task's `isAgent` value.
 
 `bg_run_pi_attested` is separate from `bg_run` and never accepts a shell command. It takes structured `provider`, `model`, `prompt`, optional literal extra Pi argv, and a relative `reportPath`; launches exactly one direct `pi --mode json` child; records raw Pi JSON events, separate stderr, exact argv/cwd, prompt/report hashes, observed Pi session/provider/model, and `ModelRegistry.isUsingOAuth` credential class. It forbids direct API-key/auth-file launch arguments and emits no partial attestation: failures remain ordinary failed tasks with no sidecar.
 
+
+## Fusion workflow
+
+Fusion runs direct child `pi --mode json` processes only; it never calls `pi-ai` completion APIs. Each child is launched with `--no-session`, `--no-tools`, `--no-extensions`, `--no-skills`, `--no-prompt-templates`, `--no-themes`, and `--no-context-files`, plus the resolved provider/model/thinking level. The prompt travels over stdin, not a shell or positional argument.
+
+Model configuration is global under the Pi agent directory:
+
+```text
+fusion-models.json
+```
+
+Missing config means all five slots are `$current`. Malformed config, stale explicit models, unavailable current models, and concurrent selector write conflicts fail loudly before child inference. Candidate identities are anonymized before evaluation; provider/model metadata stays in local artifacts, not in evaluator prompts.
+
+Progress is surfaced through `fusion` status updates, TUI cancellable loader UI for `/fusion`, and partial `fusion_brainstorm` tool updates. Session shutdown or reload aborts all live Fusion children and waits for their cleanup.
+
 ## Extension EventBus API
 
-Version `0.6.1` exposes a real extension-to-extension service over Pi's documented `pi.events` bus. This is not a `ctx` method and it does not call a second task manager: requests route to the same `BackgroundTaskRegistry` used by `bg_run`, `bg_status`, `bg_logs`, and `bg_kill`.
+Version `0.7.0` exposes a real extension-to-extension service over Pi's documented `pi.events` bus. This is not a `ctx` method and it does not call a second task manager: requests route to the same `BackgroundTaskRegistry` used by `bg_run`, `bg_status`, `bg_logs`, and `bg_kill`.
 
 Public constants are exported from `src/core/extension-api.ts`:
 
@@ -134,6 +152,14 @@ Task output and metadata are written under the current project:
 .pi/tasks/<session-id>-<pid>/<task-id>.json
 ```
 
+Fusion writes private debugging artifacts under:
+
+```text
+.pi/fusion/<session-id>-<pid>/<run-id>/
+```
+
+Each run contains `manifest.json`, `canonical-input.json`, candidate/evaluation/merge prompts, raw child JSONL events, stderr, responses, `blind-candidates.json`, `evaluation.json`, `merged.md`, and `error.json` for failed/cancelled runs. These artifacts are local evidence only; they are not shown in `/jobs` or the background-task dock.
+
 For attested Pi tasks only, the task id is `b` plus 32 random hex characters (128 bits) and additional flat siblings are written in the same directory:
 
 ```text
@@ -148,6 +174,7 @@ The attestation sidecar uses `schema_version: "phase2.pi_task_attestation.v1"` a
 ## Safety model
 
 - Commands are spawned and tracked with `child_process.spawn`; the package does not rely on shell `&`.
+- Fusion inference is isolated to direct child `pi --mode json` invocations with tools/extensions/skills/session/context files disabled; no direct completion API, API-key argument, or model fallback is used.
 - Attested Pi tasks are a local, unsigned, same-user-writable attestation path for downstream gates. They bind source bytes and observed Pi/ModelRegistry facts; they are not cryptographic proof against a malicious local user, compromised Pi binary, or compromised provider.
 - stdout/stderr are captured to task output files.
 - Model-visible logs are bounded and point to full output files.

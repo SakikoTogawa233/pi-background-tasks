@@ -1,7 +1,7 @@
 {
   "name": "pi-background-tasks",
-  "version": "0.6.1",
-  "description": "Claude-Code-like named background shell task manager for Pi: bg_run tools, /bg commands, Shift+Down footer dock, bounded logs, kill/timeout safety, and completion wakeups.",
+  "version": "0.7.0",
+  "description": "Pi extension package for background shell tasks plus five-model fusion brainstorming: bg_run tools, /bg commands, /fusion, fusion_brainstorm, model selector UI, bounded logs, kill/timeout safety, and completion wakeups.",
   "type": "module",
   "license": "ISC",
   "author": "Ismail <ismailsalikhodjaev@gmail.com>",
@@ -15,7 +15,10 @@
     "background-tasks",
     "coding-agent",
     "shell",
-    "tasks"
+    "tasks",
+    "fusion",
+    "brainstorm",
+    "multi-model"
   ],
   "homepage": "https://github.com/ismailsaleekh/pi-background-tasks#readme",
   "repository": {
@@ -32,24 +35,26 @@
     "TESTING.md",
     "TEST_PLAN.md",
     "PUBLISHING.md",
-    "LICENSE"
+    "LICENSE",
+    "scripts/"
   ],
   "scripts": {
     "typecheck": "tsc --noEmit",
     "test:type-safety": "tsx --test tests/package/type-safety.test.ts",
     "test:unit": "tsx --test tests/unit/**/*.test.ts",
-    "test:sdk": "tsx --test tests/sdk/**/*.test.ts",
+    "test:sdk": "tsx --test --test-concurrency=1 tests/sdk/**/*.test.ts",
     "test:rpc": "tsx --test tests/rpc/**/*.test.ts",
     "test:component": "tsx --test tests/component/**/*.test.ts",
     "test:package": "tsx --test tests/package/**/*.test.ts",
     "test": "npm run typecheck && npm run test:type-safety && npm run test:unit && npm run test:sdk && npm run test:rpc && npm run test:component && npm run test:package",
     "test:pty": "tsx --test tests/pty/**/*.test.ts",
-    "test:agent-loop": "tsx --test tests/scripted-provider/**/*.test.ts",
+    "test:agent-loop": "tsx --test --test-concurrency=1 tests/scripted-provider/**/*.test.ts",
     "test:full": "npm run test && npm run test:pty && npm run test:agent-loop",
     "smoke": "pi --no-extensions -e ./extensions/background-tasks.ts --offline --no-tools --no-session -p \"/jobs\"",
     "pack:dry-run": "npm pack --dry-run",
     "lint": "cd ../.. && npm run quality:ts:lint",
-    "format:check": "cd ../.. && npm run quality:ts:format"
+    "format:check": "cd ../.. && npm run quality:ts:format",
+    "test:compat": "tsx scripts/test-compat.ts"
   },
   "pi": {
     "extensions": [

@@ -4,8 +4,8 @@ import { readdir, readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 
 const packageRoot = new URL('../../', import.meta.url).pathname;
-const allTypeScriptRoots = ['extensions', 'src', 'tests'];
-const productionTypeScriptRoots = ['extensions', 'src'];
+const allTypeScriptRoots = ['extensions', 'src', 'tests', 'scripts'];
+const productionTypeScriptRoots = ['extensions', 'src', 'scripts'];
 
 async function walk(dir: string): Promise<string[]> {
   const entries = await readdir(dir, { withFileTypes: true });

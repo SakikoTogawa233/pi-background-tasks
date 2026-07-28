@@ -3,7 +3,7 @@ import { closeSync, fsyncSync, openSync, renameSync } from 'node:fs';
 import { chmod, mkdir, open, readFile, rm, writeFile } from 'node:fs/promises';
 import { basename, dirname, join } from 'node:path';
 import { getAgentDir } from '@earendil-works/pi-coding-agent';
-import type { Api, Model, ThinkingLevel } from '@earendil-works/pi-ai';
+import type { Api, Model } from '@earendil-works/pi-ai';
 import { isJsonObject, parseJsonText } from '../common.js';
 import {
   FUSION_MODEL_CONFIG_SCHEMA_VERSION,
@@ -11,6 +11,7 @@ import {
   type FusionModelConfigRevision,
   type FusionModelConfigV1,
   type FusionModelSelection,
+  type FusionThinkingLevel,
   type LoadedFusionModelConfig,
   type ResolvedFusionModel,
   type ResolvedFusionModels,
@@ -29,7 +30,7 @@ export interface ResolveFusionModelsInput {
   config: FusionModelConfigV1;
   modelRegistry: FusionModelRegistry;
   currentModel: Model<Api> | undefined;
-  thinkingLevel: ThinkingLevel;
+  thinkingLevel: FusionThinkingLevel;
 }
 
 export function defaultFusionModelConfig(): FusionModelConfigV1 {
@@ -156,7 +157,7 @@ function resolveSelection(
   slotLabel: string,
   availableByKey: Map<string, Model<Api>>,
   currentModel: Model<Api> | undefined,
-  thinkingLevel: ThinkingLevel,
+  thinkingLevel: FusionThinkingLevel,
 ): ResolvedFusionModel {
   if (selection === CURRENT_MODEL_SELECTION) {
     if (currentModel === undefined) {
