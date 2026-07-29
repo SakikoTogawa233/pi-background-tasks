@@ -1,3 +1,4 @@
+import type { Usage } from '@earendil-works/pi-ai';
 import type {
   AgentToolResult,
   ExtensionAPI,
@@ -26,6 +27,7 @@ import { FusionOrchestrator } from './core/fusion/orchestrator.js';
 import {
   FUSION_RESULT_SCHEMA_VERSION,
   FusionError,
+  cloneFusionUsage,
   type FusionModelConfigV1,
   type FusionModelSelection,
   type FusionProgressEvent,
@@ -49,7 +51,7 @@ const FUSION_MODEL_COMMAND_NAME = 'fusion-models';
 
 type FusionToolDetails = FusionResultDetails | FusionProgressDetails;
 type FusionToolResultWithUsage = AgentToolResult<FusionToolDetails> & {
-  usage: FusionResultDetails['usage'];
+  usage: Usage;
 };
 
 type CommandDialogResult =
@@ -160,8 +162,7 @@ function makeProgressDetails(event: FusionProgressEvent): FusionProgressDetails 
 
 function usageSummary(details: FusionResultDetails): string {
   const tokens = details.usage.totalTokens;
-  const cost =
-    details.usage.costTotal === undefined ? '' : ` · $${details.usage.costTotal.toFixed(4)}`;
+  const cost = ` · $${details.usage.cost.total.toFixed(4)}`;
   return `${String(tokens)} tokens${cost}`;
 }
 
@@ -578,7 +579,7 @@ export function registerFusionExtension(pi: ExtensionAPI): void {
       const toolResult: FusionToolResultWithUsage = {
         content: textContent(result.mergedText),
         details: result.details,
-        usage: result.details.usage,
+        usage: cloneFusionUsage(result.details.usage),
       };
       return toolResult;
     },

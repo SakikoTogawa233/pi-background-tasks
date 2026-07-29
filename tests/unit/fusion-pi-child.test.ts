@@ -12,6 +12,7 @@ import {
   type FusionChildProcess,
   type FusionChildSpawn,
 } from '../../src/core/fusion/pi-child.js';
+import type { Usage } from '@earendil-works/pi-ai';
 import type { ResolvedFusionModel } from '../../src/core/fusion/types.js';
 import {
   FUSION_CHILD_RESULT_PREFIX,
@@ -103,14 +104,7 @@ function compactFrame(input: {
   model?: string;
   text: string;
   stopReason: string;
-  usage: {
-    input: number;
-    output: number;
-    cacheRead: number;
-    cacheWrite: number;
-    totalTokens: number;
-    cost: { total: number };
-  };
+  usage: Usage;
 }): string {
   const record = buildFusionChildResultMetadata({
     provider: input.provider ?? 'openai-codex',
@@ -135,7 +129,7 @@ function compactMetadata(provider = 'openai-codex', model = 'gpt-5.5'): string {
         cacheRead: 3,
         cacheWrite: 4,
         totalTokens: 10,
-        cost: { total: 0.1 },
+        cost: { input: 0.01, output: 0.02, cacheRead: 0.03, cacheWrite: 0.04, total: 0.1 },
       },
     }) +
     compactFrame({
@@ -149,7 +143,7 @@ function compactMetadata(provider = 'openai-codex', model = 'gpt-5.5'): string {
         cacheRead: 0,
         cacheWrite: 0,
         totalTokens: 11,
-        cost: { total: 0.2 },
+        cost: { input: 0.05, output: 0.06, cacheRead: 0.04, cacheWrite: 0.05, total: 0.2 },
       },
     })
   );
@@ -160,6 +154,52 @@ async function tick(): Promise<void> {
 }
 
 void describe('fusion Pi child runner', () => {
+  void it('BUG-182 preserves the complete Pi Usage cost contract in compact metadata', () => {
+    const piUsage: Usage = {
+      input: 11,
+      output: 7,
+      cacheRead: 2,
+      cacheWrite: 3,
+      totalTokens: 23,
+      cost: {
+        input: 0.001,
+        output: 0.002,
+        cacheRead: 0.003,
+        cacheWrite: 0.004,
+        total: 0.01,
+      },
+    };
+    const record = buildFusionChildResultMetadata({
+      provider: 'anthropic',
+      model: 'claude-opus-5',
+      stopReason: 'stop',
+      content: [{ type: 'text', text: 'answer' }],
+      usage: piUsage,
+    });
+    const usage: unknown = record.usage;
+    assert.deepEqual(usage, piUsage);
+    assert.equal(Reflect.get(record.usage, 'costTotal'), undefined);
+
+    const legacyRecord = {
+      ...record,
+      usage: {
+        input: 11,
+        output: 7,
+        cacheRead: 2,
+        cacheWrite: 3,
+        totalTokens: 23,
+        costTotal: 0.01,
+      },
+    };
+    assert.throws(
+      () =>
+        parseFusionChildStderr(
+          Buffer.from(`${FUSION_CHILD_RESULT_PREFIX}${JSON.stringify(legacyRecord)}\n`),
+        ),
+      /cost|keys mismatch|unknown key/,
+    );
+  });
+
   void it('BUG-180 launches a final-text child with only the private compact metadata extension', () => {
     const argv = buildFusionPiChildArgv(resolvedModel(), 'system');
     assert.deepEqual(argv.slice(0, 8), [
@@ -203,13 +243,16 @@ void describe('fusion Pi child runner', () => {
         cacheRead: 0,
         cacheWrite: 0,
         totalTokens: 3,
-        cost: { total: 0 },
+        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
       },
     });
     const serialized = JSON.stringify(record);
     assert.doesNotMatch(serialized, /private reasoning/);
     assert.doesNotMatch(serialized, /complete final answer/);
-    assert.deepEqual(record.text_blocks.map((block) => block.utf8_bytes), [21]);
+    assert.deepEqual(
+      record.text_blocks.map((block) => block.utf8_bytes),
+      [21],
+    );
   });
 
   void it('pipes the prompt through stdin and returns the exact full text with compact metadata', async () => {
@@ -254,7 +297,13 @@ void describe('fusion Pi child runner', () => {
     assert.equal(result.usage.input, 6);
     assert.equal(result.usage.output, 8);
     assert.equal(result.usage.totalTokens, 21);
-    assert.equal(result.usage.costTotal, 0.30000000000000004);
+    assert.deepEqual(result.usage.cost, {
+      input: 0.060000000000000005,
+      output: 0.08,
+      cacheRead: 0.07,
+      cacheWrite: 0.09,
+      total: 0.30000000000000004,
+    });
     assert.equal(result.stderr.toString('utf8'), 'diagnostic');
     assert.equal(result.events.toString('utf8').split('\n').filter(Boolean).length, 2);
     assert.doesNotMatch(result.events.toString('utf8'), /final héllo/);
@@ -355,13 +404,10 @@ void describe('fusion Pi child runner', () => {
         cacheRead: 0,
         cacheWrite: 0,
         totalTokens: 3,
-        cost: { total: 0 },
+        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
       },
     });
-    const stderr = Buffer.from(
-      `${FUSION_CHILD_RESULT_PREFIX}${JSON.stringify(record)}\n`,
-      'utf8',
-    );
+    const stderr = Buffer.from(`${FUSION_CHILD_RESULT_PREFIX}${JSON.stringify(record)}\n`, 'utf8');
     const response = Buffer.from('first line\n\n世界\n', 'utf8');
     const parsed = new FusionPiCompactResultParser('p', 'm').finish(response, stderr);
     assert.equal(parsed.text, 'first line\n世界');
@@ -374,7 +420,7 @@ void describe('fusion Pi child runner', () => {
       cacheRead: 0,
       cacheWrite: 0,
       totalTokens: 3,
-      cost: { total: 0.1 },
+      cost: { input: 0.01, output: 0.02, cacheRead: 0.03, cacheWrite: 0.04, total: 0.1 },
     };
     const parser = new FusionPiCompactResultParser('p', 'm');
     const nonStop = compactFrame({
@@ -393,10 +439,7 @@ void describe('fusion Pi child runner', () => {
       stopReason: 'stop',
       usage,
     });
-    assert.throws(
-      () => parser.finish(Buffer.from('x\n'), Buffer.from(mismatch)),
-      /model mismatch/,
-    );
+    assert.throws(() => parser.finish(Buffer.from('x\n'), Buffer.from(mismatch)), /model mismatch/);
 
     const valid = compactFrame({
       provider: 'p',

@@ -96,13 +96,13 @@ function emit() {
   const text = responseText();
   const digest = createHash('sha256').update(text, 'utf8').digest('hex');
   const metadata = {
-    schema_version: 'pi-background-tasks.fusion-child-result.v1',
+    schema_version: 'pi-background-tasks.fusion-child-result.v2',
     provider,
     model,
     stop_reason: 'stop',
     text_blocks: [{ utf8_bytes: Buffer.byteLength(text, 'utf8'), sha256: digest }],
     text_sha256: digest,
-    usage: { input: 11, output: 7, cacheRead: 2, cacheWrite: 3, totalTokens: 23, costTotal: 0.01 }
+    usage: { input: 11, output: 7, cacheRead: 2, cacheWrite: 3, totalTokens: 23, cost: { input: 0.001, output: 0.002, cacheRead: 0.003, cacheWrite: 0.004, total: 0.01 } }
   };
   process.stderr.write('\\x1ePI_FUSION_CHILD_RESULT ' + JSON.stringify(metadata) + '\\n');
   process.stdout.write(text + '\\n');

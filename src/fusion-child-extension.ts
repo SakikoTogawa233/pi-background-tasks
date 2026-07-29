@@ -1,8 +1,9 @@
 import { createHash } from 'node:crypto';
+import type { Usage } from '@earendil-works/pi-ai';
 import type { ExtensionAPI } from '@earendil-works/pi-coding-agent';
 
 export const FUSION_CHILD_RESULT_SCHEMA_VERSION =
-  'pi-background-tasks.fusion-child-result.v1' as const;
+  'pi-background-tasks.fusion-child-result.v2' as const;
 export const FUSION_CHILD_RESULT_PREFIX = '\u001ePI_FUSION_CHILD_RESULT ';
 
 export interface FusionChildTextBlockMetadata {
@@ -10,14 +11,7 @@ export interface FusionChildTextBlockMetadata {
   sha256: string;
 }
 
-export interface FusionChildResultUsageMetadata {
-  input: number;
-  output: number;
-  cacheRead: number;
-  cacheWrite: number;
-  totalTokens: number;
-  costTotal?: number;
-}
+export type FusionChildResultUsageMetadata = Usage;
 
 export interface FusionChildResultMetadata {
   schema_version: typeof FUSION_CHILD_RESULT_SCHEMA_VERSION;
@@ -38,14 +32,7 @@ export function buildFusionChildResultMetadata(message: {
   model: string;
   stopReason: string;
   content: ReadonlyArray<{ type: string; text?: string }>;
-  usage: {
-    input: number;
-    output: number;
-    cacheRead: number;
-    cacheWrite: number;
-    totalTokens: number;
-    cost: { total: number };
-  };
+  usage: Usage;
 }): FusionChildResultMetadata {
   const textBlocks = message.content.flatMap((part) =>
     part.type === 'text' && typeof part.text === 'string' ? [part.text] : [],
@@ -56,10 +43,14 @@ export function buildFusionChildResultMetadata(message: {
     cacheRead: message.usage.cacheRead,
     cacheWrite: message.usage.cacheWrite,
     totalTokens: message.usage.totalTokens,
+    cost: {
+      input: message.usage.cost.input,
+      output: message.usage.cost.output,
+      cacheRead: message.usage.cost.cacheRead,
+      cacheWrite: message.usage.cost.cacheWrite,
+      total: message.usage.cost.total,
+    },
   };
-  if (Number.isFinite(message.usage.cost.total) && message.usage.cost.total >= 0) {
-    usage.costTotal = message.usage.cost.total;
-  }
   return {
     schema_version: FUSION_CHILD_RESULT_SCHEMA_VERSION,
     provider: message.provider,

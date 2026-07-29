@@ -9,19 +9,19 @@ This package adds named, tracked background shell jobs with durable output files
 From npm after publish:
 
 ```bash
-pi install npm:pi-background-tasks@0.7.2
+pi install npm:pi-background-tasks@0.7.3
 ```
 
 From git after pushing this package to its standalone repository and tagging:
 
 ```bash
-pi install git:github.com/ismailsaleekh/pi-background-tasks@v0.7.2
+pi install git:github.com/ismailsaleekh/pi-background-tasks@v0.7.3
 ```
 
 For project-local install:
 
 ```bash
-pi install -l npm:pi-background-tasks@0.7.2
+pi install -l npm:pi-background-tasks@0.7.3
 ```
 
 ## Commands
@@ -95,7 +95,7 @@ The lookup runs at most once per session on `session_start`, is time-boxed, and 
 - `bg_status` — inspect one task or all recent tasks.
 - `bg_logs` — read bounded task output.
 - `bg_kill` — stop a running task.
-- `fusion_brainstorm({prompt})` — always-active tool that runs the Fusion workflow and returns the exact merged text as the tool result for the parent agent to consume, with standard nested usage attached when the host Pi supports tool-result usage. Its closed public schema has exactly one required parameter, `prompt`; extra keys are rejected. It has no eligibility, quota, routine, or justification gate. Tool context capture excludes the current assistant tool-call leaf when Pi is executing that `fusion_brainstorm` call, so the nested children do not see the in-progress tool call or sibling calls.
+- `fusion_brainstorm({prompt})` — always-active tool that runs the Fusion workflow and returns the exact merged text as the tool result for the parent agent to consume, with the exact Pi `Usage` shape attached when the host supports tool-result usage: token fields plus complete `cost.input`, `cost.output`, `cost.cacheRead`, `cost.cacheWrite`, and `cost.total`. Its closed public schema has exactly one required parameter, `prompt`; extra keys are rejected. It has no eligibility, quota, routine, or justification gate. Tool context capture excludes the current assistant tool-call leaf when Pi is executing that `fusion_brainstorm` call, so the nested children do not see the in-progress tool call or sibling calls.
 
 `bg_run` requires a concise `name` for the footer dock, the shell `command`, and required `isAgent: boolean`. Set `isAgent: true` only when the background task launches an LLM/agent process (for example `pi -p ...` or `pi --mode json ...`); set `isAgent: false` for scripts, tests, dev servers, sleeps, and ordinary shell commands. It defaults both `notifyOnCompletion` and `triggerOnCompletion` to `true`. With those defaults, `bg_run` returns immediately, the agent continues only independent useful work or ends its current turn instead of sleeping or polling, and a durable `background-task-notification` for completed, failed, or killed state automatically starts a follow-up turn. The launch receipt states the effective notification/wake behavior explicitly. `bg_status` and `bg_logs` remain available for user-requested inspection, deliberately disabled completion delivery, concrete hang diagnosis, or reading output after the terminal event; they are not waiting primitives, and the terminal notification does not need status reconfirmation. Setting `triggerOnCompletion: false` keeps the notification but prevents it from starting an agent turn. Setting `notifyOnCompletion: false` suppresses both notification and wake-up even if `triggerOnCompletion` is true.
 
@@ -108,7 +108,7 @@ Tasks marked with `isAgent: true` that launch print/json child Pi agents through
 
 Fusion runs direct child `pi --mode text` processes only; it never calls `pi-ai` completion APIs. Each child is launched with `--no-session`, `--no-tools`, `--no-extensions`, `--no-skills`, `--no-prompt-templates`, `--no-themes`, and `--no-context-files`, plus the resolved provider/model/thinking level and the package-owned private `extensions/fusion-child.ts` metadata extension. The prompt travels over stdin, not a shell or positional argument.
 
-Pi text mode writes the final full answer exactly once instead of serializing cumulative reasoning/partial-message events on every token delta. The private child extension emits one compact, reasoning-free metadata record per finalized assistant message for provider/model, stop reason, usage, and response byte/hash validation. Fusion persists those compact records in `*.events.jsonl`; the complete answer remains in the stage response artifact. The 32 MiB child stdout cap therefore applies to one final response, not amplified JSON telemetry. Failed attempts keep the authoritative response artifact empty and, when any stdout was captured, persist it separately as an explicitly incomplete `*.response.partial.*` artifact.
+Pi text mode writes the final full answer exactly once instead of serializing cumulative reasoning/partial-message events on every token delta. The private child extension emits one compact, reasoning-free metadata record per finalized assistant message for provider/model, stop reason, the complete Pi token/cost `Usage` object, and response byte/hash validation. Fusion persists those compact records in `*.events.jsonl`; the complete answer remains in the stage response artifact. The 32 MiB child stdout cap therefore applies to one final response, not amplified JSON telemetry. Failed attempts keep the authoritative response artifact empty and, when any stdout was captured, persist it separately as an explicitly incomplete `*.response.partial.*` artifact.
 
 Model configuration is global under the Pi agent directory:
 
@@ -162,7 +162,7 @@ Fusion writes private debugging artifacts under:
 .pi/fusion/<session-id>-<pid>/<run-id>/
 ```
 
-Each run contains `manifest.json`, `canonical-input.json`, candidate/evaluation/merge prompts, raw child JSONL events, stderr, responses, `blind-candidates.json`, `evaluation.json`, `merged.md`, and `error.json` for failed/cancelled runs. Artifact files are written by private temp-file/fsync/rename, and manifests persist cumulative child usage plus per-attempt observed usage/model data for successful, failed, and cancelled child attempts. These artifacts are local evidence only; they are not shown in `/jobs` or the background-task dock.
+Each run contains `manifest.json`, `canonical-input.json`, candidate/evaluation/merge prompts, raw child JSONL events, stderr, responses, `blind-candidates.json`, `evaluation.json`, `merged.md`, and `error.json` for failed/cancelled runs. Artifact files are written by private temp-file/fsync/rename, and v2 manifests persist cumulative child usage plus per-attempt observed usage/model data for successful, failed, and cancelled child attempts. Every usage record preserves the complete Pi cost breakdown; the same exact shape is cloned into `fusion_brainstorm` tool results so newer Pi hosts can calculate and replay footer/session statistics safely. These artifacts are local evidence only; they are not shown in `/jobs` or the background-task dock.
 
 For attested Pi tasks only, the task id is `b` plus 32 random hex characters (128 bits) and additional flat siblings are written in the same directory:
 

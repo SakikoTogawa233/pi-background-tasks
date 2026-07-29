@@ -8,13 +8,16 @@ import {
   FUSION_CHILD_RESULT_SCHEMA_VERSION,
   type FusionChildResultMetadata,
 } from '../../fusion-child-extension.js';
-import type { ResolvedFusionModel } from './types.js';
 import {
   FusionError,
+  addFusionUsage,
+  cloneFusionUsage,
+  createEmptyFusionUsage,
   type FusionChildRunResult,
   type FusionErrorDetails,
   type FusionStage,
   type FusionUsage,
+  type ResolvedFusionModel,
 } from './types.js';
 import { isJsonObject, parseJsonText } from '../common.js';
 
@@ -149,7 +152,7 @@ export class FusionChildRunError extends FusionError {
     this.stderr = stderr;
     this.exitCode = close.code;
     this.signalName = close.signal;
-    this.usage = { ...observed.usage };
+    this.usage = cloneFusionUsage(observed.usage);
     this.provider = observed.provider;
     this.modelName = observed.model;
     this.qualifiedId = observed.qualifiedId;
@@ -204,15 +207,6 @@ export function buildFusionPiChildArgv(
   ];
 }
 
-function addUsage(target: FusionUsage, delta: FusionUsage): void {
-  target.input += delta.input;
-  target.output += delta.output;
-  target.cacheRead += delta.cacheRead;
-  target.cacheWrite += delta.cacheWrite;
-  target.totalTokens += delta.totalTokens;
-  if (delta.costTotal !== undefined) target.costTotal = (target.costTotal ?? 0) + delta.costTotal;
-}
-
 const SHA256_HEX_PATTERN = /^[0-9a-f]{64}$/;
 const FUSION_CHILD_RESULT_PREFIX_BYTES = Buffer.from(FUSION_CHILD_RESULT_PREFIX, 'utf8');
 
@@ -265,32 +259,42 @@ function requireUsageInteger(
   return value;
 }
 
+function requireCostNumber(
+  record: Record<PropertyKey, unknown>,
+  key: string,
+  label: string,
+): number {
+  const value = record[key];
+  if (typeof value !== 'number' || !Number.isFinite(value) || value < 0)
+    throw new Error(`${label}.${key} must be a non-negative finite number`);
+  return value;
+}
+
 function parseCompactUsage(value: unknown): FusionUsage {
-  if (!isJsonObject(value) || Array.isArray(value))
-    throw new Error('fusion child usage must be an object');
-  const allowed = new Set(['input', 'output', 'cacheRead', 'cacheWrite', 'totalTokens', 'costTotal']);
-  for (const key of Object.keys(value)) {
-    if (!allowed.has(key)) throw new Error(`fusion child usage contains unknown key ${key}`);
-  }
-  for (const key of ['input', 'output', 'cacheRead', 'cacheWrite', 'totalTokens']) {
-    if (!Object.prototype.hasOwnProperty.call(value, key))
-      throw new Error(`fusion child usage is missing key ${key}`);
-  }
-  const record = value;
-  const usage: FusionUsage = {
+  const record = assertClosedRecord(
+    value,
+    ['input', 'output', 'cacheRead', 'cacheWrite', 'totalTokens', 'cost'],
+    'fusion child usage',
+  );
+  const cost = assertClosedRecord(
+    record['cost'],
+    ['input', 'output', 'cacheRead', 'cacheWrite', 'total'],
+    'fusion child usage.cost',
+  );
+  return {
     input: requireUsageInteger(record, 'input', 'fusion child usage'),
     output: requireUsageInteger(record, 'output', 'fusion child usage'),
     cacheRead: requireUsageInteger(record, 'cacheRead', 'fusion child usage'),
     cacheWrite: requireUsageInteger(record, 'cacheWrite', 'fusion child usage'),
     totalTokens: requireUsageInteger(record, 'totalTokens', 'fusion child usage'),
+    cost: {
+      input: requireCostNumber(cost, 'input', 'fusion child usage.cost'),
+      output: requireCostNumber(cost, 'output', 'fusion child usage.cost'),
+      cacheRead: requireCostNumber(cost, 'cacheRead', 'fusion child usage.cost'),
+      cacheWrite: requireCostNumber(cost, 'cacheWrite', 'fusion child usage.cost'),
+      total: requireCostNumber(cost, 'total', 'fusion child usage.cost'),
+    },
   };
-  const costTotal = record['costTotal'];
-  if (costTotal !== undefined) {
-    if (typeof costTotal !== 'number' || !Number.isFinite(costTotal) || costTotal < 0)
-      throw new Error('fusion child usage.costTotal must be a non-negative finite number');
-    usage.costTotal = costTotal;
-  }
-  return usage;
 }
 
 function parseChildResultMetadata(value: unknown): FusionChildResultMetadata {
@@ -385,7 +389,8 @@ function reconstructFinalText(response: Buffer, record: FusionChildResultMetadat
   if (sha256Buffer(joined) !== record.text_sha256)
     throw new Error('Pi final text aggregate hash mismatch');
   const text = joined.toString('utf8');
-  if (!Buffer.from(text, 'utf8').equals(joined)) throw new Error('Pi final text is not valid UTF-8');
+  if (!Buffer.from(text, 'utf8').equals(joined))
+    throw new Error('Pi final text is not valid UTF-8');
   if (text.trim().length === 0) throw new Error('Pi assistant response is empty');
   return text;
 }
@@ -404,11 +409,14 @@ export class FusionPiCompactResultParser {
       const parsed = parseFusionChildStderr(stderr);
       return this.observedFromRecords(parsed.records);
     } catch {
-      return { usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0 } };
+      return { usage: createEmptyFusionUsage() };
     }
   }
 
-  finish(response: Buffer, stderr: Buffer): {
+  finish(
+    response: Buffer,
+    stderr: Buffer,
+  ): {
     text: string;
     usage: FusionUsage;
     provider: string;
@@ -443,15 +451,11 @@ export class FusionPiCompactResultParser {
     }
   }
 
-  private observedFromRecords(records: readonly FusionChildResultMetadata[]): ObservedChildSnapshot {
-    const usage: FusionUsage = {
-      input: 0,
-      output: 0,
-      cacheRead: 0,
-      cacheWrite: 0,
-      totalTokens: 0,
-    };
-    for (const record of records) addUsage(usage, record.usage);
+  private observedFromRecords(
+    records: readonly FusionChildResultMetadata[],
+  ): ObservedChildSnapshot {
+    const usage = createEmptyFusionUsage();
+    for (const record of records) addFusionUsage(usage, record.usage);
     const final = records.at(-1);
     if (final === undefined) return { usage };
     return {

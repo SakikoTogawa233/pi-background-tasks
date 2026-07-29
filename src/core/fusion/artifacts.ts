@@ -8,6 +8,7 @@ import {
   EMPTY_FUSION_USAGE,
   FUSION_MANIFEST_SCHEMA_VERSION,
   FusionError,
+  cloneFusionUsage,
   type FusionArtifactManifest,
   type FusionArtifactRef,
   type FusionAttemptArtifactRecord,
@@ -81,18 +82,6 @@ export interface RecordFusionFailedAttemptInput {
 
 function makeRunId(): string {
   return `f${randomBytes(16).toString('hex')}`;
-}
-
-function usageClone(usage: FusionUsage): FusionUsage {
-  const out: FusionUsage = {
-    input: usage.input,
-    output: usage.output,
-    cacheRead: usage.cacheRead,
-    cacheWrite: usage.cacheWrite,
-    totalTokens: usage.totalTokens,
-  };
-  if (usage.costTotal !== undefined) out.costTotal = usage.costTotal;
-  return out;
 }
 
 function modelsForManifest(models: ResolvedFusionModels): MutableFusionArtifactManifest['models'] {
@@ -196,7 +185,7 @@ function publicManifest(manifest: MutableFusionArtifactManifest): FusionArtifact
     cwd: manifest.cwd,
     config: manifest.config,
     models: manifest.models,
-    usage: usageClone(manifest.usage),
+    usage: cloneFusionUsage(manifest.usage),
     attempts: [...manifest.attempts],
     artifacts: { ...manifest.artifacts },
   };
@@ -260,7 +249,7 @@ export class FusionArtifactStore {
       cwd: options.cwd,
       config: options.config,
       models: modelsForManifest(options.models),
-      usage: usageClone(EMPTY_FUSION_USAGE),
+      usage: cloneFusionUsage(EMPTY_FUSION_USAGE),
       attempts: [],
       artifacts: {},
     };
@@ -316,7 +305,7 @@ export class FusionArtifactStore {
 
   async setUsage(usage: FusionUsage): Promise<void> {
     await this.updateManifest((manifest) => {
-      manifest.usage = usageClone(usage);
+      manifest.usage = cloneFusionUsage(usage);
     });
   }
 
@@ -372,7 +361,7 @@ export class FusionArtifactStore {
         provider: input.result.provider,
         model: input.result.model,
         qualifiedId: input.result.qualifiedId,
-        usage: usageClone(input.result.usage),
+        usage: cloneFusionUsage(input.result.usage),
       };
       if (input.result.slot !== undefined) record.slot = input.result.slot;
       manifest.attempts.push(record);
@@ -403,12 +392,11 @@ export class FusionArtifactStore {
         response_path: responseRef.path,
         error: input.error,
       };
-      if (partialResponseRef !== undefined)
-        record.partial_response_path = partialResponseRef.path;
+      if (partialResponseRef !== undefined) record.partial_response_path = partialResponseRef.path;
       if (input.provider !== undefined) record.provider = input.provider;
       if (input.model !== undefined) record.model = input.model;
       if (input.qualifiedId !== undefined) record.qualifiedId = input.qualifiedId;
-      if (input.usage !== undefined) record.usage = usageClone(input.usage);
+      if (input.usage !== undefined) record.usage = cloneFusionUsage(input.usage);
       if (input.slot !== undefined) record.slot = input.slot;
       manifest.attempts.push(record);
     });

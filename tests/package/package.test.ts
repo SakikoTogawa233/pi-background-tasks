@@ -261,6 +261,33 @@ void describe('package', () => {
       assert.match(child, new RegExp(flag.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
   });
 
+  void it('BUG-182 keeps Fusion usage on the exact host contract across shipped producers and consumers', async () => {
+    const files = [
+      'src/fusion-child-extension.ts',
+      'src/fusion-extension.ts',
+      'src/core/fusion/types.ts',
+      'src/core/fusion/pi-child.ts',
+      'src/core/fusion/orchestrator.ts',
+      'src/core/fusion/artifacts.ts',
+    ];
+    for (const file of files) {
+      const source = await text(file);
+      assert.doesNotMatch(source, /costTotal/, `${file} must not carry the retired cost shape`);
+    }
+    const child = await text('src/fusion-child-extension.ts');
+    assert.match(child, /fusion-child-result\.v2/);
+    for (const key of ['input', 'output', 'cacheRead', 'cacheWrite', 'total']) {
+      assert.match(child, new RegExp(`cost\\.${key}`));
+    }
+    const types = await text('src/core/fusion/types.ts');
+    assert.match(types, /fusion-result\.v2/);
+    assert.match(types, /fusion-manifest\.v2/);
+    assert.match(types, /export type FusionUsage = Usage/);
+    const extension = await text('src/fusion-extension.ts');
+    assert.match(extension, /usage: Usage/);
+    assert.match(extension, /usage: cloneFusionUsage\(result\.details\.usage\)/);
+  });
+
   void it('packs exactly the runtime/docs payload and excludes tests/artifacts', () => {
     const envRoot = makeIsolatedEnvRoot('pi-bg-pack-env-');
     const r = spawnSync('npm', ['pack', '--dry-run', '--json'], {

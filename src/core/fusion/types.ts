@@ -1,10 +1,12 @@
+import type { Usage } from '@earendil-works/pi-ai';
+
 export type FusionThinkingLevel = 'off' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max';
 
 export const FUSION_MODEL_CONFIG_SCHEMA_VERSION = 'pi-background-tasks.fusion-models.v1';
 export const FUSION_INPUT_SCHEMA_VERSION = 'pi-background-tasks.fusion-input.v1';
 export const FUSION_EVALUATION_SCHEMA_VERSION = 'pi-background-tasks.fusion-evaluation.v1';
-export const FUSION_RESULT_SCHEMA_VERSION = 'pi-background-tasks.fusion-result.v1';
-export const FUSION_MANIFEST_SCHEMA_VERSION = 'pi-background-tasks.fusion-manifest.v1';
+export const FUSION_RESULT_SCHEMA_VERSION = 'pi-background-tasks.fusion-result.v2';
+export const FUSION_MANIFEST_SCHEMA_VERSION = 'pi-background-tasks.fusion-manifest.v2';
 
 export const FUSION_CANDIDATE_IDS = ['A', 'B', 'C'] as const;
 export type FusionCandidateId = (typeof FUSION_CANDIDATE_IDS)[number];
@@ -124,14 +126,16 @@ export interface FusionEvaluationV1 {
   synthesis_plan: FusionSynthesisPlan;
 }
 
-export interface FusionUsage {
-  input: number;
-  output: number;
-  cacheRead: number;
-  cacheWrite: number;
-  totalTokens: number;
-  costTotal?: number;
-}
+/** Exact Pi usage contract used at the child, artifact, and host tool-result boundaries. */
+export type FusionUsage = Usage;
+
+const EMPTY_FUSION_COST: Usage['cost'] = Object.freeze({
+  input: 0,
+  output: 0,
+  cacheRead: 0,
+  cacheWrite: 0,
+  total: 0,
+});
 
 export const EMPTY_FUSION_USAGE: FusionUsage = Object.freeze({
   input: 0,
@@ -139,7 +143,42 @@ export const EMPTY_FUSION_USAGE: FusionUsage = Object.freeze({
   cacheRead: 0,
   cacheWrite: 0,
   totalTokens: 0,
+  cost: EMPTY_FUSION_COST,
 });
+
+export function createEmptyFusionUsage(): FusionUsage {
+  return cloneFusionUsage(EMPTY_FUSION_USAGE);
+}
+
+export function cloneFusionUsage(usage: FusionUsage): FusionUsage {
+  return {
+    input: usage.input,
+    output: usage.output,
+    cacheRead: usage.cacheRead,
+    cacheWrite: usage.cacheWrite,
+    totalTokens: usage.totalTokens,
+    cost: {
+      input: usage.cost.input,
+      output: usage.cost.output,
+      cacheRead: usage.cost.cacheRead,
+      cacheWrite: usage.cost.cacheWrite,
+      total: usage.cost.total,
+    },
+  };
+}
+
+export function addFusionUsage(target: FusionUsage, delta: FusionUsage): void {
+  target.input += delta.input;
+  target.output += delta.output;
+  target.cacheRead += delta.cacheRead;
+  target.cacheWrite += delta.cacheWrite;
+  target.totalTokens += delta.totalTokens;
+  target.cost.input += delta.cost.input;
+  target.cost.output += delta.cost.output;
+  target.cost.cacheRead += delta.cost.cacheRead;
+  target.cost.cacheWrite += delta.cost.cacheWrite;
+  target.cost.total += delta.cost.total;
+}
 
 export interface FusionResultDetails {
   schema_version: typeof FUSION_RESULT_SCHEMA_VERSION;

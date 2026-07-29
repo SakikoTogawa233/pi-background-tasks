@@ -455,7 +455,7 @@ void describe('fusion SDK integration', { concurrency: false }, () => {
     }
   });
 
-  void it('returns the exact merged tool text, streams progress, and excludes the active tool-call assistant leaf', async () => {
+  void it('BUG-182 returns exact merged text with host-valid usage and excludes the active tool-call leaf', async () => {
     const h = await harness();
     try {
       const user: UserMessage = {
@@ -516,6 +516,16 @@ void describe('fusion SDK integration', { concurrency: false }, () => {
       const resultUsage = Reflect.get(result, 'usage');
       assert.ok(isRecord(resultUsage));
       assert.equal(resultUsage['totalTokens'], 115);
+      assert.equal(resultUsage['costTotal'], undefined);
+      const resultCost = resultUsage['cost'];
+      assert.ok(isRecord(resultCost), 'tool usage must carry Pi Usage.cost');
+      assert.deepEqual(resultCost, {
+        input: 0.005,
+        output: 0.01,
+        cacheRead: 0.015,
+        cacheWrite: 0.02,
+        total: 0.05,
+      });
       assert.ok(updates.some((update) => /candidates 3\/3 complete/.test(update)));
       assert.ok(updates.some((update) => /merging final answer/.test(update)));
 

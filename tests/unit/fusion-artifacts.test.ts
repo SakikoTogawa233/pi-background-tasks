@@ -47,8 +47,15 @@ function childResult(
     model: 'a',
     qualifiedId: 'p/a',
     text,
-    usage: { input: 1, output: 2, cacheRead: 0, cacheWrite: 0, totalTokens: 3 },
-    events: Buffer.from('{"schema_version":"pi-background-tasks.fusion-child-result.v1"}\n'),
+    usage: {
+      input: 1,
+      output: 2,
+      cacheRead: 0,
+      cacheWrite: 0,
+      totalTokens: 3,
+      cost: { input: 0.01, output: 0.02, cacheRead: 0, cacheWrite: 0, total: 0.03 },
+    },
+    events: Buffer.from('{"schema_version":"pi-background-tasks.fusion-child-result.v2"}\n'),
     stderr: Buffer.from('stderr'),
     exitCode: 0,
     signal: null,
@@ -108,6 +115,13 @@ void describe('fusion artifacts', () => {
       const usageRecord = field(firstAttempt, 'usage');
       assert.ok(typeof usageRecord === 'object' && usageRecord !== null);
       assert.equal(field(usageRecord, 'totalTokens'), 3);
+      assert.deepEqual(field(usageRecord, 'cost'), {
+        input: 0.01,
+        output: 0.02,
+        cacheRead: 0,
+        cacheWrite: 0,
+        total: 0.03,
+      });
       assert.deepEqual(
         (await readdir(store.artifactDirAbs)).filter((entry) => entry.endsWith('.tmp')),
         [],
@@ -174,7 +188,14 @@ void describe('fusion artifacts', () => {
         provider: 'p',
         model: 'b',
         qualifiedId: 'p/b',
-        usage: { input: 2, output: 3, cacheRead: 0, cacheWrite: 0, totalTokens: 5 },
+        usage: {
+          input: 2,
+          output: 3,
+          cacheRead: 0,
+          cacheWrite: 0,
+          totalTokens: 5,
+          cost: { input: 0.02, output: 0.03, cacheRead: 0, cacheWrite: 0, total: 0.05 },
+        },
       });
       await store.writeError('failed', 'boom');
       assert.ok(existsSync(join(store.artifactDirAbs, 'error.json')));
@@ -208,6 +229,13 @@ void describe('fusion artifacts', () => {
       const failedUsage = field(firstAttempt, 'usage');
       assert.ok(typeof failedUsage === 'object' && failedUsage !== null);
       assert.equal(field(failedUsage, 'totalTokens'), 5);
+      assert.deepEqual(field(failedUsage, 'cost'), {
+        input: 0.02,
+        output: 0.03,
+        cacheRead: 0,
+        cacheWrite: 0,
+        total: 0.05,
+      });
     } finally {
       await rm(root, { recursive: true, force: true });
     }

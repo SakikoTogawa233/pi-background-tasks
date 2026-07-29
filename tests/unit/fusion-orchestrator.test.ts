@@ -98,8 +98,15 @@ function childResult(options: RunPiChildOptions, text: string): FusionChildRunRe
     model: options.model.model,
     qualifiedId: options.model.qualifiedId,
     text,
-    usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2 },
-    events: Buffer.from('{"schema_version":"pi-background-tasks.fusion-child-result.v1"}\n'),
+    usage: {
+      input: 1,
+      output: 1,
+      cacheRead: 0,
+      cacheWrite: 0,
+      totalTokens: 2,
+      cost: { input: 0.01, output: 0.02, cacheRead: 0, cacheWrite: 0, total: 0.03 },
+    },
+    events: Buffer.from('{"schema_version":"pi-background-tasks.fusion-child-result.v2"}\n'),
     stderr: Buffer.alloc(0),
     exitCode: 0,
     signal: null,
@@ -109,13 +116,20 @@ function childResult(options: RunPiChildOptions, text: string): FusionChildRunRe
 }
 
 function observedUsage(totalTokens: number): FusionUsage {
+  const costUnit = totalTokens / 1000;
   return {
     input: totalTokens,
     output: totalTokens + 1,
     cacheRead: totalTokens + 2,
     cacheWrite: totalTokens + 3,
     totalTokens,
-    costTotal: totalTokens / 100,
+    cost: {
+      input: costUnit,
+      output: costUnit * 2,
+      cacheRead: costUnit * 3,
+      cacheWrite: costUnit * 4,
+      total: costUnit * 10,
+    },
   };
 }
 
@@ -136,7 +150,7 @@ function childRunError(
   );
   return new FusionChildRunError(
     fusionError,
-    Buffer.from('{"schema_version":"pi-background-tasks.fusion-child-result.v1"}\n'),
+    Buffer.from('{"schema_version":"pi-background-tasks.fusion-child-result.v2"}\n'),
     Buffer.alloc(0),
     Buffer.alloc(0),
     {
@@ -192,19 +206,21 @@ function attemptRecords(manifest: object): object[] {
 
 function usageFromRecord(record: object): FusionUsage {
   const usage = objectField(record, 'usage');
-  const out: FusionUsage = {
+  const cost = objectField(usage, 'cost');
+  return {
     input: numberField(usage, 'input'),
     output: numberField(usage, 'output'),
     cacheRead: numberField(usage, 'cacheRead'),
     cacheWrite: numberField(usage, 'cacheWrite'),
     totalTokens: numberField(usage, 'totalTokens'),
+    cost: {
+      input: numberField(cost, 'input'),
+      output: numberField(cost, 'output'),
+      cacheRead: numberField(cost, 'cacheRead'),
+      cacheWrite: numberField(cost, 'cacheWrite'),
+      total: numberField(cost, 'total'),
+    },
   };
-  const costTotal = field(usage, 'costTotal');
-  if (costTotal !== undefined) {
-    if (typeof costTotal !== 'number') throw new Error('costTotal must be a number');
-    out.costTotal = costTotal;
-  }
-  return out;
 }
 
 function addExpectedUsage(target: FusionUsage, delta: FusionUsage): void {
@@ -213,7 +229,20 @@ function addExpectedUsage(target: FusionUsage, delta: FusionUsage): void {
   target.cacheRead += delta.cacheRead;
   target.cacheWrite += delta.cacheWrite;
   target.totalTokens += delta.totalTokens;
-  if (delta.costTotal !== undefined) target.costTotal = (target.costTotal ?? 0) + delta.costTotal;
+  target.cost.input += delta.cost.input;
+  target.cost.output += delta.cost.output;
+  target.cost.cacheRead += delta.cost.cacheRead;
+  target.cost.cacheWrite += delta.cost.cacheWrite;
+  target.cost.total += delta.cost.total;
+}
+
+function assertCostClose(actual: FusionUsage['cost'], expected: FusionUsage['cost']): void {
+  for (const key of ['input', 'output', 'cacheRead', 'cacheWrite', 'total'] as const) {
+    assert.ok(
+      Math.abs(actual[key] - expected[key]) < 1e-12,
+      `aggregate cost.${key} must equal attempt sum`,
+    );
+  }
 }
 
 function assertManifestUsageEqualsAttemptSum(manifest: object): void {
@@ -223,6 +252,7 @@ function assertManifestUsageEqualsAttemptSum(manifest: object): void {
     cacheRead: 0,
     cacheWrite: 0,
     totalTokens: 0,
+    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
   };
   for (const attempt of attemptRecords(manifest))
     addExpectedUsage(expected, usageFromRecord(attempt));
@@ -243,15 +273,7 @@ function assertManifestUsageEqualsAttemptSum(manifest: object): void {
       totalTokens: expected.totalTokens,
     },
   );
-  if (expected.costTotal !== undefined) {
-    assert.ok(actual.costTotal !== undefined, 'aggregate costTotal must be present');
-    assert.ok(
-      Math.abs(actual.costTotal - expected.costTotal) < 1e-12,
-      'aggregate costTotal must equal attempt sum',
-    );
-  } else {
-    assert.equal(actual.costTotal, undefined);
-  }
+  assertCostClose(actual.cost, expected.cost);
 }
 
 async function failedManifest(root: string, runner: FusionChildRunner): Promise<object> {
@@ -330,6 +352,13 @@ void describe('fusion orchestrator', () => {
       assert.equal(result.mergedText, 'merged final');
       assert.equal(result.details.evaluator_attempts, 2);
       assert.equal(result.details.usage.totalTokens, 12);
+      assertCostClose(result.details.usage.cost, {
+        input: 0.06,
+        output: 0.12,
+        cacheRead: 0,
+        cacheWrite: 0,
+        total: 0.18,
+      });
       assert.deepEqual(
         calls.slice(0, 3).map((call) => call.slot),
         [1, 2, 3],

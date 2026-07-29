@@ -27,6 +27,8 @@ import {
 import {
   FUSION_RESULT_SCHEMA_VERSION,
   FusionError,
+  addFusionUsage,
+  createEmptyFusionUsage,
   type FusionCanonicalInputV1,
   type FusionCandidateId,
   type FusionChildRunResult,
@@ -80,21 +82,8 @@ interface EvaluationAttemptResult {
   errors: readonly string[];
 }
 
-function emptyUsage(): FusionUsage {
-  return { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0 };
-}
-
-function addUsage(target: FusionUsage, delta: FusionUsage): void {
-  target.input += delta.input;
-  target.output += delta.output;
-  target.cacheRead += delta.cacheRead;
-  target.cacheWrite += delta.cacheWrite;
-  target.totalTokens += delta.totalTokens;
-  if (delta.costTotal !== undefined) target.costTotal = (target.costTotal ?? 0) + delta.costTotal;
-}
-
 function addFailedChildUsage(target: FusionUsage, error: unknown): void {
-  if (error instanceof FusionChildRunError) addUsage(target, error.usage);
+  if (error instanceof FusionChildRunError) addFusionUsage(target, error.usage);
 }
 
 function errorText(error: unknown): string {
@@ -340,7 +329,7 @@ export class FusionOrchestrator {
     if (this.now !== undefined) storeOptions.now = this.now;
     const store = await this.createArtifactStore(storeOptions);
     input.onProgress?.({ type: 'state', state: 'initializing' });
-    const usage = emptyUsage();
+    const usage = createEmptyFusionUsage();
     try {
       await store.writeCanonicalInput(input.canonicalInputSerialized);
       await store.transition('candidates_running');
@@ -378,7 +367,7 @@ export class FusionOrchestrator {
         undefined,
         'md',
       );
-      addUsage(usage, merged.usage);
+      addFusionUsage(usage, merged.usage);
       await store.recordChildAttempt({ result: merged, prompt: mergePrompt, responseKind: 'md' });
       await store.writeMerged(merged.text);
       await store.setUsage(usage);
@@ -465,7 +454,7 @@ export class FusionOrchestrator {
         ).then(async (result) => {
           await store.recordChildAttempt({ result, prompt, responseKind: 'md' });
           completed += 1;
-          addUsage(usage, result.usage);
+          addFusionUsage(usage, result.usage);
           await store.setUsage(usage);
           input.onProgress?.({ type: 'candidate_completed', slot, completed, total: 3 });
           return { slot, result };
@@ -545,7 +534,7 @@ export class FusionOrchestrator {
       'txt',
       attempt,
     );
-    addUsage(usage, result.usage);
+    addFusionUsage(usage, result.usage);
     await store.recordChildAttempt({ result, prompt, responseKind: 'txt' });
     await store.setUsage(usage);
     const parsed = parseEvaluationAttempt(result.text);
