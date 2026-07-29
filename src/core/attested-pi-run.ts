@@ -4,7 +4,11 @@ import { closeSync, fsyncSync, openSync, renameSync, writeFileSync } from 'node:
 import { mkdir, open, readFile, realpath, stat, writeFile } from 'node:fs/promises';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import type { Api, Model } from '@earendil-works/pi-ai';
-import type { BackgroundTaskChildProcess, BackgroundTaskContext, BackgroundTaskSpawn } from './registry.js';
+import type {
+  BackgroundTaskChildProcess,
+  BackgroundTaskContext,
+  BackgroundTaskSpawn,
+} from './registry.js';
 import { isJsonObject, parseJsonText, type BgTaskSnapshot, type JsonObject } from './common.js';
 
 export const PI_TASK_ATTESTATION_SCHEMA_VERSION = 'phase2.pi_task_attestation.v1';
@@ -108,7 +112,12 @@ export function validateStructuredPiLaunchRequest(input: StructuredPiLaunchReque
     if (arg === '-p' || arg === '--print' || arg === '--mode' || arg.startsWith('--mode=')) {
       throw new Error('Attested Pi tasks own print/json mode arguments');
     }
-    if (arg === '--provider' || arg.startsWith('--provider=') || arg === '--model' || arg.startsWith('--model=')) {
+    if (
+      arg === '--provider' ||
+      arg.startsWith('--provider=') ||
+      arg === '--model' ||
+      arg.startsWith('--model=')
+    ) {
       throw new Error('Use structured provider/model fields, not duplicate Pi args');
     }
     if (arg === '--thinking' || arg.startsWith('--thinking=')) {
@@ -144,7 +153,8 @@ export function buildAttestedPiArgv(input: StructuredPiLaunchRequest): string[] 
 }
 
 export async function resolveReportPath(cwd: string, reportPath: string): Promise<string> {
-  if (isAbsolute(reportPath)) throw new Error('Attested Pi report path must be relative to task cwd');
+  if (isAbsolute(reportPath))
+    throw new Error('Attested Pi report path must be relative to task cwd');
   const resolved = resolve(cwd, reportPath);
   const relativePath = relative(cwd, resolved);
   if (relativePath === '' || relativePath.startsWith('..') || isAbsolute(relativePath)) {
@@ -181,7 +191,9 @@ function runGit(cwd: string, args: string[]): Promise<string> {
         resolvePromise(Buffer.concat(out).toString('utf8').trim());
         return;
       }
-      reject(new Error(`git ${args.join(' ')} failed: ${Buffer.concat(err).toString('utf8').trim()}`));
+      reject(
+        new Error(`git ${args.join(' ')} failed: ${Buffer.concat(err).toString('utf8').trim()}`),
+      );
     });
   });
 }
@@ -198,9 +210,20 @@ export function observePiOAuth(
   if (!registry.isUsingOAuth(selected)) {
     throw new Error(`Attested Pi task requires OAuth credentials for ${provider}/${modelId}`);
   }
-  const channel = provider === 'openai-codex' ? 'subscription-codex' : provider === 'anthropic' ? 'subscription-anthropic' : undefined;
-  const authClass = provider === 'openai-codex' ? 'pi-codex-oauth' : provider === 'anthropic' ? 'pi-anthropic-oauth' : undefined;
-  if (!channel || !authClass) throw new Error(`Unsupported attested Pi OAuth provider: ${provider}`);
+  const channel =
+    provider === 'openai-codex'
+      ? 'subscription-codex'
+      : provider === 'anthropic'
+        ? 'subscription-anthropic'
+        : undefined;
+  const authClass =
+    provider === 'openai-codex'
+      ? 'pi-codex-oauth'
+      : provider === 'anthropic'
+        ? 'pi-anthropic-oauth'
+        : undefined;
+  if (!channel || !authClass)
+    throw new Error(`Unsupported attested Pi OAuth provider: ${provider}`);
   return {
     apiIdentity: selected.api,
     authClass,
@@ -227,19 +250,24 @@ function nonNegativeInteger(value: unknown): number {
 }
 
 function normalizeUsage(value: unknown): ParsedPiEvents['tokenUsage'] {
-  if (!isJsonObject(value)) return { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0 };
+  if (!isJsonObject(value))
+    return { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0 };
   const input = nonNegativeInteger(value['input']);
   const output = nonNegativeInteger(value['output']);
   const cacheRead = nonNegativeInteger(value['cacheRead']);
   const cacheWrite = nonNegativeInteger(value['cacheWrite']);
-  const totalTokens = nonNegativeInteger(value['totalTokens']) || input + output + cacheRead + cacheWrite;
+  const totalTokens =
+    nonNegativeInteger(value['totalTokens']) || input + output + cacheRead + cacheWrite;
   const cost = isJsonObject(value['cost']) ? readNumber(value['cost'], 'total') : undefined;
   const usage: ParsedPiEvents['tokenUsage'] = { input, output, cacheRead, cacheWrite, totalTokens };
   if (cost !== undefined && cost >= 0) usage.costTotal = cost;
   return usage;
 }
 
-function appendUsage(target: ParsedPiEvents['tokenUsage'], delta: ParsedPiEvents['tokenUsage']): void {
+function appendUsage(
+  target: ParsedPiEvents['tokenUsage'],
+  delta: ParsedPiEvents['tokenUsage'],
+): void {
   target.input += delta.input;
   target.output += delta.output;
   target.cacheRead += delta.cacheRead;
@@ -281,7 +309,13 @@ export function parsePiJsonEvents(raw: Buffer): ParsedPiEvents {
   let model: string | undefined;
   let finalStopReason: string | undefined;
   let assistantCount = 0;
-  const usage: ParsedPiEvents['tokenUsage'] = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0 };
+  const usage: ParsedPiEvents['tokenUsage'] = {
+    input: 0,
+    output: 0,
+    cacheRead: 0,
+    cacheWrite: 0,
+    totalTokens: 0,
+  };
   const tools: ParsedPiEvents['toolUsage'] = { total: 0, failed: 0, byName: {} };
   const transcript: string[] = [];
   for (const line of text.split('\n')) {
@@ -321,22 +355,28 @@ export function parsePiJsonEvents(raw: Buffer): ParsedPiEvents {
     if (!messageProvider || !messageModel) {
       throw new Error('Assistant message lacks provider/model in Pi JSON events');
     }
-    if (provider !== undefined && provider !== messageProvider) throw new Error('Pi assistant provider changed during task');
-    if (model !== undefined && model !== messageModel) throw new Error('Pi assistant model changed during task');
+    if (provider !== undefined && provider !== messageProvider)
+      throw new Error('Pi assistant provider changed during task');
+    if (model !== undefined && model !== messageModel)
+      throw new Error('Pi assistant model changed during task');
     provider = messageProvider;
     model = messageModel;
     appendUsage(usage, normalizeUsage(message['usage']));
     countToolCalls(message, tools);
     transcript.push(...textFromAssistantMessage(message));
-    if (message['error'] !== undefined && message['error'] !== null) throw new Error('Assistant message reported an error');
+    if (message['error'] !== undefined && message['error'] !== null)
+      throw new Error('Assistant message reported an error');
     const stopReason = readString(message, 'stopReason');
     if (stopReason) finalStopReason = stopReason;
   }
-  if (sessionCount !== 1 || !sessionId || !sessionCwd) throw new Error('Pi JSON events must contain exactly one session header');
+  if (sessionCount !== 1 || !sessionId || !sessionCwd)
+    throw new Error('Pi JSON events must contain exactly one session header');
   if (agentStartCount !== 1) throw new Error('Pi JSON events must contain exactly one agent_start');
   if (agentEndCount !== 1) throw new Error('Pi JSON events must contain exactly one agent_end');
-  if (assistantCount < 1 || !provider || !model) throw new Error('Pi JSON events contain no assistant message');
-  if (finalStopReason !== 'stop') throw new Error(`Pi final stop reason is not stop: ${finalStopReason ?? 'missing'}`);
+  if (assistantCount < 1 || !provider || !model)
+    throw new Error('Pi JSON events contain no assistant message');
+  if (finalStopReason !== 'stop')
+    throw new Error(`Pi final stop reason is not stop: ${finalStopReason ?? 'missing'}`);
   return {
     piSessionId: sessionId,
     piCwd: sessionCwd,
@@ -367,7 +407,11 @@ export function canonicalJson(value: unknown): string {
 function sortJson(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(sortJson);
   if (!isJsonObject(value)) return value;
-  return Object.fromEntries(Object.keys(value).sort().map((key) => [key, sortJson(value[key])]));
+  return Object.fromEntries(
+    Object.keys(value)
+      .sort()
+      .map((key) => [key, sortJson(value[key])]),
+  );
 }
 
 async function fsyncFile(path: string): Promise<void> {
@@ -396,14 +440,19 @@ export async function writeFileFsynced(path: string, data: Buffer | string): Pro
 }
 
 export async function writeJsonAtomic(path: string, value: unknown): Promise<void> {
-  const tmp = join(dirname(path), `.${basename(path)}.${process.pid}.${randomBytes(6).toString('hex')}.tmp`);
+  const tmp = join(
+    dirname(path),
+    `.${basename(path)}.${process.pid}.${randomBytes(6).toString('hex')}.tmp`,
+  );
   writeFileSync(tmp, `${JSON.stringify(value, null, 2)}\n`, { encoding: 'utf8', mode: 0o600 });
   await fsyncFile(tmp);
   renameSync(tmp, path);
   await fsyncDirectory(dirname(path));
 }
 
-export async function closeAndFsyncOutputStream(stream: NodeJS.WritableStream | undefined): Promise<void> {
+export async function closeAndFsyncOutputStream(
+  stream: NodeJS.WritableStream | undefined,
+): Promise<void> {
   if (!stream) return;
   await new Promise<void>((resolvePromise, reject) => {
     let settled = false;
@@ -448,13 +497,19 @@ export function spawnAndCapturePi(
 }
 
 export async function buildPiTaskAttestation(input: FinalAttestationInputs): Promise<JsonObject> {
-  if (input.startAuthority.commit !== input.finishAuthority.commit || input.startAuthority.tree !== input.finishAuthority.tree) {
+  if (
+    input.startAuthority.commit !== input.finishAuthority.commit ||
+    input.startAuthority.tree !== input.finishAuthority.tree
+  ) {
     throw new Error('Git authority changed during attested Pi task');
   }
   if (!input.startAuthority.clean || !input.finishAuthority.clean) {
     throw new Error('Git worktree must be clean at attested Pi task start and finish');
   }
-  if (input.parsedEvents.provider !== input.auth.selectedModel.provider || input.parsedEvents.model !== input.auth.selectedModel.id) {
+  if (
+    input.parsedEvents.provider !== input.auth.selectedModel.provider ||
+    input.parsedEvents.model !== input.auth.selectedModel.id
+  ) {
     throw new Error('Observed Pi provider/model do not match selected ModelRegistry model');
   }
   const metadata = await sha256File(input.paths.metadataAbsPath);
@@ -464,7 +519,7 @@ export async function buildPiTaskAttestation(input: FinalAttestationInputs): Pro
   const wrapper = await sha256File(input.paths.wrapperAbsPath);
   const report = await sha256File(input.reportAbsPath);
   const promptHash = sha256Buffer(input.prompt);
-  const attestation: Record<string, unknown> = {
+  const attestation: { [key: string]: unknown } = {
     schema_version: PI_TASK_ATTESTATION_SCHEMA_VERSION,
     locator: {
       session_dir: input.sessionDir,
@@ -530,7 +585,11 @@ export async function buildPiTaskAttestation(input: FinalAttestationInputs): Pro
   return attestation;
 }
 
-export function makeAttestedTaskPaths(runtimeAbs: string, runtimeDisplay: string, id: string): AttestedTaskPaths {
+export function makeAttestedTaskPaths(
+  runtimeAbs: string,
+  runtimeDisplay: string,
+  id: string,
+): AttestedTaskPaths {
   return {
     outputAbsPath: join(runtimeAbs, `${id}.output`),
     metadataAbsPath: join(runtimeAbs, `${id}.json`),
@@ -549,7 +608,9 @@ export function makeAttestedTaskPaths(runtimeAbs: string, runtimeDisplay: string
 
 export function pathInside(parent: string, child: string): boolean {
   const rel = relative(parent, child);
-  return rel === '' || (!rel.startsWith('..') && !isAbsolute(rel) && !rel.split(sep).includes('..'));
+  return (
+    rel === '' || (!rel.startsWith('..') && !isAbsolute(rel) && !rel.split(sep).includes('..'))
+  );
 }
 
 export async function assertRegularReadable(path: string): Promise<void> {

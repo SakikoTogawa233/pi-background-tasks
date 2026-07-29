@@ -21,6 +21,7 @@ import {
   buildFusionCanonicalInput,
   normalizeFusionCommandRequest,
 } from './core/fusion/context.js';
+import type { JsonObject } from './core/common.js';
 import { FusionOrchestrator } from './core/fusion/orchestrator.js';
 import {
   FUSION_RESULT_SCHEMA_VERSION,
@@ -42,11 +43,14 @@ const FUSION_RESULT_MESSAGE_TYPE = 'fusion-result';
 const FUSION_REQUEST_MESSAGE_TYPE = 'fusion-request';
 const FUSION_PROGRESS_SCHEMA_VERSION = 'pi-background-tasks.fusion-progress.v1';
 const FUSION_REQUEST_SCHEMA_VERSION = 'pi-background-tasks.fusion-request.v1';
-const FUSION_COMMAND_USAGE = 'Usage: /fusion <prompt> (or run /fusion with no arguments to open the multiline editor).';
+const FUSION_COMMAND_USAGE =
+  'Usage: /fusion <prompt> (or run /fusion with no arguments to open the multiline editor).';
 const FUSION_MODEL_COMMAND_NAME = 'fusion-models';
 
 type FusionToolDetails = FusionResultDetails | FusionProgressDetails;
-type FusionToolResultWithUsage = AgentToolResult<FusionToolDetails> & { usage: FusionResultDetails['usage'] };
+type FusionToolResultWithUsage = AgentToolResult<FusionToolDetails> & {
+  usage: FusionResultDetails['usage'];
+};
 
 type CommandDialogResult =
   | { type: 'completed'; result: FusionRunResult }
@@ -91,7 +95,7 @@ function textContent(text: string) {
   return [{ type: 'text' as const, text }];
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
+function isRecord(value: unknown): value is JsonObject {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
@@ -123,9 +127,12 @@ function errorArtifactSuffix(error: unknown): string {
 function progressText(event: FusionProgressEvent): string {
   if (event.type === 'state') return `fusion: ${event.state.replace(/_/g, ' ')}`;
   if (event.type === 'candidate_started') return `fusion: candidate ${String(event.slot)} starting`;
-  if (event.type === 'candidate_completed') return `fusion: candidates ${String(event.completed)}/${String(event.total)} complete`;
-  if (event.type === 'evaluation_started') return event.repair ? 'fusion: repairing evaluator JSON' : 'fusion: evaluating candidates';
-  if (event.type === 'evaluation_retry') return `fusion: evaluator schema retry (${String(event.errors.length)} issue${event.errors.length === 1 ? '' : 's'})`;
+  if (event.type === 'candidate_completed')
+    return `fusion: candidates ${String(event.completed)}/${String(event.total)} complete`;
+  if (event.type === 'evaluation_started')
+    return event.repair ? 'fusion: repairing evaluator JSON' : 'fusion: evaluating candidates';
+  if (event.type === 'evaluation_retry')
+    return `fusion: evaluator schema retry (${String(event.errors.length)} issue${event.errors.length === 1 ? '' : 's'})`;
   if (event.type === 'merge_started') return 'fusion: merging final answer';
   if (event.type === 'completed') return 'fusion: completed';
   if (event.type === 'cancelled') return `fusion: cancelled (${event.reason})`;
@@ -142,7 +149,8 @@ function makeProgressDetails(event: FusionProgressEvent): FusionProgressDetails 
 
 function usageSummary(details: FusionResultDetails): string {
   const tokens = details.usage.totalTokens;
-  const cost = details.usage.costTotal === undefined ? '' : ` · $${details.usage.costTotal.toFixed(4)}`;
+  const cost =
+    details.usage.costTotal === undefined ? '' : ` · $${details.usage.costTotal.toFixed(4)}`;
   return `${String(tokens)} tokens${cost}`;
 }
 
@@ -150,7 +158,11 @@ function extractMessageText(content: unknown): string {
   if (typeof content === 'string') return content;
   if (!Array.isArray(content)) return '';
   return content
-    .map((part) => (isRecord(part) && part['type'] === 'text' && typeof part['text'] === 'string' ? part['text'] : ''))
+    .map((part) =>
+      isRecord(part) && part['type'] === 'text' && typeof part['text'] === 'string'
+        ? part['text']
+        : '',
+    )
     .join('');
 }
 
@@ -199,10 +211,17 @@ function isFusionResultDetails(value: unknown): value is FusionResultDetails {
 }
 
 function isFusionProgressDetails(value: unknown): value is FusionProgressDetails {
-  return isRecord(value) && value['schema_version'] === FUSION_PROGRESS_SCHEMA_VERSION && typeof value['status'] === 'string';
+  return (
+    isRecord(value) &&
+    value['schema_version'] === FUSION_PROGRESS_SCHEMA_VERSION &&
+    typeof value['status'] === 'string'
+  );
 }
 
-function choicesForSelector(ctx: ExtensionContext, config: FusionModelConfigV1): FusionModelChoice[] {
+function choicesForSelector(
+  ctx: ExtensionContext,
+  config: FusionModelConfigV1,
+): FusionModelChoice[] {
   const choices: FusionModelChoice[] = [];
   const current = ctx.model === undefined ? undefined : qualifiedModelKey(ctx.model);
   choices.push({
@@ -221,14 +240,15 @@ function choicesForSelector(ctx: ExtensionContext, config: FusionModelConfigV1):
     seen.add(model.key);
     choices.push({ value: model.key, label: model.key, description: model.name, available: true });
   }
-  for (const selection of [
-    ...config.candidates,
-    config.evaluator,
-    config.merger,
-  ]) {
+  for (const selection of [...config.candidates, config.evaluator, config.merger]) {
     if (seen.has(selection)) continue;
     seen.add(selection);
-    choices.push({ value: selection, label: selection, description: 'configured but not currently available', available: false });
+    choices.push({
+      value: selection,
+      label: selection,
+      description: 'configured but not currently available',
+      available: false,
+    });
   }
   return choices;
 }
@@ -282,23 +302,29 @@ export function registerFusionExtension(pi: ExtensionAPI): void {
     activeRuns.add(active);
     const unlink = linkSignal(request.signal, controller);
     const assertActive = () => {
-      if (controller.signal.aborted) throw new FusionError('fusion run cancelled before child launch', { code: 'child_cancelled', childCreated: false });
-      if (shuttingDown || lifecycleGeneration !== generation) throw new Error('fusion extension is shutting down');
+      if (controller.signal.aborted)
+        throw new FusionError('fusion run cancelled before child launch', {
+          code: 'child_cancelled',
+          childCreated: false,
+        });
+      if (shuttingDown || lifecycleGeneration !== generation)
+        throw new Error('fusion extension is shutting down');
     };
     try {
       assertActive();
-      const contextOptions = request.toolCallId === undefined
-        ? {
-            source: request.source,
-            request: request.request,
-            toolName: FUSION_BRAINSTORM_TOOL_NAME,
-          }
-        : {
-            source: request.source,
-            request: request.request,
-            toolCallId: request.toolCallId,
-            toolName: FUSION_BRAINSTORM_TOOL_NAME,
-          };
+      const contextOptions =
+        request.toolCallId === undefined
+          ? {
+              source: request.source,
+              request: request.request,
+              toolName: FUSION_BRAINSTORM_TOOL_NAME,
+            }
+          : {
+              source: request.source,
+              request: request.request,
+              toolCallId: request.toolCallId,
+              toolName: FUSION_BRAINSTORM_TOOL_NAME,
+            };
       const built = buildFusionCanonicalInput(request.ctx, contextOptions);
       const cwd = request.ctx.cwd;
       const sessionId = request.ctx.sessionManager.getSessionId();
@@ -358,7 +384,10 @@ export function registerFusionExtension(pi: ExtensionAPI): void {
     );
   }
 
-  async function promptFromCommandArgs(args: string, ctx: ExtensionCommandContext): Promise<string | undefined> {
+  async function promptFromCommandArgs(
+    args: string,
+    ctx: ExtensionCommandContext,
+  ): Promise<string | undefined> {
     const direct = normalizeFusionCommandRequest(args);
     if (direct.length > 0) return direct;
     if (!ctx.hasUI) throw new Error(FUSION_COMMAND_USAGE);
@@ -418,12 +447,20 @@ export function registerFusionExtension(pi: ExtensionAPI): void {
     throw dialog.error;
   }
 
-  pi.registerMessageRenderer<FusionResultDetails>(FUSION_RESULT_MESSAGE_TYPE, (message, options, theme) => {
-    if (!isFusionResultDetails(message.details)) {
-      return new Text(theme.fg('error', 'Invalid fusion result details'), 0, 0);
-    }
-    return renderFusionResultText(extractMessageText(message.content), message.details, { expanded: options.expanded, isPartial: false }, theme);
-  });
+  pi.registerMessageRenderer<FusionResultDetails>(
+    FUSION_RESULT_MESSAGE_TYPE,
+    (message, options, theme) => {
+      if (!isFusionResultDetails(message.details)) {
+        return new Text(theme.fg('error', 'Invalid fusion result details'), 0, 0);
+      }
+      return renderFusionResultText(
+        extractMessageText(message.content),
+        message.details,
+        { expanded: options.expanded, isPartial: false },
+        theme,
+      );
+    },
+  );
 
   pi.registerCommand('fusion', {
     description: 'Run a five-model fusion workflow and append the merged result directly.',
@@ -450,7 +487,8 @@ export function registerFusionExtension(pi: ExtensionAPI): void {
   pi.registerCommand(FUSION_MODEL_COMMAND_NAME, {
     description: 'Open the five-slot global fusion model selector.',
     handler: async (_args, ctx) => {
-      const modeError = '/fusion-models requires Pi TUI mode; it is unavailable in RPC, JSON, and print modes.';
+      const modeError =
+        '/fusion-models requires Pi TUI mode; it is unavailable in RPC, JSON, and print modes.';
       if (!ctx.hasUI) throw new Error(modeError);
       if (!isTuiContext(ctx)) {
         ctx.ui.notify(modeError, 'error');
@@ -489,7 +527,8 @@ export function registerFusionExtension(pi: ExtensionAPI): void {
           },
         },
       );
-      if (result.type === 'saved') ctx.ui.notify(`Saved fusion model configuration to ${path}`, 'info');
+      if (result.type === 'saved')
+        ctx.ui.notify(`Saved fusion model configuration to ${path}`, 'info');
     },
   });
 
@@ -497,7 +536,8 @@ export function registerFusionExtension(pi: ExtensionAPI): void {
     name: FUSION_BRAINSTORM_TOOL_NAME,
     label: 'Fusion Brainstorm',
     description: 'Run a five-model fusion workflow for a prompt and return the merged answer.',
-    promptSnippet: 'Use fusion_brainstorm to get a merged answer from the five-model fusion workflow',
+    promptSnippet:
+      'Use fusion_brainstorm to get a merged answer from the five-model fusion workflow',
     promptGuidelines: [
       'fusion_brainstorm is always available; call fusion_brainstorm({prompt}) whenever a merged multi-model answer would help.',
       'fusion_brainstorm has no eligibility, quota, routine, or justification gate; provide only the prompt string.',
@@ -513,7 +553,10 @@ export function registerFusionExtension(pi: ExtensionAPI): void {
         signal,
         toolCallId,
         onProgress: (event) => {
-          onUpdate?.({ content: textContent(progressText(event)), details: makeProgressDetails(event) });
+          onUpdate?.({
+            content: textContent(progressText(event)),
+            details: makeProgressDetails(event),
+          });
         },
       });
       const toolResult: FusionToolResultWithUsage = {
@@ -525,12 +568,20 @@ export function registerFusionExtension(pi: ExtensionAPI): void {
     },
     renderCall(args, theme) {
       const preview = args.prompt.replace(/\s+/g, ' ').trim();
-      return new Text(`${theme.fg('toolTitle', theme.bold('fusion_brainstorm '))}${theme.fg('muted', preview)}`, 0, 0);
+      return new Text(
+        `${theme.fg('toolTitle', theme.bold('fusion_brainstorm '))}${theme.fg('muted', preview)}`,
+        0,
+        0,
+      );
     },
     renderResult(result, options, theme) {
-      if (isFusionProgressDetails(result.details)) return renderProgressResult(result.details, theme);
-      if (!isFusionResultDetails(result.details)) return new Text(theme.fg('error', 'Invalid fusion tool details'), 0, 0);
-      const mergedText = result.content.map((part) => (part.type === 'text' ? part.text : '')).join('\n');
+      if (isFusionProgressDetails(result.details))
+        return renderProgressResult(result.details, theme);
+      if (!isFusionResultDetails(result.details))
+        return new Text(theme.fg('error', 'Invalid fusion tool details'), 0, 0);
+      const mergedText = result.content
+        .map((part) => (part.type === 'text' ? part.text : ''))
+        .join('\n');
       return renderFusionResultText(mergedText, result.details, options, theme);
     },
   });
@@ -550,7 +601,9 @@ export function registerFusionExtension(pi: ExtensionAPI): void {
     const runs = [...activeRuns];
     for (const run of runs) run.controller.abort();
     const settled = await Promise.allSettled(runs.map((run) => run.settled));
-    const failures = settled.flatMap((result) => (result.status === 'rejected' ? [errorMessage(result.reason)] : []));
+    const failures = settled.flatMap((result) =>
+      result.status === 'rejected' ? [errorMessage(result.reason)] : [],
+    );
     activeRuns.clear();
     if (failures.length > 0) {
       const message = `Fusion shutdown cleanup failed:\n${failures.join('\n')}`;

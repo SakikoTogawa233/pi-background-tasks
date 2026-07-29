@@ -4,7 +4,7 @@ import { chmod, mkdir, open, readFile, rm, writeFile } from 'node:fs/promises';
 import { basename, dirname, join } from 'node:path';
 import { getAgentDir } from '@earendil-works/pi-coding-agent';
 import type { Api, Model } from '@earendil-works/pi-ai';
-import { isJsonObject, parseJsonText } from '../common.js';
+import { isJsonObject, parseJsonText, type JsonObject } from '../common.js';
 import {
   FUSION_MODEL_CONFIG_SCHEMA_VERSION,
   FusionError,
@@ -68,7 +68,7 @@ function keysOf(value: object): string[] {
   return Object.keys(value).sort();
 }
 
-function assertClosed(record: Record<string, unknown>, expected: readonly string[], label: string): void {
+function assertClosed(record: JsonObject, expected: readonly string[], label: string): void {
   const expectedSet = new Set(expected);
   for (const key of Object.keys(record)) {
     if (!expectedSet.has(key)) throw configError(`${label} contains unknown key ${key}`);
@@ -94,7 +94,9 @@ function requireSelection(value: unknown, label: string): FusionModelSelection {
   return trimmed;
 }
 
-function requireCandidateSelections(value: unknown): [FusionModelSelection, FusionModelSelection, FusionModelSelection] {
+function requireCandidateSelections(
+  value: unknown,
+): [FusionModelSelection, FusionModelSelection, FusionModelSelection] {
   if (!Array.isArray(value)) throw configError('candidates must be an array');
   if (value.length !== 3) throw configError('candidates must contain exactly three entries');
   const first = requireSelection(value[0], 'candidates[0]');
@@ -104,9 +106,14 @@ function requireCandidateSelections(value: unknown): [FusionModelSelection, Fusi
 }
 
 export function parseFusionModelConfig(value: unknown): FusionModelConfigV1 {
-  if (!isJsonObject(value) || Array.isArray(value)) throw configError('fusion model config must be an object');
-  const record: Record<string, unknown> = value;
-  assertClosed(record, ['schema_version', 'candidates', 'evaluator', 'merger'], 'fusion model config');
+  if (!isJsonObject(value) || Array.isArray(value))
+    throw configError('fusion model config must be an object');
+  const record: JsonObject = value;
+  assertClosed(
+    record,
+    ['schema_version', 'candidates', 'evaluator', 'merger'],
+    'fusion model config',
+  );
   if (record['schema_version'] !== FUSION_MODEL_CONFIG_SCHEMA_VERSION) {
     throw configError('fusion model config schema_version mismatch');
   }
@@ -118,14 +125,18 @@ export function parseFusionModelConfig(value: unknown): FusionModelConfigV1 {
   };
 }
 
-export async function loadFusionModelConfig(path = fusionModelConfigPath()): Promise<LoadedFusionModelConfig> {
+export async function loadFusionModelConfig(
+  path = fusionModelConfigPath(),
+): Promise<LoadedFusionModelConfig> {
   const revision = await revisionForPath(path);
   if (!revision.exists) return { config: defaultFusionModelConfig(), revision };
   let parsed: unknown;
   try {
     parsed = parseJsonText(await readFile(path, 'utf8'));
   } catch (error) {
-    throw configError(`fusion model config is not valid JSON at ${path}: ${error instanceof Error ? error.message : String(error)}`);
+    throw configError(
+      `fusion model config is not valid JSON at ${path}: ${error instanceof Error ? error.message : String(error)}`,
+    );
   }
   const config = parseFusionModelConfig(parsed);
   return { config, revision };
@@ -169,10 +180,13 @@ function resolveSelection(
     const qualifiedId = qualifiedModelKey(currentModel);
     const available = availableByKey.get(qualifiedId);
     if (available === undefined) {
-      throw new FusionError(`${slotLabel} current model is not available to child Pi: ${qualifiedId}`, {
-        code: 'model_unavailable',
-        childCreated: false,
-      });
+      throw new FusionError(
+        `${slotLabel} current model is not available to child Pi: ${qualifiedId}`,
+        {
+          code: 'model_unavailable',
+          childCreated: false,
+        },
+      );
     }
     return {
       selection,
@@ -207,9 +221,27 @@ export function resolveFusionModels(input: ResolveFusionModelsInput): ResolvedFu
   const [first, second, third] = input.config.candidates;
   return {
     candidates: [
-      resolveSelection(first, 'candidate 1', availableByKey, input.currentModel, input.thinkingLevel),
-      resolveSelection(second, 'candidate 2', availableByKey, input.currentModel, input.thinkingLevel),
-      resolveSelection(third, 'candidate 3', availableByKey, input.currentModel, input.thinkingLevel),
+      resolveSelection(
+        first,
+        'candidate 1',
+        availableByKey,
+        input.currentModel,
+        input.thinkingLevel,
+      ),
+      resolveSelection(
+        second,
+        'candidate 2',
+        availableByKey,
+        input.currentModel,
+        input.thinkingLevel,
+      ),
+      resolveSelection(
+        third,
+        'candidate 3',
+        availableByKey,
+        input.currentModel,
+        input.thinkingLevel,
+      ),
     ],
     evaluator: resolveSelection(
       input.config.evaluator,
@@ -290,7 +322,10 @@ function prettyConfig(config: FusionModelConfigV1): string {
   return `${JSON.stringify(sorted, null, 2)}\n`;
 }
 
-function revisionsMatch(expected: FusionModelConfigRevision, current: FusionModelConfigRevision): boolean {
+function revisionsMatch(
+  expected: FusionModelConfigRevision,
+  current: FusionModelConfigRevision,
+): boolean {
   if (expected.path !== current.path) return false;
   if (expected.exists !== current.exists) return false;
   return expected.sha256 === current.sha256;
@@ -313,7 +348,10 @@ export async function saveFusionModelConfig(
         childCreated: false,
       });
     }
-    const tmp = join(dir, `.${basename(path)}.${String(process.pid)}.${randomBytes(6).toString('hex')}.tmp`);
+    const tmp = join(
+      dir,
+      `.${basename(path)}.${String(process.pid)}.${randomBytes(6).toString('hex')}.tmp`,
+    );
     const text = prettyConfig(config);
     try {
       await writeFile(tmp, text, { encoding: 'utf8', mode: 0o600 });

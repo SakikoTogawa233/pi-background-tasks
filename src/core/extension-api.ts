@@ -4,6 +4,7 @@ import {
   normalizeMaxBytes,
   type BgLogsDetails,
   type BgTaskSnapshot,
+  type JsonObject,
   type StartTaskOptions,
 } from './common.js';
 import type { BackgroundTaskContext, BackgroundTaskRegistry } from './registry.js';
@@ -120,7 +121,7 @@ export interface BackgroundTaskExtensionServiceOptions {
   logger?: Pick<Console, 'error'> | undefined;
 }
 
-type JsonRecord = Record<string, unknown>;
+type JsonRecord = JsonObject;
 
 interface ParsedRequest {
   requestId: string;
@@ -278,16 +279,23 @@ function parsePayload(
 
 function parseRequest(data: unknown): ParsedRequest {
   if (!isRecord(data)) {
-    return { requestId: 'malformed', operationEcho: 'malformed', error: 'request frame must be an object' };
+    return {
+      requestId: 'malformed',
+      operationEcho: 'malformed',
+      error: 'request frame must be an object',
+    };
   }
   const requestId = requestIdEcho(data['request_id']);
   const opEcho = operationEcho(data['operation']);
   try {
     assertClosed(data, ['schema_version', 'request_id', 'operation', 'payload'], 'request');
-    if (data['schema_version'] !== BG_REQUEST_SCHEMA) throw new Error('request schema_version mismatch');
+    if (data['schema_version'] !== BG_REQUEST_SCHEMA)
+      throw new Error('request schema_version mismatch');
     const parsedRequestId = requireNonEmptyString(data['request_id'], 'request.request_id');
     if (parsedRequestId.length > MAX_REQUEST_ID_CHARS) {
-      throw new Error(`request.request_id must be at most ${String(MAX_REQUEST_ID_CHARS)} characters`);
+      throw new Error(
+        `request.request_id must be at most ${String(MAX_REQUEST_ID_CHARS)} characters`,
+      );
     }
     const operation = requireOperation(data['operation'], 'request.operation');
     if (!hasOwn(data, 'payload')) throw new Error('request.payload is required');
@@ -376,7 +384,9 @@ function runPayload(value: BackgroundTaskExtensionPayload): BackgroundTaskExtens
   return value as BackgroundTaskExtensionRunPayload;
 }
 
-function statusPayload(value: BackgroundTaskExtensionPayload): BackgroundTaskExtensionStatusPayload {
+function statusPayload(
+  value: BackgroundTaskExtensionPayload,
+): BackgroundTaskExtensionStatusPayload {
   return value as BackgroundTaskExtensionStatusPayload;
 }
 
@@ -427,12 +437,20 @@ class InstalledBackgroundTaskExtensionService implements BackgroundTaskExtension
   private async handle(data: unknown): Promise<void> {
     const parsed = parseRequest(data);
     if (parsed.error !== undefined || parsed.request === undefined) {
-      this.emitResponse(errorResponse(parsed.requestId, parsed.operationEcho, parsed.error ?? 'malformed request'));
+      this.emitResponse(
+        errorResponse(parsed.requestId, parsed.operationEcho, parsed.error ?? 'malformed request'),
+      );
       return;
     }
     const request = parsed.request;
     if (this.seenRequestIds.has(request.request_id)) {
-      this.emitResponse(errorResponse(request.request_id, request.operation, `duplicate request_id ${request.request_id}`));
+      this.emitResponse(
+        errorResponse(
+          request.request_id,
+          request.operation,
+          `duplicate request_id ${request.request_id}`,
+        ),
+      );
       return;
     }
     this.seenRequestIds.add(request.request_id);
@@ -449,7 +467,9 @@ class InstalledBackgroundTaskExtensionService implements BackgroundTaskExtension
       if (ctx === undefined) {
         throw new Error('pi-background-tasks EventBus service is unavailable before session_start');
       }
-      this.emitResponse(successResponse(request, await this.execute(ctx, request, terminalGate?.promise)));
+      this.emitResponse(
+        successResponse(request, await this.execute(ctx, request, terminalGate?.promise)),
+      );
     } catch (error) {
       this.emitResponse(errorResponse(request.request_id, request.operation, error));
     } finally {

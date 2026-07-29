@@ -5,7 +5,7 @@ import {
 } from '@earendil-works/pi-coding-agent';
 import type { Message } from '@earendil-works/pi-ai';
 import { canonicalJson } from '../attested-pi-run.js';
-import { isJsonObject } from '../common.js';
+import { isJsonObject, type JsonObject } from '../common.js';
 import {
   FUSION_INPUT_SCHEMA_VERSION,
   FusionError,
@@ -50,17 +50,17 @@ function entriesById(entries: readonly SessionEntry[]): Map<string, SessionEntry
   return byId;
 }
 
-function readArray(record: Record<string, unknown>, key: string): readonly unknown[] | undefined {
+function readArray(record: JsonObject, key: string): readonly unknown[] | undefined {
   const value = record[key];
   return Array.isArray(value) ? value : undefined;
 }
 
-function recordOf(value: unknown): Record<string, unknown> | undefined {
+function recordOf(value: unknown): JsonObject | undefined {
   if (!isJsonObject(value) || Array.isArray(value)) return undefined;
   return value;
 }
 
-function entryMessage(entry: SessionEntry): Record<string, unknown> | undefined {
+function entryMessage(entry: SessionEntry): JsonObject | undefined {
   if (entry.type !== 'message') return undefined;
   return recordOf(entry.message);
 }
@@ -77,7 +77,7 @@ function toolCallPartMatches(
 }
 
 function messageContainsToolCall(
-  message: Record<string, unknown>,
+  message: JsonObject,
   toolCallId: string | undefined,
   toolName: string,
 ): boolean {
@@ -121,7 +121,8 @@ function textContentForTranscript(content: Message['content']): string {
   const parts: string[] = [];
   for (const block of content) {
     if (block.type === 'text') parts.push(block.text);
-    else if (block.type === 'image') parts.push(`[Image omitted from fusion text transcript: ${block.mimeType}]`);
+    else if (block.type === 'image')
+      parts.push(`[Image omitted from fusion text transcript: ${block.mimeType}]`);
   }
   return parts.join('');
 }
@@ -139,7 +140,8 @@ function serializeFusionConversation(messages: readonly Message[]): string {
       for (const block of message.content) {
         if (block.type === 'thinking') thinkingParts.push(block.thinking);
         else if (block.type === 'text') textParts.push(block.text);
-        else if (block.type === 'toolCall') toolCalls.push(`${block.name}(${canonicalJson(block.arguments)})`);
+        else if (block.type === 'toolCall')
+          toolCalls.push(`${block.name}(${canonicalJson(block.arguments)})`);
       }
       if (thinkingParts.length > 0) parts.push(`[Assistant thinking]: ${thinkingParts.join('\n')}`);
       if (textParts.length > 0) parts.push(`[Assistant]: ${textParts.join('\n')}`);

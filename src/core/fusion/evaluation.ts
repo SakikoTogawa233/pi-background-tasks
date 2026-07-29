@@ -1,4 +1,4 @@
-import { parseJsonText } from '../common.js';
+import { parseJsonText, type JsonObject } from '../common.js';
 import {
   FUSION_CANDIDATE_IDS,
   FUSION_EVALUATION_SCHEMA_VERSION,
@@ -20,17 +20,23 @@ export type FusionEvaluationValidationResult =
   | { ok: true; value: FusionEvaluationV1 }
   | { ok: false; errors: readonly string[] };
 
-function isRecord(value: unknown): value is Record<string, unknown> {
+function isRecord(value: unknown): value is JsonObject {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
-function closed(record: Record<string, unknown>, keys: readonly string[], label: string, errors: string[]): void {
+function closed(
+  record: JsonObject,
+  keys: readonly string[],
+  label: string,
+  errors: string[],
+): void {
   const expected = new Set(keys);
   for (const key of Object.keys(record)) {
     if (!expected.has(key)) errors.push(`${label} contains unknown key ${key}`);
   }
   for (const key of keys) {
-    if (!Object.prototype.hasOwnProperty.call(record, key)) errors.push(`${label} is missing key ${key}`);
+    if (!Object.prototype.hasOwnProperty.call(record, key))
+      errors.push(`${label} is missing key ${key}`);
   }
 }
 
@@ -46,7 +52,11 @@ function nonBlankString(value: unknown, label: string, errors: string[]): string
   return value;
 }
 
-function stringList(value: unknown, label: string, errors: string[]): readonly string[] | undefined {
+function stringList(
+  value: unknown,
+  label: string,
+  errors: string[],
+): readonly string[] | undefined {
   if (!Array.isArray(value)) {
     errors.push(`${label} must be an array`);
     return undefined;
@@ -59,13 +69,21 @@ function stringList(value: unknown, label: string, errors: string[]): readonly s
   return out;
 }
 
-function candidateId(value: unknown, label: string, errors: string[]): FusionCandidateId | undefined {
+function candidateId(
+  value: unknown,
+  label: string,
+  errors: string[],
+): FusionCandidateId | undefined {
   if (value === 'A' || value === 'B' || value === 'C') return value;
   errors.push(`${label} must be A, B, or C`);
   return undefined;
 }
 
-function tuple3<T>(items: readonly T[], label: string, errors: string[]): readonly [T, T, T] | undefined {
+function tuple3<T>(
+  items: readonly T[],
+  label: string,
+  errors: string[],
+): readonly [T, T, T] | undefined {
   if (items.length !== 3) {
     errors.push(`${label} must contain exactly three entries`);
     return undefined;
@@ -80,7 +98,11 @@ function tuple3<T>(items: readonly T[], label: string, errors: string[]): readon
   return [first, second, third];
 }
 
-function parseAssessment(value: unknown, label: string, errors: string[]): CandidateAssessment | undefined {
+function parseAssessment(
+  value: unknown,
+  label: string,
+  errors: string[],
+): CandidateAssessment | undefined {
   if (!isRecord(value)) {
     errors.push(`${label} must be an object`);
     return undefined;
@@ -110,7 +132,11 @@ function parseAssessment(value: unknown, label: string, errors: string[]): Candi
   return { candidate_id: id, summary, strengths, limitations, useful_contributions: useful, risks };
 }
 
-function parsePosition(value: unknown, label: string, errors: string[]): FusionConflictPosition | undefined {
+function parsePosition(
+  value: unknown,
+  label: string,
+  errors: string[],
+): FusionConflictPosition | undefined {
   if (!isRecord(value)) {
     errors.push(`${label} must be an object`);
     return undefined;
@@ -122,7 +148,11 @@ function parsePosition(value: unknown, label: string, errors: string[]): FusionC
   return { candidate_id: id, position };
 }
 
-function parseConflict(value: unknown, label: string, errors: string[]): FusionConflict | undefined {
+function parseConflict(
+  value: unknown,
+  label: string,
+  errors: string[],
+): FusionConflict | undefined {
   if (!isRecord(value)) {
     errors.push(`${label} must be an object`);
     return undefined;
@@ -139,11 +169,14 @@ function parseConflict(value: unknown, label: string, errors: string[]): FusionC
       if (parsed !== undefined) positions.push(parsed);
     }
     const distinctIds = new Set(positions.map((position) => position.candidate_id));
-    if (distinctIds.size < 2) errors.push(`${label}.positions must include at least two distinct candidates`);
-    if (distinctIds.size !== positions.length) errors.push(`${label}.positions candidate_id values must be unique`);
+    if (distinctIds.size < 2)
+      errors.push(`${label}.positions must include at least two distinct candidates`);
+    if (distinctIds.size !== positions.length)
+      errors.push(`${label}.positions candidate_id values must be unique`);
   }
   const resolution = nonBlankString(value['resolution'], `${label}.resolution`, errors);
-  if (topic === undefined || resolution === undefined || !Array.isArray(positionsRaw)) return undefined;
+  if (topic === undefined || resolution === undefined || !Array.isArray(positionsRaw))
+    return undefined;
   return { topic, positions, resolution };
 }
 
@@ -180,7 +213,11 @@ function parseContributionList(
   return out;
 }
 
-function parseSynthesisPlan(value: unknown, label: string, errors: string[]): FusionSynthesisPlan | undefined {
+function parseSynthesisPlan(
+  value: unknown,
+  label: string,
+  errors: string[],
+): FusionSynthesisPlan | undefined {
   if (!isRecord(value)) {
     errors.push(`${label} must be an object`);
     return undefined;
@@ -215,7 +252,11 @@ function parseAssessmentList(
   return tuple3(parsed, label, errors);
 }
 
-function parseConflictList(value: unknown, label: string, errors: string[]): readonly FusionConflict[] | undefined {
+function parseConflictList(
+  value: unknown,
+  label: string,
+  errors: string[],
+): readonly FusionConflict[] | undefined {
   if (!Array.isArray(value)) {
     errors.push(`${label} must be an array`);
     return undefined;
@@ -240,11 +281,21 @@ export function validateFusionEvaluation(value: unknown): FusionEvaluationValida
   if (value['schema_version'] !== FUSION_EVALUATION_SCHEMA_VERSION) {
     errors.push('evaluation.schema_version mismatch');
   }
-  const assessments = parseAssessmentList(value['candidate_assessments'], 'evaluation.candidate_assessments', errors);
+  const assessments = parseAssessmentList(
+    value['candidate_assessments'],
+    'evaluation.candidate_assessments',
+    errors,
+  );
   const agreements = stringList(value['agreements'], 'evaluation.agreements', errors);
   const conflicts = parseConflictList(value['conflicts'], 'evaluation.conflicts', errors);
   const plan = parseSynthesisPlan(value['synthesis_plan'], 'evaluation.synthesis_plan', errors);
-  if (errors.length > 0 || assessments === undefined || agreements === undefined || conflicts === undefined || plan === undefined) {
+  if (
+    errors.length > 0 ||
+    assessments === undefined ||
+    agreements === undefined ||
+    conflicts === undefined ||
+    plan === undefined
+  ) {
     return { ok: false, errors };
   }
   return {
@@ -264,17 +315,23 @@ export function parseFusionEvaluation(text: string): FusionEvaluationV1 {
   try {
     parsed = parseJsonText(text);
   } catch (error) {
-    throw new FusionError(`evaluation output must be JSON only: ${error instanceof Error ? error.message : String(error)}`, {
-      code: 'evaluation_invalid',
-      stage: 'evaluation',
-    });
+    throw new FusionError(
+      `evaluation output must be JSON only: ${error instanceof Error ? error.message : String(error)}`,
+      {
+        code: 'evaluation_invalid',
+        stage: 'evaluation',
+      },
+    );
   }
   const result = validateFusionEvaluation(parsed);
   if (!result.ok) {
-    throw new FusionError(`evaluation output failed schema validation: ${formatEvaluationErrors(result.errors)}`, {
-      code: 'evaluation_invalid',
-      stage: 'evaluation',
-    });
+    throw new FusionError(
+      `evaluation output failed schema validation: ${formatEvaluationErrors(result.errors)}`,
+      {
+        code: 'evaluation_invalid',
+        stage: 'evaluation',
+      },
+    );
   }
   return result.value;
 }
@@ -284,14 +341,19 @@ export function boundedEvaluationErrors(errors: readonly string[]): readonly str
   let total = 0;
   for (const error of errors) {
     if (bounded.length >= MAX_REPAIR_ERROR_COUNT) break;
-    const perError = error.length <= MAX_REPAIR_ERROR_CHARS ? error : `${error.slice(0, MAX_REPAIR_ERROR_CHARS - 1)}…`;
+    const perError =
+      error.length <= MAX_REPAIR_ERROR_CHARS
+        ? error
+        : `${error.slice(0, MAX_REPAIR_ERROR_CHARS - 1)}…`;
     const remaining = MAX_REPAIR_ERROR_TOTAL_CHARS - total;
     if (remaining <= 0) break;
-    const next = perError.length <= remaining ? perError : `${perError.slice(0, Math.max(0, remaining - 1))}…`;
+    const next =
+      perError.length <= remaining ? perError : `${perError.slice(0, Math.max(0, remaining - 1))}…`;
     bounded.push(next);
     total += next.length;
   }
-  if (errors.length > bounded.length) bounded.push(`… ${String(errors.length - bounded.length)} more validation errors omitted`);
+  if (errors.length > bounded.length)
+    bounded.push(`… ${String(errors.length - bounded.length)} more validation errors omitted`);
   return bounded;
 }
 
