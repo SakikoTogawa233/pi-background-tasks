@@ -19,10 +19,7 @@ import {
 } from '@earendil-works/pi-coding-agent';
 import type { Component, TUI } from '@earendil-works/pi-tui';
 import { parseJsonText } from '../../src/core/common.js';
-import {
-  CURRENT_MODEL_SELECTION,
-  FUSION_MODEL_CONFIG_FILE,
-} from '../../src/core/fusion/config.js';
+import { CURRENT_MODEL_SELECTION, FUSION_MODEL_CONFIG_FILE } from '../../src/core/fusion/config.js';
 import {
   FUSION_INPUT_SCHEMA_VERSION,
   FUSION_RESULT_SCHEMA_VERSION,
@@ -126,7 +123,8 @@ function parseInvocation(line: string): FusionFakeInvocation {
       PI_SESSION_ID: env['PI_SESSION_ID'] === null ? null : stringField(env, 'PI_SESSION_ID'),
       PI_PROVIDER: env['PI_PROVIDER'] === null ? null : stringField(env, 'PI_PROVIDER'),
       PI_MODEL: env['PI_MODEL'] === null ? null : stringField(env, 'PI_MODEL'),
-      PI_SKIP_VERSION_CHECK: env['PI_SKIP_VERSION_CHECK'] === null ? null : stringField(env, 'PI_SKIP_VERSION_CHECK'),
+      PI_SKIP_VERSION_CHECK:
+        env['PI_SKIP_VERSION_CHECK'] === null ? null : stringField(env, 'PI_SKIP_VERSION_CHECK'),
     },
   };
 }
@@ -147,19 +145,27 @@ async function waitForInvocationCount(path: string, minimum: number): Promise<vo
 }
 
 function isFusionResultDetails(value: unknown): value is FusionResultDetails {
-  return isRecord(value) && value['schema_version'] === FUSION_RESULT_SCHEMA_VERSION && typeof value['run_id'] === 'string';
+  return (
+    isRecord(value) &&
+    value['schema_version'] === FUSION_RESULT_SCHEMA_VERSION &&
+    typeof value['run_id'] === 'string'
+  );
 }
 
 function customEntries(session: AgentSession, customType: string): JsonRecord[] {
   const entries: readonly unknown[] = session.sessionManager.getEntries();
   return entries.filter((entry): entry is JsonRecord => {
-    return isRecord(entry) && entry['type'] === 'custom_message' && entry['customType'] === customType;
+    return (
+      isRecord(entry) && entry['type'] === 'custom_message' && entry['customType'] === customType
+    );
   });
 }
 
 function assistantMessageCount(session: AgentSession): number {
   return session.sessionManager.getEntries().filter((entry) => {
-    return isRecord(entry) && isRecord(entry['message']) && entry['message']['role'] === 'assistant';
+    return (
+      isRecord(entry) && isRecord(entry['message']) && entry['message']['role'] === 'assistant'
+    );
   }).length;
 }
 
@@ -177,7 +183,10 @@ async function harness(options: HarnessOptions = {}): Promise<Harness> {
   process.env['PI_PROVIDER'] = 'stale-provider';
   process.env['PI_MODEL'] = 'stale-model';
   Object.assign(process.env, isolatedTestEnv);
-  const fake = await installFusionFakePi(root, { mergedText: 'SDK fused answer.', delayMs: options.fakeDelayMs });
+  const fake = await installFusionFakePi(root, {
+    mergedText: 'SDK fused answer.',
+    delayMs: options.fakeDelayMs,
+  });
   process.env['PATH'] = fake.env['PATH'];
   const settingsManager = SettingsManager.inMemory({
     defaultProvider: 'pi-bg-fusion',
@@ -252,7 +261,9 @@ async function disposeHarness(h: Harness): Promise<void> {
 }
 
 function command(session: AgentSession, name: string) {
-  const found = session.extensionRunner.getRegisteredCommands().find((cmd) => cmd.invocationName === name);
+  const found = session.extensionRunner
+    .getRegisteredCommands()
+    .find((cmd) => cmd.invocationName === name);
   assert.ok(found, `missing command ${name}`);
   return found;
 }
@@ -270,9 +281,60 @@ function baseUi(session: AgentSession): ExtensionUIContext {
 function makeTheme(): Theme {
   return new Theme(
     {
-      accent: '#ffffff', border: '#ffffff', borderAccent: '#ffffff', borderMuted: '#ffffff', success: '#ffffff', error: '#ffffff', warning: '#ffffff', muted: '#ffffff', dim: '#ffffff', text: '#ffffff', thinkingText: '#ffffff', userMessageText: '#ffffff', customMessageText: '#ffffff', customMessageLabel: '#ffffff', toolTitle: '#ffffff', toolOutput: '#ffffff', mdHeading: '#ffffff', mdLink: '#ffffff', mdLinkUrl: '#ffffff', mdCode: '#ffffff', mdCodeBlock: '#ffffff', mdCodeBlockBorder: '#ffffff', mdQuote: '#ffffff', mdQuoteBorder: '#ffffff', mdHr: '#ffffff', mdListBullet: '#ffffff', toolDiffAdded: '#ffffff', toolDiffRemoved: '#ffffff', toolDiffContext: '#ffffff', syntaxComment: '#ffffff', syntaxKeyword: '#ffffff', syntaxFunction: '#ffffff', syntaxVariable: '#ffffff', syntaxString: '#ffffff', syntaxNumber: '#ffffff', syntaxType: '#ffffff', syntaxOperator: '#ffffff', syntaxPunctuation: '#ffffff', thinkingOff: '#ffffff', thinkingMinimal: '#ffffff', thinkingLow: '#ffffff', thinkingMedium: '#ffffff', thinkingHigh: '#ffffff', thinkingXhigh: '#ffffff', bashMode: '#ffffff',
+      accent: '#ffffff',
+      border: '#ffffff',
+      borderAccent: '#ffffff',
+      borderMuted: '#ffffff',
+      success: '#ffffff',
+      error: '#ffffff',
+      warning: '#ffffff',
+      muted: '#ffffff',
+      dim: '#ffffff',
+      text: '#ffffff',
+      thinkingText: '#ffffff',
+      userMessageText: '#ffffff',
+      customMessageText: '#ffffff',
+      customMessageLabel: '#ffffff',
+      toolTitle: '#ffffff',
+      toolOutput: '#ffffff',
+      mdHeading: '#ffffff',
+      mdLink: '#ffffff',
+      mdLinkUrl: '#ffffff',
+      mdCode: '#ffffff',
+      mdCodeBlock: '#ffffff',
+      mdCodeBlockBorder: '#ffffff',
+      mdQuote: '#ffffff',
+      mdQuoteBorder: '#ffffff',
+      mdHr: '#ffffff',
+      mdListBullet: '#ffffff',
+      toolDiffAdded: '#ffffff',
+      toolDiffRemoved: '#ffffff',
+      toolDiffContext: '#ffffff',
+      syntaxComment: '#ffffff',
+      syntaxKeyword: '#ffffff',
+      syntaxFunction: '#ffffff',
+      syntaxVariable: '#ffffff',
+      syntaxString: '#ffffff',
+      syntaxNumber: '#ffffff',
+      syntaxType: '#ffffff',
+      syntaxOperator: '#ffffff',
+      syntaxPunctuation: '#ffffff',
+      thinkingOff: '#ffffff',
+      thinkingMinimal: '#ffffff',
+      thinkingLow: '#ffffff',
+      thinkingMedium: '#ffffff',
+      thinkingHigh: '#ffffff',
+      thinkingXhigh: '#ffffff',
+      bashMode: '#ffffff',
     },
-    { selectedBg: '#000000', userMessageBg: '#000000', customMessageBg: '#000000', toolPendingBg: '#000000', toolSuccessBg: '#000000', toolErrorBg: '#000000' },
+    {
+      selectedBg: '#000000',
+      userMessageBg: '#000000',
+      customMessageBg: '#000000',
+      toolPendingBg: '#000000',
+      toolSuccessBg: '#000000',
+      toolErrorBg: '#000000',
+    },
     'truecolor',
   );
 }
@@ -299,8 +361,13 @@ void describe('fusion SDK integration', { concurrency: false }, () => {
       assert.ok(fusionTool);
       assert.equal(Reflect.get(fusionTool.parameters, 'additionalProperties'), false);
       assert.ok(fusionTool.prepareArguments);
-      assert.throws(() => fusionTool.prepareArguments?.({ prompt: 'x', extra: true }), /only prompt/);
-      const commandNames = h.session.extensionRunner.getRegisteredCommands().map((cmd) => cmd.invocationName);
+      assert.throws(
+        () => fusionTool.prepareArguments?.({ prompt: 'x', extra: true }),
+        /only prompt/,
+      );
+      const commandNames = h.session.extensionRunner
+        .getRegisteredCommands()
+        .map((cmd) => cmd.invocationName);
       assert.ok(commandNames.includes('fusion'));
       assert.ok(commandNames.includes('fusion-models'));
       const renderer = h.session.extensionRunner.getMessageRenderer('fusion-result');
@@ -315,14 +382,30 @@ void describe('fusion SDK integration', { concurrency: false }, () => {
         },
       });
 
-      await command(h.session, 'fusion').handler('  command prompt\nwith body  ', commandContext(h.session, 'print'));
+      await command(h.session, 'fusion').handler(
+        '  command prompt\nwith body  ',
+        commandContext(h.session, 'print'),
+      );
       const calls = await invocations(h.fakeLogPath);
       assert.equal(calls.length, 5);
       assert.equal(calls.filter((call) => call.stage === 'candidate').length, 3);
       assert.equal(calls.filter((call) => call.stage === 'evaluation').length, 1);
       assert.equal(calls.filter((call) => call.stage === 'merge').length, 1);
       for (const call of calls) {
-        for (const flag of ['--mode', '--no-session', '--no-tools', '--no-extensions', '--no-skills', '--no-prompt-templates', '--no-themes', '--no-context-files', '--provider', '--model', '--thinking', '--system-prompt']) {
+        for (const flag of [
+          '--mode',
+          '--no-session',
+          '--no-tools',
+          '--no-extensions',
+          '--no-skills',
+          '--no-prompt-templates',
+          '--no-themes',
+          '--no-context-files',
+          '--provider',
+          '--model',
+          '--thinking',
+          '--system-prompt',
+        ]) {
           assert.ok(call.args.includes(flag), flag);
         }
         assert.equal(call.provider, 'pi-bg-fusion');
@@ -361,7 +444,9 @@ void describe('fusion SDK integration', { concurrency: false }, () => {
       );
       assert.ok(rendered, 'fusion renderer should produce a component');
       assert.match(stripAnsi(rendered.render(100).join('\n')), /fusion complete|SDK fused answer/);
-      assert.ok(statuses.some((status) => /candidates 3\/3 complete|merging final answer/.test(status)));
+      assert.ok(
+        statuses.some((status) => /candidates 3\/3 complete|merging final answer/.test(status)),
+      );
       assert.equal(assistantMessageCount(h.session), 0);
     } finally {
       await disposeHarness(h);
@@ -386,11 +471,23 @@ void describe('fusion SDK integration', { concurrency: false }, () => {
         api: 'openai-responses',
         provider: 'pi-bg-fusion',
         model: 'current-model',
-        usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+        usage: {
+          input: 1,
+          output: 1,
+          cacheRead: 0,
+          cacheWrite: 0,
+          totalTokens: 2,
+          cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+        },
         stopReason: 'toolUse',
         content: [
           { type: 'text', text: 'partial assistant text that must be excluded' },
-          { type: 'toolCall', id: 'call-fusion', name: 'fusion_brainstorm', arguments: { prompt: 'tool prompt' } },
+          {
+            type: 'toolCall',
+            id: 'call-fusion',
+            name: 'fusion_brainstorm',
+            arguments: { prompt: 'tool prompt' },
+          },
           { type: 'toolCall', id: 'call-sibling', name: 'bg_status', arguments: {} },
         ],
         timestamp: Date.now(),
@@ -409,7 +506,10 @@ void describe('fusion SDK integration', { concurrency: false }, () => {
         },
         h.session.extensionRunner.createContext(),
       );
-      assert.equal(result.content[0]?.type === 'text' ? result.content[0].text : '', 'SDK fused answer.');
+      assert.equal(
+        result.content[0]?.type === 'text' ? result.content[0].text : '',
+        'SDK fused answer.',
+      );
       assert.ok(isFusionResultDetails(result.details));
       const resultUsage = Reflect.get(result, 'usage');
       assert.ok(isRecord(resultUsage));
@@ -423,9 +523,15 @@ void describe('fusion SDK integration', { concurrency: false }, () => {
       const parsedInput = parseJsonText(candidate.stdin);
       assert.ok(isRecord(parsedInput), 'canonical input should be an object');
       assert.equal(parsedInput['request'], 'tool prompt');
-      assert.match(String(parsedInput['conversation_transcript']), /prior user context before image/);
+      assert.match(
+        String(parsedInput['conversation_transcript']),
+        /prior user context before image/,
+      );
       assert.match(String(parsedInput['conversation_transcript']), /after image context/);
-      assert.match(String(parsedInput['conversation_transcript']), /\[Image omitted from fusion text transcript: image\/png\]/);
+      assert.match(
+        String(parsedInput['conversation_transcript']),
+        /\[Image omitted from fusion text transcript: image\/png\]/,
+      );
       assert.doesNotMatch(String(parsedInput['conversation_transcript']), /sdk-raw-image-base64/);
       assert.doesNotMatch(String(parsedInput['conversation_transcript']), /partial assistant text/);
       assert.doesNotMatch(String(parsedInput['conversation_transcript']), /call-sibling|bg_status/);
@@ -455,12 +561,17 @@ void describe('fusion SDK integration', { concurrency: false }, () => {
         waitForInvocationCount(h.fakeLogPath, 3).then(() => ({ type: 'ready' as const })),
         observed,
       ]);
-      if (ready.type === 'resolved') assert.fail('fusion completed before delayed child invocations were observed');
-      if (ready.type === 'rejected') throw new Error(`fusion rejected before child invocations were observed: ${errorMessage(ready.error)}`);
+      if (ready.type === 'resolved')
+        assert.fail('fusion completed before delayed child invocations were observed');
+      if (ready.type === 'rejected')
+        throw new Error(
+          `fusion rejected before child invocations were observed: ${errorMessage(ready.error)}`,
+        );
       await h.session.extensionRunner.emit({ type: 'session_shutdown', reason: 'reload' });
       const outcome = await observed;
       assert.equal(outcome.type, 'rejected');
-      if (outcome.type === 'rejected') assert.match(errorMessage(outcome.error), /cancelled|SIGTERM|exited/i);
+      if (outcome.type === 'rejected')
+        assert.match(errorMessage(outcome.error), /cancelled|SIGTERM|exited/i);
       h.session.dispose();
       disposed = true;
     } finally {
@@ -531,20 +642,25 @@ void describe('fusion SDK integration', { concurrency: false }, () => {
       const savedConfigText = await readFile(join(h.agentDir, FUSION_MODEL_CONFIG_FILE), 'utf8');
       const savedConfig = parseJsonText(savedConfigText);
       assert.ok(isRecord(savedConfig));
-      assert.deepEqual(savedConfig['candidates'], ['pi-bg-fusion/alt-model', 'pi-bg-fusion/alt-model', CURRENT_MODEL_SELECTION]);
+      assert.deepEqual(savedConfig['candidates'], [
+        'pi-bg-fusion/alt-model',
+        'pi-bg-fusion/alt-model',
+        CURRENT_MODEL_SELECTION,
+      ]);
 
       await writeFile(h.fakeLogPath, '', 'utf8');
       await writeFile(join(h.agentDir, FUSION_MODEL_CONFIG_FILE), '{"bad":true}\n', 'utf8');
       const invalidTool = h.session.getToolDefinition('fusion_brainstorm');
       assert.ok(invalidTool, 'fusion tool should remain registered');
       await assert.rejects(
-        () => invalidTool.execute(
-          'call-invalid',
-          { prompt: 'should not spawn' },
-          undefined,
-          undefined,
-          h.session.extensionRunner.createContext(),
-        ),
+        () =>
+          invalidTool.execute(
+            'call-invalid',
+            { prompt: 'should not spawn' },
+            undefined,
+            undefined,
+            h.session.extensionRunner.createContext(),
+          ),
         /schema_version|unknown key|missing key/,
       );
       assert.equal((await invocations(h.fakeLogPath)).length, 0);

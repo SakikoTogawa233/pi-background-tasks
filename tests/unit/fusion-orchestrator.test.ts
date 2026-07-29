@@ -55,13 +55,38 @@ function evaluation(): FusionEvaluationV1 {
   return {
     schema_version: FUSION_EVALUATION_SCHEMA_VERSION,
     candidate_assessments: [
-      { candidate_id: 'A', summary: 'a', strengths: ['a'], limitations: ['a'], useful_contributions: ['a'], risks: ['a'] },
-      { candidate_id: 'B', summary: 'b', strengths: ['b'], limitations: ['b'], useful_contributions: ['b'], risks: ['b'] },
-      { candidate_id: 'C', summary: 'c', strengths: ['c'], limitations: ['c'], useful_contributions: ['c'], risks: ['c'] },
+      {
+        candidate_id: 'A',
+        summary: 'a',
+        strengths: ['a'],
+        limitations: ['a'],
+        useful_contributions: ['a'],
+        risks: ['a'],
+      },
+      {
+        candidate_id: 'B',
+        summary: 'b',
+        strengths: ['b'],
+        limitations: ['b'],
+        useful_contributions: ['b'],
+        risks: ['b'],
+      },
+      {
+        candidate_id: 'C',
+        summary: 'c',
+        strengths: ['c'],
+        limitations: ['c'],
+        useful_contributions: ['c'],
+        risks: ['c'],
+      },
     ],
     agreements: ['agree'],
     conflicts: [],
-    synthesis_plan: { must_include: [{ candidate_id: 'A', contribution: 'a' }], must_resolve: [], must_avoid: [] },
+    synthesis_plan: {
+      must_include: [{ candidate_id: 'A', contribution: 'a' }],
+      must_resolve: [],
+      must_avoid: [],
+    },
   };
 }
 
@@ -105,12 +130,18 @@ function childRunError(
     stage: options.stage,
     attempt: options.attempt,
   };
-  const fusionError = new FusionError(message, options.slot === undefined ? details : { ...details, slot: options.slot });
+  const fusionError = new FusionError(
+    message,
+    options.slot === undefined ? details : { ...details, slot: options.slot },
+  );
   return new FusionChildRunError(
     fusionError,
     Buffer.from('{"type":"session","id":"s","cwd":"/tmp"}\n'),
     Buffer.alloc(0),
-    { code: code === 'child_exit_failed' ? 1 : null, signal: code === 'child_cancelled' ? 'SIGTERM' : null },
+    {
+      code: code === 'child_exit_failed' ? 1 : null,
+      signal: code === 'child_cancelled' ? 'SIGTERM' : null,
+    },
     {
       usage: observedUsage(totalTokens),
       provider: options.model.provider,
@@ -131,7 +162,8 @@ function field(record: object, key: string): unknown {
 }
 
 function objectValue(value: unknown, label: string): object {
-  if (typeof value !== 'object' || value === null || Array.isArray(value)) throw new Error(`${label} must be an object`);
+  if (typeof value !== 'object' || value === null || Array.isArray(value))
+    throw new Error(`${label} must be an object`);
   return value;
 }
 
@@ -184,8 +216,15 @@ function addExpectedUsage(target: FusionUsage, delta: FusionUsage): void {
 }
 
 function assertManifestUsageEqualsAttemptSum(manifest: object): void {
-  const expected: FusionUsage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0 };
-  for (const attempt of attemptRecords(manifest)) addExpectedUsage(expected, usageFromRecord(attempt));
+  const expected: FusionUsage = {
+    input: 0,
+    output: 0,
+    cacheRead: 0,
+    cacheWrite: 0,
+    totalTokens: 0,
+  };
+  for (const attempt of attemptRecords(manifest))
+    addExpectedUsage(expected, usageFromRecord(attempt));
   const actual = usageFromRecord(manifest);
   assert.deepEqual(
     {
@@ -205,7 +244,10 @@ function assertManifestUsageEqualsAttemptSum(manifest: object): void {
   );
   if (expected.costTotal !== undefined) {
     assert.ok(actual.costTotal !== undefined, 'aggregate costTotal must be present');
-    assert.ok(Math.abs(actual.costTotal - expected.costTotal) < 1e-12, 'aggregate costTotal must equal attempt sum');
+    assert.ok(
+      Math.abs(actual.costTotal - expected.costTotal) < 1e-12,
+      'aggregate costTotal must equal attempt sum',
+    );
   } else {
     assert.equal(actual.costTotal, undefined);
   }
@@ -229,7 +271,9 @@ async function failedManifest(root: string, runner: FusionChildRunner): Promise<
   }
   assert.ok(thrown instanceof FusionError);
   assert.ok(thrown.artifactDir, 'failed fusion error must include artifact dir');
-  const manifest = parseObject(await readFile(join(root, thrown.artifactDir, 'manifest.json'), 'utf8'));
+  const manifest = parseObject(
+    await readFile(join(root, thrown.artifactDir, 'manifest.json'), 'utf8'),
+  );
   assert.equal(field(manifest, 'state'), 'failed');
   return manifest;
 }
@@ -285,11 +329,16 @@ void describe('fusion orchestrator', () => {
       assert.equal(result.mergedText, 'merged final');
       assert.equal(result.details.evaluator_attempts, 2);
       assert.equal(result.details.usage.totalTokens, 12);
-      assert.deepEqual(calls.slice(0, 3).map((call) => call.slot), [1, 2, 3]);
+      assert.deepEqual(
+        calls.slice(0, 3).map((call) => call.slot),
+        [1, 2, 3],
+      );
       assert.equal(calls[3]?.stage, 'evaluation');
       assert.equal(calls[4]?.attempt, 2);
       assert.equal(calls[5]?.stage, 'merge');
-      const candidatePrompts = calls.filter((call) => call.stage === 'candidate').map((call) => call.userPrompt);
+      const candidatePrompts = calls
+        .filter((call) => call.stage === 'candidate')
+        .map((call) => call.userPrompt);
       assert.equal(candidatePrompts[0], candidatePrompts[1]);
       assert.equal(candidatePrompts[1], candidatePrompts[2]);
       const manifestPath = join(root, result.details.artifact_dir, 'manifest.json');
@@ -303,7 +352,10 @@ void describe('fusion orchestrator', () => {
       assert.equal(field(map, 'A'), 2);
       assert.equal(field(map, 'B'), 3);
       assert.equal(field(map, 'C'), 1);
-      assert.equal(await readFile(join(root, result.details.artifact_dir, 'merged.md'), 'utf8'), 'merged final');
+      assert.equal(
+        await readFile(join(root, result.details.artifact_dir, 'merged.md'), 'utf8'),
+        'merged final',
+      );
     } finally {
       await rm(root, { recursive: true, force: true });
     }
@@ -361,12 +413,30 @@ void describe('fusion orchestrator', () => {
         await new Promise<void>((_resolve, reject) => {
           const signal = options.signal;
           if (signal?.aborted === true) {
-            reject(new FusionError('candidate cancelled', { code: 'child_cancelled', stage: 'candidate', slot, attempt: 1 }));
+            reject(
+              new FusionError('candidate cancelled', {
+                code: 'child_cancelled',
+                stage: 'candidate',
+                slot,
+                attempt: 1,
+              }),
+            );
             return;
           }
-          signal?.addEventListener('abort', () => {
-            reject(new FusionError('candidate cancelled', { code: 'child_cancelled', stage: 'candidate', slot, attempt: 1 }));
-          }, { once: true });
+          signal?.addEventListener(
+            'abort',
+            () => {
+              reject(
+                new FusionError('candidate cancelled', {
+                  code: 'child_cancelled',
+                  stage: 'candidate',
+                  slot,
+                  attempt: 1,
+                }),
+              );
+            },
+            { once: true },
+          );
         });
         return childResult(options, 'unreachable');
       };
@@ -384,7 +454,10 @@ void describe('fusion orchestrator', () => {
         /candidate one failed/,
       );
       assert.equal(calls.filter((call) => call.stage === 'candidate').length, 3);
-      assert.equal(calls.some((call) => call.stage === 'evaluation' || call.stage === 'merge'), false);
+      assert.equal(
+        calls.some((call) => call.stage === 'evaluation' || call.stage === 'merge'),
+        false,
+      );
     } finally {
       await rm(root, { recursive: true, force: true });
     }
@@ -405,7 +478,14 @@ void describe('fusion orchestrator', () => {
         if (slot === undefined) throw new Error('candidate slot is required');
         await new Promise<void>((_resolve, reject) => {
           const failCancelled = () => {
-            reject(childRunError(options, `candidate ${String(slot)} cancelled after usage`, slot === 2 ? 7 : 11, 'child_cancelled'));
+            reject(
+              childRunError(
+                options,
+                `candidate ${String(slot)} cancelled after usage`,
+                slot === 2 ? 7 : 11,
+                'child_cancelled',
+              ),
+            );
           };
           if (options.signal?.aborted === true) {
             failCancelled();
@@ -418,8 +498,14 @@ void describe('fusion orchestrator', () => {
       const manifest = await failedManifest(root, runner);
       const attempts = attemptRecords(manifest);
       assert.equal(attempts.length, 3);
-      assert.equal(attempts.filter((attempt) => stringField(attempt, 'stage') === 'candidate').length, 3);
-      assert.equal(attempts.filter((attempt) => stringField(attempt, 'status') === 'cancelled').length, 2);
+      assert.equal(
+        attempts.filter((attempt) => stringField(attempt, 'stage') === 'candidate').length,
+        3,
+      );
+      assert.equal(
+        attempts.filter((attempt) => stringField(attempt, 'status') === 'cancelled').length,
+        2,
+      );
       assertManifestUsageEqualsAttemptSum(manifest);
       assert.equal(numberField(objectField(manifest, 'usage'), 'totalTokens'), 23);
     } finally {
@@ -433,8 +519,10 @@ void describe('fusion orchestrator', () => {
         name: 'evaluator',
         expectedTotalTokens: 19,
         runner: async (options) => {
-          if (options.stage === 'candidate') return childResult(options, `candidate-${String(options.slot)}`);
-          if (options.stage === 'evaluation') throw childRunError(options, 'evaluator failed after usage', 13);
+          if (options.stage === 'candidate')
+            return childResult(options, `candidate-${String(options.slot)}`);
+          if (options.stage === 'evaluation')
+            throw childRunError(options, 'evaluator failed after usage', 13);
           return childResult(options, 'unexpected merge');
         },
       },
@@ -442,9 +530,12 @@ void describe('fusion orchestrator', () => {
         name: 'repair',
         expectedTotalTokens: 25,
         runner: async (options) => {
-          if (options.stage === 'candidate') return childResult(options, `candidate-${String(options.slot)}`);
-          if (options.stage === 'evaluation' && options.attempt === 1) return childResult(options, '{"not":"valid"}');
-          if (options.stage === 'evaluation') throw childRunError(options, 'repair failed after usage', 17);
+          if (options.stage === 'candidate')
+            return childResult(options, `candidate-${String(options.slot)}`);
+          if (options.stage === 'evaluation' && options.attempt === 1)
+            return childResult(options, '{"not":"valid"}');
+          if (options.stage === 'evaluation')
+            throw childRunError(options, 'repair failed after usage', 17);
           return childResult(options, 'unexpected merge');
         },
       },
@@ -452,8 +543,10 @@ void describe('fusion orchestrator', () => {
         name: 'merger',
         expectedTotalTokens: 27,
         runner: async (options) => {
-          if (options.stage === 'candidate') return childResult(options, `candidate-${String(options.slot)}`);
-          if (options.stage === 'evaluation') return childResult(options, JSON.stringify(evaluation()));
+          if (options.stage === 'candidate')
+            return childResult(options, `candidate-${String(options.slot)}`);
+          if (options.stage === 'evaluation')
+            return childResult(options, JSON.stringify(evaluation()));
           throw childRunError(options, 'merge failed after usage', 19);
         },
       },
@@ -463,7 +556,11 @@ void describe('fusion orchestrator', () => {
       try {
         const manifest = await failedManifest(root, item.runner);
         assertManifestUsageEqualsAttemptSum(manifest);
-        assert.equal(numberField(objectField(manifest, 'usage'), 'totalTokens'), item.expectedTotalTokens, item.name);
+        assert.equal(
+          numberField(objectField(manifest, 'usage'), 'totalTokens'),
+          item.expectedTotalTokens,
+          item.name,
+        );
       } finally {
         await rm(root, { recursive: true, force: true });
       }
@@ -474,8 +571,13 @@ void describe('fusion orchestrator', () => {
     const root = await mkdtemp(join(tmpdir(), 'pi-fusion-orchestrator-eval-fail-'));
     try {
       const runner: FusionChildRunner = async (options) => {
-        if (options.stage === 'candidate') return childResult(options, `candidate-${String(options.slot)}`);
-        if (options.stage === 'evaluation') return childResult(options, JSON.stringify({ schema_version: FUSION_EVALUATION_SCHEMA_VERSION, bad: true }));
+        if (options.stage === 'candidate')
+          return childResult(options, `candidate-${String(options.slot)}`);
+        if (options.stage === 'evaluation')
+          return childResult(
+            options,
+            JSON.stringify({ schema_version: FUSION_EVALUATION_SCHEMA_VERSION, bad: true }),
+          );
         return childResult(options, 'unexpected merge');
       };
       const orchestrator = new FusionOrchestrator({ childRunner: runner });
@@ -499,7 +601,9 @@ void describe('fusion orchestrator', () => {
       assert.doesNotMatch(thrown.message, /unexpected merge/);
       const artifactDir = thrown.artifactDir;
       assert.ok(artifactDir);
-      const manifest = parseObject(await readFile(join(root, artifactDir, 'manifest.json'), 'utf8'));
+      const manifest = parseObject(
+        await readFile(join(root, artifactDir, 'manifest.json'), 'utf8'),
+      );
       assert.equal(field(manifest, 'state'), 'failed');
       const usageRecord = field(manifest, 'usage');
       assert.ok(typeof usageRecord === 'object' && usageRecord !== null);
@@ -534,8 +638,10 @@ void describe('fusion orchestrator', () => {
             childCreated: false,
           });
         }
-        if (options.stage === 'candidate') return childResult(options, `candidate-${String(options.slot)}`);
-        if (options.stage === 'evaluation') return childResult(options, JSON.stringify(evaluation()));
+        if (options.stage === 'candidate')
+          return childResult(options, `candidate-${String(options.slot)}`);
+        if (options.stage === 'evaluation')
+          return childResult(options, JSON.stringify(evaluation()));
         return childResult(options, `merged ${options.cwd.endsWith('a') ? 'a' : 'b'}`);
       };
       const orchestrator = new FusionOrchestrator({ childRunner: runner });

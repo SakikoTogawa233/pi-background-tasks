@@ -7,10 +7,7 @@ import {
   type FusionModelChoice,
   type FusionModelSelectorResult,
 } from '../../src/ui/fusion-model-selector.js';
-import {
-  CURRENT_MODEL_SELECTION,
-  defaultFusionModelConfig,
-} from '../../src/core/fusion/config.js';
+import { CURRENT_MODEL_SELECTION, defaultFusionModelConfig } from '../../src/core/fusion/config.js';
 import type { FusionModelConfigV1 } from '../../src/core/fusion/types.js';
 import { stripAnsi } from '../../src/testing/normalize.js';
 
@@ -177,7 +174,11 @@ void describe('FusionModelSelector component', () => {
     await new Promise((resolve) => setTimeout(resolve, 0));
     const savedConfig = saved[0];
     assert.ok(savedConfig, 'selector should save a draft');
-    assert.deepEqual(savedConfig.candidates, ['pi-bg/model/two', 'pi-bg/model/two', CURRENT_MODEL_SELECTION]);
+    assert.deepEqual(savedConfig.candidates, [
+      'pi-bg/model/two',
+      'pi-bg/model/two',
+      CURRENT_MODEL_SELECTION,
+    ]);
     assert.equal(h.result?.type, 'saved');
 
     const reset = selector();

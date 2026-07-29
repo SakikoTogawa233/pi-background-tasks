@@ -22,7 +22,13 @@ const backgroundTasksExtensionPath = resolve('extensions/background-tasks.ts');
 const scriptedProviderPath = resolve('tests/scripted-provider/scripted-provider-extension.ts');
 const roots: string[] = [];
 const savedEnv = new Map<string, string | undefined>();
-const envKeys = ['PATH', 'PI_CODING_AGENT_DIR', 'PI_BG_SCRIPTED_SCENARIO', 'PI_BG_SCRIPTED_EVENTS', 'PI_BG_SCRIPTED_API_KEY'] as const;
+const envKeys = [
+  'PATH',
+  'PI_CODING_AGENT_DIR',
+  'PI_BG_SCRIPTED_SCENARIO',
+  'PI_BG_SCRIPTED_EVENTS',
+  'PI_BG_SCRIPTED_API_KEY',
+] as const;
 
 type JsonRecord = Record<string, unknown>;
 
@@ -92,21 +98,29 @@ async function fakeStages(path: string): Promise<string[]> {
   if (!existsSync(path)) return [];
   const raw = await readFile(path, 'utf8');
   if (!raw.trim()) return [];
-  return raw.trim().split('\n').map((line) => {
-    const parsed = parseJsonText(line);
-    assert.ok(isRecord(parsed), 'fake invocation must be an object');
-    const stage = parsed['stage'];
-    if (typeof stage !== 'string') throw new Error('fake invocation stage must be a string');
-    return stage;
-  });
+  return raw
+    .trim()
+    .split('\n')
+    .map((line) => {
+      const parsed = parseJsonText(line);
+      assert.ok(isRecord(parsed), 'fake invocation must be an object');
+      const stage = parsed['stage'];
+      if (typeof stage !== 'string') throw new Error('fake invocation stage must be a string');
+      return stage;
+    });
 }
 
 function assistantTexts(session: AgentSession): string[] {
   return session.sessionManager.getEntries().flatMap((entry) => {
-    if (!isRecord(entry) || !isRecord(entry['message']) || entry['message']['role'] !== 'assistant') return [];
+    if (!isRecord(entry) || !isRecord(entry['message']) || entry['message']['role'] !== 'assistant')
+      return [];
     const content = entry['message']['content'];
     if (!Array.isArray(content)) return [];
-    return content.flatMap((part) => (isRecord(part) && part['type'] === 'text' && typeof part['text'] === 'string' ? [part['text']] : []));
+    return content.flatMap((part) =>
+      isRecord(part) && part['type'] === 'text' && typeof part['text'] === 'string'
+        ? [part['text']]
+        : [],
+    );
   });
 }
 
@@ -114,12 +128,17 @@ function fusionToolResults(session: AgentSession): JsonRecord[] {
   return session.sessionManager.getEntries().flatMap((entry) => {
     if (!isRecord(entry) || !isRecord(entry['message'])) return [];
     const message = entry['message'];
-    if (message['role'] === 'toolResult' && message['toolName'] === 'fusion_brainstorm') return [message];
+    if (message['role'] === 'toolResult' && message['toolName'] === 'fusion_brainstorm')
+      return [message];
     return [];
   });
 }
 
-async function waitFor(predicate: () => boolean | Promise<boolean>, label: string, timeoutMs = 8000): Promise<void> {
+async function waitFor(
+  predicate: () => boolean | Promise<boolean>,
+  label: string,
+  timeoutMs = 8000,
+): Promise<void> {
   const start = Date.now();
   while (Date.now() - start < timeoutMs) {
     if (await predicate()) return;
@@ -198,41 +217,59 @@ afterEach(async () => {
 });
 
 void describe('scripted provider fusion_brainstorm integration', { concurrency: false }, () => {
-  void it('lets the parent model call fusion_brainstorm and consume the exact merged tool result', { timeout: 15_000 }, async () => {
-    const h = await harness();
-    try {
-      await h.session.prompt('Use fusion for this scripted task.');
-      await waitFor(async () => (await providerEvents(h.eventsPath)).length >= 2, 'second parent provider call');
-      await h.session.agent.waitForIdle();
-      assert.equal(await fakeCallCount(h.fakeLogPath), 6);
-      assert.deepEqual((await fakeStages(h.fakeLogPath)).sort(), [
-        'candidate',
-        'candidate',
-        'candidate',
-        'evaluation',
-        'evaluation-repair',
-        'merge',
-      ].sort());
+  void it(
+    'lets the parent model call fusion_brainstorm and consume the exact merged tool result',
+    { timeout: 15_000 },
+    async () => {
+      const h = await harness();
+      try {
+        await h.session.prompt('Use fusion for this scripted task.');
+        await waitFor(
+          async () => (await providerEvents(h.eventsPath)).length >= 2,
+          'second parent provider call',
+        );
+        await h.session.agent.waitForIdle();
+        assert.equal(await fakeCallCount(h.fakeLogPath), 6);
+        assert.deepEqual(
+          (await fakeStages(h.fakeLogPath)).sort(),
+          [
+            'candidate',
+            'candidate',
+            'candidate',
+            'evaluation',
+            'evaluation-repair',
+            'merge',
+          ].sort(),
+        );
 
-      const events = await providerEvents(h.eventsPath);
-      assert.equal(events.length, 2);
-      assert.match((events[0]?.summaries ?? []).join('\n'), /user:Use fusion/);
-      assert.match((events[1]?.summaries ?? []).join('\n'), /toolResult:fusion_brainstorm:Scripted fused answer/);
-      assert.ok(assistantTexts(h.session).some((text) => text.includes('Parent observed fusion result')));
+        const events = await providerEvents(h.eventsPath);
+        assert.equal(events.length, 2);
+        assert.match((events[0]?.summaries ?? []).join('\n'), /user:Use fusion/);
+        assert.match(
+          (events[1]?.summaries ?? []).join('\n'),
+          /toolResult:fusion_brainstorm:Scripted fused answer/,
+        );
+        assert.ok(
+          assistantTexts(h.session).some((text) => text.includes('Parent observed fusion result')),
+        );
 
-      const toolResults = fusionToolResults(h.session);
-      assert.equal(toolResults.length, 1);
-      const toolResult = toolResults[0];
-      assert.ok(toolResult, 'fusion tool result should be persisted');
-      const content = toolResult['content'];
-      assert.ok(Array.isArray(content), 'tool content should be an array');
-      assert.equal(isRecord(content[0]) ? content[0]['text'] : undefined, 'Scripted fused answer.');
-      const details = toolResult['details'];
-      assert.ok(isRecord(details), 'fusion details should be an object');
-      assert.equal(details['schema_version'], FUSION_RESULT_SCHEMA_VERSION);
-      assert.equal(isRecord(details['usage']) ? details['usage']['totalTokens'] : undefined, 138);
-    } finally {
-      await disposeHarness(h);
-    }
-  });
+        const toolResults = fusionToolResults(h.session);
+        assert.equal(toolResults.length, 1);
+        const toolResult = toolResults[0];
+        assert.ok(toolResult, 'fusion tool result should be persisted');
+        const content = toolResult['content'];
+        assert.ok(Array.isArray(content), 'tool content should be an array');
+        assert.equal(
+          isRecord(content[0]) ? content[0]['text'] : undefined,
+          'Scripted fused answer.',
+        );
+        const details = toolResult['details'];
+        assert.ok(isRecord(details), 'fusion details should be an object');
+        assert.equal(details['schema_version'], FUSION_RESULT_SCHEMA_VERSION);
+        assert.equal(isRecord(details['usage']) ? details['usage']['totalTokens'] : undefined, 138);
+      } finally {
+        await disposeHarness(h);
+      }
+    },
+  );
 });

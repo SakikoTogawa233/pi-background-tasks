@@ -35,7 +35,8 @@ function registry(models: readonly Model<Api>[]): FusionModelRegistry {
   return {
     getAll: () => [...models],
     getAvailable: () => [...models],
-    find: (provider, modelId) => models.find((entry) => entry.provider === provider && entry.id === modelId),
+    find: (provider, modelId) =>
+      models.find((entry) => entry.provider === provider && entry.id === modelId),
   };
 }
 
@@ -62,10 +63,7 @@ void describe('fusion model config', () => {
       merger: 'openai-codex/gpt-5.5',
     };
     assert.deepEqual(parseFusionModelConfig(valid), valid);
-    assert.throws(
-      () => parseFusionModelConfig({ ...valid, extra: true }),
-      /unknown key extra/,
-    );
+    assert.throws(() => parseFusionModelConfig({ ...valid, extra: true }), /unknown key extra/);
     assert.throws(
       () => parseFusionModelConfig({ ...valid, candidates: [CURRENT_MODEL_SELECTION] }),
       /exactly three/,
@@ -95,11 +93,10 @@ void describe('fusion model config', () => {
       currentModel: current,
       thinkingLevel: 'high',
     });
-    assert.deepEqual(resolved.candidates.map((entry) => entry.qualifiedId), [
-      'openai-codex/gpt-5.5',
-      'anthropic/claude/opus',
-      'anthropic/claude/opus',
-    ]);
+    assert.deepEqual(
+      resolved.candidates.map((entry) => entry.qualifiedId),
+      ['openai-codex/gpt-5.5', 'anthropic/claude/opus', 'anthropic/claude/opus'],
+    );
     assert.equal(resolved.evaluator.source, 'current');
     assert.equal(resolved.merger.model, 'claude/opus');
     assert.equal(resolved.merger.thinkingLevel, 'high');
@@ -183,8 +180,13 @@ void describe('fusion model config', () => {
         assert.equal(rejected.reason.code, 'config_conflict');
       }
       const saved = parseFusionModelConfig(parseJsonText(await readFile(path, 'utf8')));
-      assert.ok(saved.candidates[0] === 'openai-codex/one' || saved.candidates[0] === 'openai-codex/two');
-      assert.deepEqual((await readdir(dir)).filter((entry) => entry.endsWith('.lock')), []);
+      assert.ok(
+        saved.candidates[0] === 'openai-codex/one' || saved.candidates[0] === 'openai-codex/two',
+      );
+      assert.deepEqual(
+        (await readdir(dir)).filter((entry) => entry.endsWith('.lock')),
+        [],
+      );
     } finally {
       await rm(dir, { recursive: true, force: true });
     }

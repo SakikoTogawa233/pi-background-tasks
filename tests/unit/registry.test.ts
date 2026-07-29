@@ -131,7 +131,8 @@ async function createHarness(options: HarnessOptions = {}) {
       return child;
     },
   };
-  if (options.publishTerminal !== undefined) registryOptions.publishTerminal = options.publishTerminal;
+  if (options.publishTerminal !== undefined)
+    registryOptions.publishTerminal = options.publishTerminal;
   if (options.platform !== undefined) registryOptions.platform = options.platform;
   if (options.env !== undefined) registryOptions.env = options.env;
   if (options.maxRecentTasks !== undefined) registryOptions.maxRecentTasks = options.maxRecentTasks;
@@ -201,24 +202,39 @@ function oauthRegistry(model = oauthModel()): BackgroundTaskContext['modelRegist
 }
 
 function piJsonEvents(provider = 'openai-codex', model = 'gpt-5.5'): string {
-  return [
-    { type: 'session', version: 3, id: 'pi-session-unit', timestamp: '2026-01-01T00:00:00.000Z', cwd: '/unit' },
-    { type: 'agent_start' },
-    {
-      type: 'message_end',
-      message: {
-        role: 'assistant',
-        provider,
-        model,
-        usage: { input: 10, output: 4, cacheRead: 0, cacheWrite: 1, totalTokens: 15, cost: { total: 0.12 } },
-        content: [{ type: 'text', text: 'attested done' }],
-        stopReason: 'stop',
+  return (
+    [
+      {
+        type: 'session',
+        version: 3,
+        id: 'pi-session-unit',
+        timestamp: '2026-01-01T00:00:00.000Z',
+        cwd: '/unit',
       },
-    },
-    { type: 'agent_end', messages: [] },
-  ]
-    .map((event) => JSON.stringify(event))
-    .join('\n') + '\n';
+      { type: 'agent_start' },
+      {
+        type: 'message_end',
+        message: {
+          role: 'assistant',
+          provider,
+          model,
+          usage: {
+            input: 10,
+            output: 4,
+            cacheRead: 0,
+            cacheWrite: 1,
+            totalTokens: 15,
+            cost: { total: 0.12 },
+          },
+          content: [{ type: 'text', text: 'attested done' }],
+          stopReason: 'stop',
+        },
+      },
+      { type: 'agent_end', messages: [] },
+    ]
+      .map((event) => JSON.stringify(event))
+      .join('\n') + '\n'
+  );
 }
 
 async function cleanup(root: string) {
@@ -227,7 +243,8 @@ async function cleanup(root: string) {
       await rm(root, { recursive: true, force: true });
       return;
     } catch (error) {
-      if (!(error instanceof Error) || !/ENOTEMPTY/.test(error.message) || attempt === 4) throw error;
+      if (!(error instanceof Error) || !/ENOTEMPTY/.test(error.message) || attempt === 4)
+        throw error;
       await new Promise((resolve) => setTimeout(resolve, 25));
     }
   }
@@ -572,7 +589,10 @@ void describe('BackgroundTaskRegistry', () => {
       assert.equal(attempts, 2);
       assert.equal(task.terminalPublished, true);
       assert.equal(terminals[0]?.id, task.id);
-      assert.match(h.errors.flat().join(' '), /terminal publication failed|terminal bus unavailable/);
+      assert.match(
+        h.errors.flat().join(' '),
+        /terminal publication failed|terminal bus unavailable/,
+      );
     } finally {
       await cleanup(h.root);
     }
@@ -613,7 +633,10 @@ void describe('BackgroundTaskRegistry', () => {
       await waitFor(() => metadataFailure.errors.length > 0, 'metadata failure log');
       assert.equal(task.notified, true);
       assert.match(task.error ?? '', /Terminal metadata write failed/);
-      assert.match(metadataFailure.errors.flat().join(' '), /failed to (write failed terminal|write|update )?metadata|ENOENT/);
+      assert.match(
+        metadataFailure.errors.flat().join(' '),
+        /failed to (write failed terminal|write|update )?metadata|ENOENT/,
+      );
     } finally {
       await cleanup(metadataFailure.root);
     }
@@ -832,7 +855,10 @@ void describe('BackgroundTaskRegistry', () => {
         'attestation sidecar must be an object',
       );
       assert.equal(attestation['schema_version'], 'phase2.pi_task_attestation.v1');
-      assert.equal(requiredJsonObject(attestation['lifecycle'], 'lifecycle')['status'], 'completed');
+      assert.equal(
+        requiredJsonObject(attestation['lifecycle'], 'lifecycle')['status'],
+        'completed',
+      );
       const invocation = requiredJsonObject(attestation['invocation'], 'invocation');
       assert.equal(invocation['pi_session_id'], 'pi-session-unit');
       assert.equal(invocation['provider'], 'openai-codex');
@@ -915,7 +941,16 @@ void describe('BackgroundTaskRegistry', () => {
       });
       await writeFile(join(h.cwd, 'report.md'), 'unit report\n', 'utf8');
       const spawn = lastSpawn(h);
-      for (const key of ['OPENAI_API_KEY', 'OPENAI_BASE_URL', 'ANTHROPIC_API_KEY', 'ANTHROPIC_BASE_URL', 'OPENROUTER_API_KEY', 'OPENROUTER_BASE_URL', 'PI_API_KEY', 'PI_AUTH_FILE']) {
+      for (const key of [
+        'OPENAI_API_KEY',
+        'OPENAI_BASE_URL',
+        'ANTHROPIC_API_KEY',
+        'ANTHROPIC_BASE_URL',
+        'OPENROUTER_API_KEY',
+        'OPENROUTER_BASE_URL',
+        'PI_API_KEY',
+        'PI_AUTH_FILE',
+      ]) {
         assert.equal(spawn.options.env?.[key], undefined, `${key} must be stripped`);
       }
       spawn.child.writeStdout(piJsonEvents());

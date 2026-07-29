@@ -57,7 +57,8 @@ export const STOP_WAIT_MS = KILL_GRACE_MS + 1500;
 export const MAX_RECENT_TASKS = 100;
 const TELEMETRY_BUFFER_CHARS = 512 * 1024;
 
-export interface BackgroundTaskModelRegistry extends Pick<ExtensionContext['modelRegistry'], 'getAll'> {
+export interface BackgroundTaskModelRegistry
+  extends Pick<ExtensionContext['modelRegistry'], 'getAll'> {
   find?: (provider: string, modelId: string) => Model<Api> | undefined;
   isUsingOAuth?: (model: Model<Api>) => boolean;
 }
@@ -833,7 +834,8 @@ export class BackgroundTaskRegistry {
 
     const dir = await this.ensureRuntimeDir(ctx);
     const id = makeAttestedTaskId();
-    if (!ATTESTED_TASK_ID_PATTERN.test(id)) throw new Error('Generated attested task id is invalid');
+    if (!ATTESTED_TASK_ID_PATTERN.test(id))
+      throw new Error('Generated attested task id is invalid');
     const paths = makeAttestedTaskPaths(dir.abs, dir.display, id);
     const argv = buildAttestedPiArgv(request);
     const promptBytes = Buffer.from(request.prompt, 'utf8');
@@ -842,7 +844,8 @@ export class BackgroundTaskRegistry {
     const repoRootRealpath = await gitRepoRoot(ctx.cwd);
     const cwdRealpath = await realpath(ctx.cwd);
     const startAuthority = await gitAuthoritySnapshot(ctx.cwd);
-    if (!startAuthority.clean) throw new Error('Attested Pi task requires a clean worktree at start');
+    if (!startAuthority.clean)
+      throw new Error('Attested Pi task requires a clean worktree at start');
     const timeoutSeconds =
       typeof request.timeoutSeconds === 'number' &&
       Number.isFinite(request.timeoutSeconds) &&
@@ -1075,7 +1078,8 @@ export class BackgroundTaskRegistry {
       }
     } catch (attestationError) {
       finalStatus = 'failed';
-      task.error = attestationError instanceof Error ? attestationError.message : String(attestationError);
+      task.error =
+        attestationError instanceof Error ? attestationError.message : String(attestationError);
       await this.writeMetadataSnapshot(task, { ...snapshot(task), status: 'failed' }).catch(
         (metadataError: unknown) => {
           this.logger.error(
@@ -1507,10 +1511,7 @@ export class BackgroundTaskRegistry {
   }
 
   private handleTerminalPublishFailure(task: BgTask, error: unknown): void {
-    this.logger.error(
-      `[background-tasks] terminal publication failed for ${task.id}:`,
-      error,
-    );
+    this.logger.error(`[background-tasks] terminal publication failed for ${task.id}:`, error);
     task.terminalPublishInFlight = false;
     if (!task.terminalPublished && task.terminalPublishRetryHandle === undefined) {
       task.terminalPublishRetryHandle = setTimeout(() => {
@@ -1592,8 +1593,11 @@ export class BackgroundTaskRegistry {
       if (task.stream && !task.stream.destroyed) await closeAndFsyncOutputStream(task.stream);
     } catch (finalizeError) {
       finalStatus = 'failed';
-      const message = finalizeError instanceof Error ? finalizeError.message : String(finalizeError);
-      finalError = finalError ? `${finalError}; final output durability failed: ${message}` : `Final output durability failed: ${message}`;
+      const message =
+        finalizeError instanceof Error ? finalizeError.message : String(finalizeError);
+      finalError = finalError
+        ? `${finalError}; final output durability failed: ${message}`
+        : `Final output durability failed: ${message}`;
     }
 
     task.endTime = this.now();

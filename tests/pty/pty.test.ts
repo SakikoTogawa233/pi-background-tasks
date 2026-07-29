@@ -90,9 +90,10 @@ async function runExpect(
   const cwd = join(root, 'project');
   await mkdir(cwd, { recursive: true });
   const script = join(root, 'scenario.expect');
-  const fake = options.fusionFakeMergedText === undefined
-    ? undefined
-    : await installFusionFakePi(root, { mergedText: options.fusionFakeMergedText });
+  const fake =
+    options.fusionFakeMergedText === undefined
+      ? undefined
+      : await installFusionFakePi(root, { mergedText: options.fusionFakeMergedText });
   // Some scenarios (e.g. scrolling the tall detail view) need a taller pty so the
   // bottom-anchored dock is not clipped; stty_init must be set before spawn.
   const requestedSize = options.size ?? size;
@@ -207,16 +208,13 @@ expect {
     },
   );
 
-  void it(
-    'opens the Fusion model selector in the real TUI',
-    { timeout: 45_000 },
-    async (t) => {
-      if (!(await ptyInputSupported())) {
-        t.skip(PTY_SKIP_REASON);
-        return;
-      }
-      const output = await runExpect(
-        `
+  void it('opens the Fusion model selector in the real TUI', { timeout: 45_000 }, async (t) => {
+    if (!(await ptyInputSupported())) {
+      t.skip(PTY_SKIP_REASON);
+      return;
+    }
+    const output = await runExpect(
+      `
 send "/fusion-models"
 send "\\r"
 expect {
@@ -225,21 +223,20 @@ expect {
 }
 send "\\033"
 `,
-        35,
-        undefined,
-        {
-          extensionPaths: [scriptedProviderPath, extensionPath],
-          model: 'pi-bg-scripted/scripted-model',
-          env: {
-            PI_BG_SCRIPTED_API_KEY: 'scripted-api-key',
-            PI_BG_SCRIPTED_SCENARIO: 'display-only-bg',
-          },
+      35,
+      undefined,
+      {
+        extensionPaths: [scriptedProviderPath, extensionPath],
+        model: 'pi-bg-scripted/scripted-model',
+        env: {
+          PI_BG_SCRIPTED_API_KEY: 'scripted-api-key',
+          PI_BG_SCRIPTED_SCENARIO: 'display-only-bg',
         },
-      );
-      assert.match(output, /Fusion models/);
-      assert.match(output, /Candidate 1/);
-    },
-  );
+      },
+    );
+    assert.match(output, /Fusion models/);
+    assert.match(output, /Candidate 1/);
+  });
 
   void it(
     'opens the footer dock via Shift+Down after starting a named task',

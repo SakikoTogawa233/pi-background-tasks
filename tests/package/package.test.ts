@@ -238,7 +238,10 @@ void describe('package', () => {
     for (const file of fusionFiles) {
       const source = await text(file);
       assert.doesNotMatch(source, /@earendil-works\/pi-ai\/compat/);
-      assert.doesNotMatch(source, /import\s*\{[^}]*\b(?:complete|stream|streamSimple)\b[^}]*}\s*from\s*['"]@earendil-works\/pi-ai/);
+      assert.doesNotMatch(
+        source,
+        /import\s*\{[^}]*\b(?:complete|stream|streamSimple)\b[^}]*}\s*from\s*['"]@earendil-works\/pi-ai/,
+      );
       assert.doesNotMatch(source, /\.pi\/extensions/);
       assert.doesNotMatch(source, /ai-pipeline/);
     }
@@ -250,7 +253,8 @@ void describe('package', () => {
       '--no-prompt-templates',
       '--no-context-files',
       '--no-session',
-    ]) assert.match(child, new RegExp(flag.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+    ])
+      assert.match(child, new RegExp(flag.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
   });
 
   void it('packs exactly the runtime/docs payload and excludes tests/artifacts', () => {
@@ -322,7 +326,15 @@ void describe('package', () => {
       assert.equal(init.status, 0, init.stderr);
       const install = spawnSync(
         'npm',
-        ['install', '--legacy-peer-deps', '--offline', '--ignore-scripts', '--no-audit', '--no-fund', tarballPath],
+        [
+          'install',
+          '--legacy-peer-deps',
+          '--offline',
+          '--ignore-scripts',
+          '--no-audit',
+          '--no-fund',
+          tarballPath,
+        ],
         {
           cwd: temp,
           encoding: 'utf8',

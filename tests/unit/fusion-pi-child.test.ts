@@ -94,36 +94,52 @@ function makeSpawn(child = new FakeChild()): { records: SpawnRecord[]; spawn: Fu
 }
 
 function piEvents(provider = 'openai-codex', model = 'gpt-5.5'): string {
-  return [
-    { type: 'session', id: 's1', cwd: '/tmp/project' },
-    { type: 'agent_start' },
-    {
-      type: 'message_end',
-      message: {
-        role: 'assistant',
-        provider,
-        model,
-        usage: { input: 1, output: 2, cacheRead: 3, cacheWrite: 4, totalTokens: 10, cost: { total: 0.1 } },
-        content: [{ type: 'text', text: 'draft' }],
-        stopReason: 'length',
+  return (
+    [
+      { type: 'session', id: 's1', cwd: '/tmp/project' },
+      { type: 'agent_start' },
+      {
+        type: 'message_end',
+        message: {
+          role: 'assistant',
+          provider,
+          model,
+          usage: {
+            input: 1,
+            output: 2,
+            cacheRead: 3,
+            cacheWrite: 4,
+            totalTokens: 10,
+            cost: { total: 0.1 },
+          },
+          content: [{ type: 'text', text: 'draft' }],
+          stopReason: 'length',
+        },
       },
-    },
-    { type: 'agent_start' },
-    {
-      type: 'message_end',
-      message: {
-        role: 'assistant',
-        provider,
-        model,
-        usage: { input: 5, output: 6, cacheRead: 0, cacheWrite: 0, totalTokens: 11, cost: { total: 0.2 } },
-        content: [{ type: 'text', text: 'final héllo' }],
-        stopReason: 'stop',
+      { type: 'agent_start' },
+      {
+        type: 'message_end',
+        message: {
+          role: 'assistant',
+          provider,
+          model,
+          usage: {
+            input: 5,
+            output: 6,
+            cacheRead: 0,
+            cacheWrite: 0,
+            totalTokens: 11,
+            cost: { total: 0.2 },
+          },
+          content: [{ type: 'text', text: 'final héllo' }],
+          stopReason: 'stop',
+        },
       },
-    },
-    { type: 'agent_end' },
-  ]
-    .map((event) => JSON.stringify(event))
-    .join('\n') + '\n';
+      { type: 'agent_end' },
+    ]
+      .map((event) => JSON.stringify(event))
+      .join('\n') + '\n'
+  );
 }
 
 async function tick(): Promise<void> {
@@ -179,7 +195,10 @@ void describe('fusion Pi child runner', () => {
     assert.deepEqual(record.options.stdio, ['pipe', 'pipe', 'pipe']);
     assert.equal(record.options.env?.['PI_SESSION_FILE'], undefined);
     assert.equal(record.options.env?.['ANTHROPIC_API_KEY'], 'kept');
-    assert.equal(Buffer.concat(child.stdin.chunks).toString('utf8'), 'large prompt with U+2028 \u2028 and U+2029 \u2029');
+    assert.equal(
+      Buffer.concat(child.stdin.chunks).toString('utf8'),
+      'large prompt with U+2028 \u2028 and U+2029 \u2029',
+    );
     assert.equal(child.stdin.ended, true);
 
     const bytes = Buffer.from(piEvents(), 'utf8');
@@ -284,7 +303,11 @@ void describe('fusion Pi child runner', () => {
 
   void it('rejects non-stop final reasons, model mismatch, and missing newline', () => {
     const parser = new FusionPiJsonEventParser('p', 'm');
-    parser.push(Buffer.from('{"type":"session","id":"s","cwd":"/tmp"}\n{"type":"message_end","message":{"role":"assistant","provider":"p","model":"m","content":[{"type":"text","text":"x"}],"stopReason":"toolUse"}}\n'));
+    parser.push(
+      Buffer.from(
+        '{"type":"session","id":"s","cwd":"/tmp"}\n{"type":"message_end","message":{"role":"assistant","provider":"p","model":"m","content":[{"type":"text","text":"x"}],"stopReason":"toolUse"}}\n',
+      ),
+    );
     assert.throws(() => parser.finish(), /not stop/);
 
     const mismatch = new FusionPiJsonEventParser('p', 'm');

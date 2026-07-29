@@ -43,9 +43,15 @@ export interface FusionChildProcess {
   stderr?: FusionReadableStream | null | undefined;
   kill(signal?: NodeJS.Signals): boolean;
   once(event: 'error', listener: (error: Error) => void): unknown;
-  once(event: 'close', listener: (code: number | null, signal: NodeJS.Signals | null) => void): unknown;
+  once(
+    event: 'close',
+    listener: (code: number | null, signal: NodeJS.Signals | null) => void,
+  ): unknown;
   off(event: 'error', listener: (error: Error) => void): unknown;
-  off(event: 'close', listener: (code: number | null, signal: NodeJS.Signals | null) => void): unknown;
+  off(
+    event: 'close',
+    listener: (code: number | null, signal: NodeJS.Signals | null) => void,
+  ): unknown;
 }
 
 export type FusionChildSpawn = (
@@ -108,7 +114,13 @@ export class FusionChildRunError extends FusionError {
   readonly modelName: string | undefined;
   readonly qualifiedId: string | undefined;
 
-  constructor(error: FusionError, stdout: Buffer, stderr: Buffer, close: CloseRecord, observed: ObservedChildSnapshot) {
+  constructor(
+    error: FusionError,
+    stdout: Buffer,
+    stderr: Buffer,
+    close: CloseRecord,
+    observed: ObservedChildSnapshot,
+  ) {
     const details: FusionErrorDetails = {
       code: error.code,
       transient: error.transient,
@@ -169,7 +181,10 @@ function readString(record: Record<PropertyKey, unknown>, key: string): string |
   return typeof value === 'string' ? value : undefined;
 }
 
-function readRecord(record: Record<PropertyKey, unknown>, key: string): Record<PropertyKey, unknown> | undefined {
+function readRecord(
+  record: Record<PropertyKey, unknown>,
+  key: string,
+): Record<PropertyKey, unknown> | undefined {
   const value = record[key];
   return isJsonObject(value) && !Array.isArray(value) ? value : undefined;
 }
@@ -226,7 +241,13 @@ export class FusionPiJsonEventParser {
   private finalModel: string | undefined;
   private finalStopReason: string | undefined;
   private finalText = '';
-  private readonly usage: FusionUsage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0 };
+  private readonly usage: FusionUsage = {
+    input: 0,
+    output: 0,
+    cacheRead: 0,
+    cacheWrite: 0,
+    totalTokens: 0,
+  };
 
   constructor(expectedProvider: string, expectedModel: string) {
     this.expectedProvider = expectedProvider;
@@ -251,11 +272,19 @@ export class FusionPiJsonEventParser {
     return observed;
   }
 
-  finish(): { text: string; usage: FusionUsage; provider: string; model: string; qualifiedId: string } {
+  finish(): {
+    text: string;
+    usage: FusionUsage;
+    provider: string;
+    model: string;
+    qualifiedId: string;
+  } {
     const rest = this.decoder.end();
     if (rest.length > 0) this.lineBuffer += rest;
-    if (this.bytesSeen > 0 && !this.lastByteWasLf) throw new Error('Pi JSON event stream is not newline-terminated');
-    if (this.lineBuffer.length > 0) throw new Error('Pi JSON event stream has an unterminated line');
+    if (this.bytesSeen > 0 && !this.lastByteWasLf)
+      throw new Error('Pi JSON event stream is not newline-terminated');
+    if (this.lineBuffer.length > 0)
+      throw new Error('Pi JSON event stream has an unterminated line');
     if (this.sessionCount !== 1 || this.sessionId === undefined || this.sessionCwd === undefined) {
       throw new Error('Pi JSON events must contain exactly one session header');
     }
@@ -294,9 +323,12 @@ export class FusionPiJsonEventParser {
     try {
       parsed = parseJsonText(line);
     } catch (error) {
-      throw new Error(`Pi JSON event line is invalid JSON: ${error instanceof Error ? error.message : String(error)}`);
+      throw new Error(
+        `Pi JSON event line is invalid JSON: ${error instanceof Error ? error.message : String(error)}`,
+      );
     }
-    if (!isJsonObject(parsed) || Array.isArray(parsed)) throw new Error('Pi JSON event line is not an object');
+    if (!isJsonObject(parsed) || Array.isArray(parsed))
+      throw new Error('Pi JSON event line is not an object');
     const eventType = parsed['type'];
     if (eventType === 'session') {
       this.consumeSession(parsed);
@@ -321,7 +353,12 @@ export class FusionPiJsonEventParser {
     if (message['role'] !== 'assistant') return;
     const provider = readString(message, 'provider');
     const model = readString(message, 'model');
-    if (provider === undefined || provider.trim().length === 0 || model === undefined || model.trim().length === 0) {
+    if (
+      provider === undefined ||
+      provider.trim().length === 0 ||
+      model === undefined ||
+      model.trim().length === 0
+    ) {
       throw new Error('Pi assistant message lacks provider/model');
     }
     if (provider !== this.expectedProvider || model !== this.expectedModel) {
@@ -345,7 +382,8 @@ function appendCapped(
   chunk: Buffer,
   limit: number,
 ): { bytes: number; accepted: Buffer; exceeded: boolean } {
-  if (currentBytes >= limit) return { bytes: currentBytes, accepted: Buffer.alloc(0), exceeded: true };
+  if (currentBytes >= limit)
+    return { bytes: currentBytes, accepted: Buffer.alloc(0), exceeded: true };
   const remaining = limit - currentBytes;
   if (chunk.length <= remaining) {
     chunks.push(chunk);
@@ -393,7 +431,10 @@ function withCleanupErrors(error: FusionError, cleanupErrors: readonly string[])
   if (error.slot !== undefined) details.slot = error.slot;
   if (error.attempt !== undefined) details.attempt = error.attempt;
   if (error.artifactDir !== undefined) details.artifactDir = error.artifactDir;
-  return new FusionError(`${error.message}; process cleanup issues: ${cleanupErrors.join('; ')}`, details);
+  return new FusionError(
+    `${error.message}; process cleanup issues: ${cleanupErrors.join('; ')}`,
+    details,
+  );
 }
 
 function defaultSpawn(command: string, args: string[], options: SpawnOptions): FusionChildProcess {
@@ -405,7 +446,11 @@ function setUnref(timer: NodeJS.Timeout): NodeJS.Timeout {
   return timer;
 }
 
-function rememberCleanupErrors(state: ProcessState, signal: NodeJS.Signals, errors: readonly string[]): void {
+function rememberCleanupErrors(
+  state: ProcessState,
+  signal: NodeJS.Signals,
+  errors: readonly string[],
+): void {
   for (const error of errors) state.cleanupErrors.push(`${signal}: ${error}`);
 }
 
@@ -423,10 +468,13 @@ function terminateChild(
   const termResult = sendSignal(child, platform, killProcess, 'SIGTERM');
   rememberCleanupErrors(state, 'SIGTERM', termResult.errors);
   if (!termResult.sent && state.primaryError === undefined) {
-    state.primaryError = new FusionError(`Pi child SIGTERM failed: ${termResult.errors.join('; ')}`, {
-      code: 'child_exit_failed',
-      childCreated: true,
-    });
+    state.primaryError = new FusionError(
+      `Pi child SIGTERM failed: ${termResult.errors.join('; ')}`,
+      {
+        code: 'child_exit_failed',
+        childCreated: true,
+      },
+    );
   }
   state.termTimer = setUnref(
     setTimeout(() => {
@@ -434,10 +482,13 @@ function terminateChild(
       const killResult = sendSignal(child, platform, killProcess, 'SIGKILL');
       rememberCleanupErrors(state, 'SIGKILL', killResult.errors);
       if (!killResult.sent && state.primaryError === undefined) {
-        state.primaryError = new FusionError(`Pi child SIGKILL failed: ${killResult.errors.join('; ')}`, {
-          code: 'child_exit_failed',
-          childCreated: true,
-        });
+        state.primaryError = new FusionError(
+          `Pi child SIGKILL failed: ${killResult.errors.join('; ')}`,
+          {
+            code: 'child_exit_failed',
+            childCreated: true,
+          },
+        );
       }
     }, killGraceMs),
   );
@@ -470,7 +521,9 @@ function sendSignal(
       if (killProcess(-pid, signal)) return { sent: true, errors };
       errors.push('process group kill returned false');
     } catch (error) {
-      errors.push(`process group kill failed: ${error instanceof Error ? error.message : String(error)}`);
+      errors.push(
+        `process group kill failed: ${error instanceof Error ? error.message : String(error)}`,
+      );
     }
   }
   try {
@@ -521,7 +574,13 @@ async function writePromptToStdin(child: FusionChildProcess, prompt: string): Pr
 
 export async function runPiChild(options: RunPiChildOptions): Promise<FusionChildRunResult> {
   if (options.signal?.aborted) {
-    throw childError('Pi child launch cancelled before spawn', 'child_cancelled', options, false, false);
+    throw childError(
+      'Pi child launch cancelled before spawn',
+      'child_cancelled',
+      options,
+      false,
+      false,
+    );
   }
   const spawnImpl = options.spawn ?? defaultSpawn;
   const killProcess = options.killProcess ?? process.kill.bind(process);
@@ -598,7 +657,15 @@ export async function runPiChild(options: RunPiChildOptions): Promise<FusionChil
           'child_event_invalid',
           options,
         );
-        terminateChild(child, state, platform, killProcess, killGraceMs, sigkillWaitMs, settleClose);
+        terminateChild(
+          child,
+          state,
+          platform,
+          killProcess,
+          killGraceMs,
+          sigkillWaitMs,
+          settleClose,
+        );
       }
     }
     if (appended.exceeded && state.primaryError === undefined) {
@@ -651,7 +718,11 @@ export async function runPiChild(options: RunPiChildOptions): Promise<FusionChil
   state.timeoutTimer = setUnref(
     setTimeout(() => {
       if (state.primaryError === undefined) {
-        state.primaryError = childError(`Pi child timed out after ${String(timeoutMs)}ms`, 'child_timeout', options);
+        state.primaryError = childError(
+          `Pi child timed out after ${String(timeoutMs)}ms`,
+          'child_timeout',
+          options,
+        );
       }
       terminateChild(child, state, platform, killProcess, killGraceMs, sigkillWaitMs, settleClose);
     }, timeoutMs),
@@ -676,7 +747,14 @@ export async function runPiChild(options: RunPiChildOptions): Promise<FusionChil
     const stderr = Buffer.concat(stderrChunks);
     const observed = parser.snapshot();
     const primary = state.primaryError;
-    if (primary !== undefined) throw new FusionChildRunError(withCleanupErrors(primary, state.cleanupErrors), stdout, stderr, close, observed);
+    if (primary !== undefined)
+      throw new FusionChildRunError(
+        withCleanupErrors(primary, state.cleanupErrors),
+        stdout,
+        stderr,
+        close,
+        observed,
+      );
     if (close.code !== 0 || close.signal !== null) {
       throw new FusionChildRunError(
         withCleanupErrors(

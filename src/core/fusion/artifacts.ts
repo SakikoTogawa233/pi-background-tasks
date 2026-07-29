@@ -140,7 +140,9 @@ function fsyncDirectory(path: string): void {
 
 function pathInside(parent: string, child: string): boolean {
   const rel = relative(parent, child);
-  return rel === '' || (!rel.startsWith('..') && !isAbsolute(rel) && !rel.split(sep).includes('..'));
+  return (
+    rel === '' || (!rel.startsWith('..') && !isAbsolute(rel) && !rel.split(sep).includes('..'))
+  );
 }
 
 function errorForArtifact(message: string): FusionError {
@@ -157,9 +159,15 @@ async function writeTempFile(absPath: string, data: Buffer | string): Promise<vo
   }
 }
 
-async function writePrivateFile(absPath: string, data: Buffer | string): Promise<FusionArtifactRef> {
+async function writePrivateFile(
+  absPath: string,
+  data: Buffer | string,
+): Promise<FusionArtifactRef> {
   const dir = dirname(absPath);
-  const tmp = join(dir, `.${basename(absPath)}.${String(process.pid)}.${randomBytes(6).toString('hex')}.tmp`);
+  const tmp = join(
+    dir,
+    `.${basename(absPath)}.${String(process.pid)}.${randomBytes(6).toString('hex')}.tmp`,
+  );
   const bytes = Buffer.isBuffer(data) ? data : Buffer.from(data, 'utf8');
   try {
     await writeTempFile(tmp, data);
@@ -201,7 +209,8 @@ function attemptPrefix(stage: FusionStage, slot: 1 | 2 | 3 | undefined, attempt:
     if (slot === undefined) throw errorForArtifact('candidate attempt requires slot');
     return `candidate-${String(slot)}.attempt-${String(attempt)}`;
   }
-  if (slot !== undefined) throw errorForArtifact(`${stage} attempt must not include candidate slot`);
+  if (slot !== undefined)
+    throw errorForArtifact(`${stage} attempt must not include candidate slot`);
   return `${stage === 'evaluation' ? 'evaluation' : 'merge'}.attempt-${String(attempt)}`;
 }
 
@@ -231,7 +240,9 @@ export class FusionArtifactStore {
   static async create(options: CreateFusionArtifactStoreOptions): Promise<FusionArtifactStore> {
     const runId = options.runId ?? makeRunId();
     if (!RUN_ID_PATTERN.test(runId)) throw errorForArtifact(`invalid fusion run id: ${runId}`);
-    const sessionSegment = sanitizePathSegment(options.sessionId ?? `session-${String(process.pid)}`);
+    const sessionSegment = sanitizePathSegment(
+      options.sessionId ?? `session-${String(process.pid)}`,
+    );
     const sessionDirName = `${sessionSegment}-${String(process.pid)}`;
     const runDirAbs = join(options.cwd, '.pi', 'fusion', sessionDirName, runId);
     const runDirDisplay = join('.pi', 'fusion', sessionDirName, runId);
@@ -252,7 +263,12 @@ export class FusionArtifactStore {
       attempts: [],
       artifacts: {},
     };
-    const store = new FusionArtifactStore(runDirAbs, runDirDisplay, options.now ?? (() => new Date()), manifest);
+    const store = new FusionArtifactStore(
+      runDirAbs,
+      runDirDisplay,
+      options.now ?? (() => new Date()),
+      manifest,
+    );
     await store.writeManifest();
     return store;
   }
@@ -339,7 +355,10 @@ export class FusionArtifactStore {
     const promptRef = await this.writeArtifact(`${prefix}.prompt.txt`, input.prompt);
     const eventsRef = await this.writeArtifact(`${prefix}.events.jsonl`, input.result.stdout);
     const stderrRef = await this.writeArtifact(`${prefix}.stderr.txt`, input.result.stderr);
-    const responseRef = await this.writeArtifact(responseName(prefix, input.responseKind), input.result.text);
+    const responseRef = await this.writeArtifact(
+      responseName(prefix, input.responseKind),
+      input.result.text,
+    );
     await this.updateManifest((manifest) => {
       const record: FusionAttemptArtifactRecord = {
         stage: input.result.stage,
@@ -409,7 +428,9 @@ export class FusionArtifactStore {
     await writeJsonAtomic(join(this.runDirAbs, 'manifest.json'), publicManifest(this.manifest));
   }
 
-  private async updateManifest(mutator: (manifest: MutableFusionArtifactManifest) => void): Promise<void> {
+  private async updateManifest(
+    mutator: (manifest: MutableFusionArtifactManifest) => void,
+  ): Promise<void> {
     const write = async () => {
       mutator(this.manifest);
       this.manifest.updated_at = this.now().toISOString();

@@ -134,7 +134,9 @@ class FusionRpc {
       if (found !== undefined) return found;
       await new Promise((resolve) => setTimeout(resolve, 50));
     }
-    throw new Error(`timeout ${this.stderr}\nEvents: ${JSON.stringify(this.events.slice(-12), null, 2)}`);
+    throw new Error(
+      `timeout ${this.stderr}\nEvents: ${JSON.stringify(this.events.slice(-12), null, 2)}`,
+    );
   }
 
   stop(): Promise<void> {
@@ -214,7 +216,11 @@ async function withRpc(
 function fusionResultMessage(event: JsonRecord): boolean {
   if (event['type'] !== 'message_end') return false;
   const message = event['message'];
-  return isRecord(message) && message['customType'] === 'fusion-result' && message['content'] === 'RPC fused answer.';
+  return (
+    isRecord(message) &&
+    message['customType'] === 'fusion-result' &&
+    message['content'] === 'RPC fused answer.'
+  );
 }
 
 function notifyWith(text: RegExp): (event: JsonRecord) => boolean {
@@ -237,14 +243,24 @@ void describe('fusion RPC integration', () => {
       const response = await rpc.send({ type: 'prompt', message: promptText });
       assert.equal(response['success'], true);
       await rpc.wait(fusionResultMessage);
-      assert.equal(rpc.events.some((event) => event['type'] === 'agent_start'), false);
+      assert.equal(
+        rpc.events.some((event) => event['type'] === 'agent_start'),
+        false,
+      );
       const calls = await readInvocations(fakeLogPath);
       assert.equal(calls.length, 5);
       const candidate = calls.find((call) => call.stage === 'candidate');
       assert.ok(candidate, 'candidate call should be logged');
       const input = parseJsonRecord(candidate.stdin);
       assert.equal(input['request'], 'rpc prompt with separators \u2028 and \u2029 kept');
-      for (const flag of ['--no-tools', '--no-extensions', '--no-skills', '--no-prompt-templates', '--no-context-files', '--no-session']) {
+      for (const flag of [
+        '--no-tools',
+        '--no-extensions',
+        '--no-skills',
+        '--no-prompt-templates',
+        '--no-context-files',
+        '--no-session',
+      ]) {
         assert.ok(candidate.args.includes(flag), flag);
       }
     });
@@ -274,7 +290,11 @@ void describe('fusion RPC integration', () => {
       async (rpc, fakeLogPath) => {
         const response = await rpc.send({ type: 'prompt', message: '/fusion blocked by config' });
         assert.equal(response['success'], true);
-        await rpc.wait(notifyWith(/Fusion failed:.*schema_version|Fusion failed:.*unknown key|Fusion failed:.*missing key/s));
+        await rpc.wait(
+          notifyWith(
+            /Fusion failed:.*schema_version|Fusion failed:.*unknown key|Fusion failed:.*missing key/s,
+          ),
+        );
         assert.equal((await readInvocations(fakeLogPath)).length, 0);
       },
       { configText: '{"bad":true}\n' },
@@ -287,7 +307,10 @@ void describe('fusion RPC integration', () => {
         await rpc.wait(notifyWith(/Fusion failed:.*exited with code 42/s));
         const calls = await readInvocations(fakeLogPath);
         assert.equal(calls.filter((call) => call.stage === 'candidate').length, 3);
-        assert.equal(calls.some((call) => call.stage === 'evaluation' || call.stage === 'merge'), false);
+        assert.equal(
+          calls.some((call) => call.stage === 'evaluation' || call.stage === 'merge'),
+          false,
+        );
       },
       { failStage: 'candidate' },
     );

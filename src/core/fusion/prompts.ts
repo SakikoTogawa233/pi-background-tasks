@@ -81,13 +81,21 @@ export interface AnonymousFusionCandidate {
 export interface FusionBlindEvaluationInputV1 {
   schema_version: 'pi-background-tasks.fusion-blind-candidates.v1';
   canonical_input: FusionCanonicalInputV1;
-  candidates: readonly [AnonymousFusionCandidate, AnonymousFusionCandidate, AnonymousFusionCandidate];
+  candidates: readonly [
+    AnonymousFusionCandidate,
+    AnonymousFusionCandidate,
+    AnonymousFusionCandidate,
+  ];
 }
 
 export interface FusionMergeInputV1 {
   schema_version: 'pi-background-tasks.fusion-merge-input.v1';
   canonical_input: FusionCanonicalInputV1;
-  candidates: readonly [AnonymousFusionCandidate, AnonymousFusionCandidate, AnonymousFusionCandidate];
+  candidates: readonly [
+    AnonymousFusionCandidate,
+    AnonymousFusionCandidate,
+    AnonymousFusionCandidate,
+  ];
   evaluation: FusionEvaluationV1;
 }
 
@@ -104,7 +112,11 @@ export function buildCandidatePrompt(input: FusionCanonicalInputV1): string {
 
 export function buildBlindEvaluationInput(
   canonicalInput: FusionCanonicalInputV1,
-  candidates: readonly [AnonymousFusionCandidate, AnonymousFusionCandidate, AnonymousFusionCandidate],
+  candidates: readonly [
+    AnonymousFusionCandidate,
+    AnonymousFusionCandidate,
+    AnonymousFusionCandidate,
+  ],
 ): FusionBlindEvaluationInputV1 {
   return {
     schema_version: 'pi-background-tasks.fusion-blind-candidates.v1',
@@ -123,7 +135,11 @@ export function buildEvaluationRepairPrompt(input: FusionEvaluationRepairInputV1
 
 export function buildMergeInput(
   canonicalInput: FusionCanonicalInputV1,
-  candidates: readonly [AnonymousFusionCandidate, AnonymousFusionCandidate, AnonymousFusionCandidate],
+  candidates: readonly [
+    AnonymousFusionCandidate,
+    AnonymousFusionCandidate,
+    AnonymousFusionCandidate,
+  ],
   evaluation: FusionEvaluationV1,
 ): FusionMergeInputV1 {
   return {

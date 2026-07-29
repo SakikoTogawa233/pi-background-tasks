@@ -36,7 +36,10 @@ function models(): ResolvedFusionModels {
   };
 }
 
-function childResult(stage: 'candidate' | 'evaluation' | 'merge', text: string): FusionChildRunResult {
+function childResult(
+  stage: 'candidate' | 'evaluation' | 'merge',
+  text: string,
+): FusionChildRunResult {
   const result: FusionChildRunResult = {
     stage,
     attempt: 1,
@@ -82,11 +85,17 @@ void describe('fusion artifacts', () => {
       assert.equal(dirMode, 0o700);
       await store.writeCanonicalInput('{"request":"x"}');
       await store.transition('candidates_running');
-      await store.recordChildAttempt({ result: childResult('candidate', 'answer'), prompt: 'prompt', responseKind: 'md' });
+      await store.recordChildAttempt({
+        result: childResult('candidate', 'answer'),
+        prompt: 'prompt',
+        responseKind: 'md',
+      });
       const responsePath = join(store.artifactDirAbs, 'candidate-1.attempt-1.response.md');
       assert.equal(await readFile(responsePath, 'utf8'), 'answer');
       assert.equal((await stat(responsePath)).mode & 0o777, 0o600);
-      const manifest = parseManifest(await readFile(join(store.artifactDirAbs, 'manifest.json'), 'utf8'));
+      const manifest = parseManifest(
+        await readFile(join(store.artifactDirAbs, 'manifest.json'), 'utf8'),
+      );
       assert.equal(field(manifest, 'state'), 'candidates_running');
       const attempts = field(manifest, 'attempts');
       assert.ok(Array.isArray(attempts));
@@ -99,7 +108,10 @@ void describe('fusion artifacts', () => {
       const usageRecord = field(firstAttempt, 'usage');
       assert.ok(typeof usageRecord === 'object' && usageRecord !== null);
       assert.equal(field(usageRecord, 'totalTokens'), 3);
-      assert.deepEqual((await readdir(store.artifactDirAbs)).filter((entry) => entry.endsWith('.tmp')), []);
+      assert.deepEqual(
+        (await readdir(store.artifactDirAbs)).filter((entry) => entry.endsWith('.tmp')),
+        [],
+      );
       const artifacts = field(manifest, 'artifacts');
       assert.ok(typeof artifacts === 'object' && artifacts !== null);
       assert.ok(Reflect.has(artifacts, 'canonical-input.json'));
@@ -127,7 +139,9 @@ void describe('fusion artifacts', () => {
       await assert.rejects(store.transition('completed'), /merged\.md/);
       await store.writeMerged('final');
       await store.transition('completed');
-      const manifest = parseManifest(await readFile(join(store.artifactDirAbs, 'manifest.json'), 'utf8'));
+      const manifest = parseManifest(
+        await readFile(join(store.artifactDirAbs, 'manifest.json'), 'utf8'),
+      );
       assert.equal(field(manifest, 'state'), 'completed');
       assert.equal(await readFile(join(store.artifactDirAbs, 'merged.md'), 'utf8'), 'final');
     } finally {
@@ -163,7 +177,9 @@ void describe('fusion artifacts', () => {
       });
       await store.writeError('failed', 'boom');
       assert.ok(existsSync(join(store.artifactDirAbs, 'error.json')));
-      const manifest = parseManifest(await readFile(join(store.artifactDirAbs, 'manifest.json'), 'utf8'));
+      const manifest = parseManifest(
+        await readFile(join(store.artifactDirAbs, 'manifest.json'), 'utf8'),
+      );
       assert.equal(field(manifest, 'state'), 'failed');
       assert.equal(field(manifest, 'error'), 'boom');
       const attempts = field(manifest, 'attempts');

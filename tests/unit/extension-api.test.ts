@@ -135,9 +135,11 @@ interface ProtocolHarness {
   close(): void;
 }
 
-async function createProtocolHarness(options: {
-  onSpawn?: ((child: FakeChild) => void) | undefined;
-} = {}): Promise<ProtocolHarness> {
+async function createProtocolHarness(
+  options: {
+    onSpawn?: ((child: FakeChild) => void) | undefined;
+  } = {},
+): Promise<ProtocolHarness> {
   const root = await mkdtemp(join(tmpdir(), 'pi-bg-api-protocol-'));
   const cwd = join(root, 'project');
   await mkdir(cwd, { recursive: true });
@@ -243,7 +245,10 @@ function requireTerminal(value: unknown): BackgroundTaskExtensionTerminal {
   return { schema_version: BG_TERMINAL_SCHEMA, task: requireTask(value['task'], 'terminal.task') };
 }
 
-function waitForResponse(bus: EventBus, requestId: string): Promise<BackgroundTaskExtensionResponse> {
+function waitForResponse(
+  bus: EventBus,
+  requestId: string,
+): Promise<BackgroundTaskExtensionResponse> {
   return new Promise((resolve, reject) => {
     const timer = setTimeout(() => {
       unsubscribe();
@@ -263,7 +268,10 @@ async function emitRequest(
   bus: EventBus,
   request: unknown,
 ): Promise<BackgroundTaskExtensionResponse> {
-  const requestId = isRecord(request) && typeof request['request_id'] === 'string' ? request['request_id'] : 'malformed';
+  const requestId =
+    isRecord(request) && typeof request['request_id'] === 'string'
+      ? request['request_id']
+      : 'malformed';
   const pending = waitForResponse(bus, requestId);
   bus.emit(BG_REQUEST_CHANNEL, request);
   return pending;
@@ -398,7 +406,9 @@ void describe('background EventBus protocol', () => {
       timeoutMs?: number | undefined;
       timeoutSeconds?: number | undefined;
       onSpawn?: ((child: FakeChild) => void) | undefined;
-      afterRun?: ((h: ProtocolHarness, task: BgTaskSnapshot, order: string[]) => Promise<void> | void) | undefined;
+      afterRun?:
+        | ((h: ProtocolHarness, task: BgTaskSnapshot, order: string[]) => Promise<void> | void)
+        | undefined;
     }): Promise<void> {
       const h = await createProtocolHarness({ onSpawn: options.onSpawn });
       const terminals: BackgroundTaskExtensionTerminal[] = [];
@@ -421,7 +431,8 @@ void describe('background EventBus protocol', () => {
           notifyOnCompletion: false,
           triggerOnCompletion: false,
         };
-        if (options.timeoutSeconds !== undefined) payload['timeoutSeconds'] = options.timeoutSeconds;
+        if (options.timeoutSeconds !== undefined)
+          payload['timeoutSeconds'] = options.timeoutSeconds;
         const run = await emitRequest(h.bus, {
           schema_version: BG_REQUEST_SCHEMA,
           request_id: `run-${options.label}`,
@@ -443,7 +454,10 @@ void describe('background EventBus protocol', () => {
         const responseIndex = order.indexOf('run-response');
         const terminalIndex = order.findIndex((entry) => entry.startsWith(`terminal:${task.id}:`));
         assert.ok(responseIndex >= 0, `${options.label} missing run response order marker`);
-        assert.ok(terminalIndex > responseIndex, `${options.label} terminal must follow run response`);
+        assert.ok(
+          terminalIndex > responseIndex,
+          `${options.label} terminal must follow run response`,
+        );
         if (options.expectedStatus === 'killed') {
           const killResponseIndex = order.indexOf('kill-response');
           assert.ok(killResponseIndex >= 0, 'killed case missing kill response marker');

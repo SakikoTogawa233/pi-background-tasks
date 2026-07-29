@@ -286,7 +286,11 @@ function requireEventResponse(value: unknown): BackgroundTaskExtensionResponse {
   assert.equal(typeof value['ok'], 'boolean');
   const hasResult = Object.prototype.hasOwnProperty.call(value, 'result');
   const hasError = Object.prototype.hasOwnProperty.call(value, 'error');
-  assert.notEqual(hasResult, hasError, 'EventBus response must contain exactly one of result/error');
+  assert.notEqual(
+    hasResult,
+    hasError,
+    'EventBus response must contain exactly one of result/error',
+  );
   return value as BackgroundTaskExtensionResponse;
 }
 
@@ -356,7 +360,8 @@ async function cleanupRoot(root: string): Promise<void> {
       await rm(root, { recursive: true, force: true });
       return;
     } catch (error) {
-      if (!(error instanceof Error) || !/ENOTEMPTY/.test(error.message) || attempt === 4) throw error;
+      if (!(error instanceof Error) || !/ENOTEMPTY/.test(error.message) || attempt === 4)
+        throw error;
       await new Promise((resolve) => setTimeout(resolve, 25));
     }
   }
@@ -763,7 +768,10 @@ console.error('sdk stderr');
         sourceHashes['output_sha256'],
       );
       assert.match(await readFile(join(cwd, task.outputPath), 'utf8'), /sdk attested done/);
-      assert.match(await readFile(join(cwd, task.outputPath.replace(/\.output$/, '.stderr')), 'utf8'), /sdk stderr/);
+      assert.match(
+        await readFile(join(cwd, task.outputPath.replace(/\.output$/, '.stderr')), 'utf8'),
+        /sdk stderr/,
+      );
     } finally {
       restoreEnvValue('PATH', oldPath);
       await session.extensionRunner.emit({ type: 'session_shutdown', reason: 'quit' });

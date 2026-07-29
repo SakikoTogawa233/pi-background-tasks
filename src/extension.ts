@@ -137,11 +137,23 @@ const BgRunParams = Type.Object({
 
 const BgPiAttestedParams = Type.Object({
   name: Type.String({ description: 'Short human-readable name for this attested Pi task.' }),
-  provider: Type.String({ description: 'Exact Pi provider to launch, for example openai-codex or anthropic.' }),
+  provider: Type.String({
+    description: 'Exact Pi provider to launch, for example openai-codex or anthropic.',
+  }),
   model: Type.String({ description: 'Exact provider-local Pi model id to launch.' }),
   prompt: Type.String({ description: 'Prompt bytes passed as the single user prompt to Pi.' }),
-  reportPath: Type.String({ description: 'Relative path, inside the task cwd, that the child Pi run must write as its report.' }),
-  extraPiArgs: Type.Optional(Type.Array(Type.String({ description: 'Additional literal Pi argv entries; mode/provider/model/api-key args are rejected.' }))),
+  reportPath: Type.String({
+    description:
+      'Relative path, inside the task cwd, that the child Pi run must write as its report.',
+  }),
+  extraPiArgs: Type.Optional(
+    Type.Array(
+      Type.String({
+        description:
+          'Additional literal Pi argv entries; mode/provider/model/api-key args are rejected.',
+      }),
+    ),
+  ),
   thinking: Type.Optional(Type.String({ description: 'Optional Pi thinking level argument.' })),
   timeoutSeconds: Type.Optional(
     Type.Number({ description: 'Optional timeout; task is failed and killed when exceeded' }),
@@ -737,7 +749,8 @@ export default function backgroundTasksExtension(pi: ExtensionAPI): void {
         throw new Error('bg_run_pi_attested arguments must be an object');
       const input = args as BgPiAttestedArgumentRecord;
       if (typeof input.name !== 'string') throw new Error('bg_run_pi_attested requires name');
-      if (typeof input.provider !== 'string') throw new Error('bg_run_pi_attested requires provider');
+      if (typeof input.provider !== 'string')
+        throw new Error('bg_run_pi_attested requires provider');
       if (typeof input.model !== 'string') throw new Error('bg_run_pi_attested requires model');
       if (typeof input.prompt !== 'string') throw new Error('bg_run_pi_attested requires prompt');
       if (typeof input.reportPath !== 'string')

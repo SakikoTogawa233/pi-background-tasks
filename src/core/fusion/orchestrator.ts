@@ -5,12 +5,12 @@ import {
   type CreateFusionArtifactStoreOptions,
   type RecordFusionFailedAttemptInput,
 } from './artifacts.js';
-import { boundedEvaluationErrors, formatEvaluationErrors, validateFusionEvaluation } from './evaluation.js';
 import {
-  FusionChildRunError,
-  runPiChild,
-  type RunPiChildOptions,
-} from './pi-child.js';
+  boundedEvaluationErrors,
+  formatEvaluationErrors,
+  validateFusionEvaluation,
+} from './evaluation.js';
+import { FusionChildRunError, runPiChild, type RunPiChildOptions } from './pi-child.js';
 import {
   FUSION_CANDIDATE_SYSTEM_PROMPT,
   FUSION_EVALUATION_REPAIR_SYSTEM_PROMPT,
@@ -64,7 +64,9 @@ export interface FusionOrchestratorOptions {
   childRunner?: FusionChildRunner | undefined;
   randomBytes?: FusionRandomBytes | undefined;
   now?: () => Date;
-  createArtifactStore?: ((options: CreateFusionArtifactStoreOptions) => Promise<FusionArtifactStore>) | undefined;
+  createArtifactStore?:
+    | ((options: CreateFusionArtifactStoreOptions) => Promise<FusionArtifactStore>)
+    | undefined;
 }
 
 interface CandidateResult {
@@ -119,7 +121,11 @@ function asFusionError(error: unknown, artifactDir: string, messageOverride?: st
   });
 }
 
-function withTerminalArtifactFailure(error: unknown, artifactDir: string, artifactError: unknown): FusionError {
+function withTerminalArtifactFailure(
+  error: unknown,
+  artifactDir: string,
+  artifactError: unknown,
+): FusionError {
   const message = `${errorText(error)}; additionally failed to write terminal fusion artifacts: ${errorText(artifactError)}`;
   return asFusionError(error, artifactDir, message);
 }
@@ -157,7 +163,8 @@ function recordFailureInput(
     stdout: Buffer.alloc(0),
     stderr: Buffer.alloc(0),
     error: errorText(error),
-    status: error instanceof FusionError && error.code === 'child_cancelled' ? 'cancelled' : 'failed',
+    status:
+      error instanceof FusionError && error.code === 'child_cancelled' ? 'cancelled' : 'failed',
     responseKind,
   };
   if (slot !== undefined) base.slot = slot;
@@ -167,10 +174,7 @@ function recordFailureInput(
 function retryableSpawn(error: unknown, attempt: number): boolean {
   if (!(error instanceof FusionError)) return false;
   return (
-    attempt === 1 &&
-    error.code === 'child_spawn_failed' &&
-    error.transient &&
-    !error.childCreated
+    attempt === 1 && error.code === 'child_spawn_failed' && error.transient && !error.childCreated
   );
 }
 
@@ -197,12 +201,18 @@ function childOptions(
   return out;
 }
 
-function parseEvaluationAttempt(text: string): { evaluation: FusionEvaluationV1 | undefined; errors: readonly string[] } {
+function parseEvaluationAttempt(text: string): {
+  evaluation: FusionEvaluationV1 | undefined;
+  errors: readonly string[];
+} {
   let parsed: unknown;
   try {
     parsed = parseJsonText(text);
   } catch (error) {
-    return { evaluation: undefined, errors: [`evaluation output must be JSON only: ${errorText(error)}`] };
+    return {
+      evaluation: undefined,
+      errors: [`evaluation output must be JSON only: ${errorText(error)}`],
+    };
   }
   const result = validateFusionEvaluation(parsed);
   if (result.ok) return { evaluation: result.value, errors: [] };
@@ -249,7 +259,10 @@ function shuffledSlots(randomBytes: FusionRandomBytes): CandidateSlot[] {
   return slots;
 }
 
-function candidateBySlot(results: readonly CandidateResult[], slot: CandidateSlot): FusionChildRunResult {
+function candidateBySlot(
+  results: readonly CandidateResult[],
+  slot: CandidateSlot,
+): FusionChildRunResult {
   const found = results.find((candidate) => candidate.slot === slot);
   if (found === undefined) {
     throw new FusionError(`candidate slot ${String(slot)} is missing`, {
@@ -271,7 +284,11 @@ function anonymousCandidates(
   slots: readonly CandidateSlot[],
 ): {
   map: Record<FusionCandidateId, CandidateSlot>;
-  candidates: readonly [AnonymousFusionCandidate, AnonymousFusionCandidate, AnonymousFusionCandidate];
+  candidates: readonly [
+    AnonymousFusionCandidate,
+    AnonymousFusionCandidate,
+    AnonymousFusionCandidate,
+  ];
 } {
   const firstSlot = slots[0];
   const secondSlot = slots[1];
@@ -299,7 +316,9 @@ export class FusionOrchestrator {
   private readonly childRunner: FusionChildRunner;
   private readonly randomBytes: FusionRandomBytes;
   private readonly now: (() => Date) | undefined;
-  private readonly createArtifactStore: (options: CreateFusionArtifactStoreOptions) => Promise<FusionArtifactStore>;
+  private readonly createArtifactStore: (
+    options: CreateFusionArtifactStoreOptions,
+  ) => Promise<FusionArtifactStore>;
 
   constructor(options: FusionOrchestratorOptions = {}) {
     this.childRunner = options.childRunner ?? runPiChild;
@@ -372,12 +391,16 @@ export class FusionOrchestrator {
           status: 'completed',
           artifact_dir: store.artifactDir,
           models: store.snapshot().models,
-          evaluator_attempts: store.snapshot().attempts.filter((attempt) => attempt.stage === 'evaluation').length,
+          evaluator_attempts: store
+            .snapshot()
+            .attempts.filter((attempt) => attempt.stage === 'evaluation').length,
           usage,
         },
       };
     } catch (error) {
-      const cancelled = input.signal?.aborted === true || (error instanceof FusionError && error.code === 'child_cancelled');
+      const cancelled =
+        input.signal?.aborted === true ||
+        (error instanceof FusionError && error.code === 'child_cancelled');
       const message = errorText(error);
       try {
         await store.setUsage(usage);
@@ -386,9 +409,19 @@ export class FusionOrchestrator {
         throw withTerminalArtifactFailure(error, store.artifactDir, artifactError);
       }
       if (cancelled) {
-        input.onProgress?.({ type: 'cancelled', runId: store.runId, artifactDir: store.artifactDir, reason: message });
+        input.onProgress?.({
+          type: 'cancelled',
+          runId: store.runId,
+          artifactDir: store.artifactDir,
+          reason: message,
+        });
       } else {
-        input.onProgress?.({ type: 'failed', runId: store.runId, artifactDir: store.artifactDir, error: message });
+        input.onProgress?.({
+          type: 'failed',
+          runId: store.runId,
+          artifactDir: store.artifactDir,
+          error: message,
+        });
       }
       throw asFusionError(error, store.artifactDir);
     }
@@ -475,11 +508,14 @@ export class FusionOrchestrator {
     });
     const second = await this.runEvaluationAttempt(input, store, usage, repairPrompt, 2, true);
     if (second.evaluation !== undefined) return second.evaluation;
-    throw new FusionError(`evaluation schema repair failed: ${formatEvaluationErrors(second.errors)}`, {
-      code: 'evaluation_invalid',
-      stage: 'evaluation',
-      attempt: 2,
-    });
+    throw new FusionError(
+      `evaluation schema repair failed: ${formatEvaluationErrors(second.errors)}`,
+      {
+        code: 'evaluation_invalid',
+        stage: 'evaluation',
+        attempt: 2,
+      },
+    );
   }
 
   private async runEvaluationAttempt(
@@ -491,7 +527,9 @@ export class FusionOrchestrator {
     repair: boolean,
   ): Promise<EvaluationAttemptResult> {
     input.onProgress?.({ type: 'evaluation_started', attempt, repair });
-    const systemPrompt = repair ? FUSION_EVALUATION_REPAIR_SYSTEM_PROMPT : FUSION_EVALUATOR_SYSTEM_PROMPT;
+    const systemPrompt = repair
+      ? FUSION_EVALUATION_REPAIR_SYSTEM_PROMPT
+      : FUSION_EVALUATOR_SYSTEM_PROMPT;
     const result = await this.runChildWithRetry(
       input,
       store,

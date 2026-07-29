@@ -23,14 +23,21 @@ function requireString(value: unknown, label: string): string {
   return value;
 }
 
-function run(command: string, args: readonly string[], cwd: string, env: NodeJS.ProcessEnv = process.env): string {
+function run(
+  command: string,
+  args: readonly string[],
+  cwd: string,
+  env: NodeJS.ProcessEnv = process.env,
+): string {
   const result = spawnSync(command, [...args], {
     cwd,
     encoding: 'utf8',
     env: { ...env, NPM_CONFIG_CACHE: env['NPM_CONFIG_CACHE'] ?? '/tmp/pi-npm-cache' },
   });
   if (result.status !== 0) {
-    throw new Error(`${command} ${args.join(' ')} failed in ${cwd}\n${result.stdout}\n${result.stderr}`);
+    throw new Error(
+      `${command} ${args.join(' ')} failed in ${cwd}\n${result.stdout}\n${result.stderr}`,
+    );
   }
   return result.stdout;
 }
@@ -70,9 +77,16 @@ async function runRpcPromptUntil(
       finish(error);
     });
     child.on('close', (code) => {
-      if (!settled && code !== 0) finish(new Error(`RPC prompt exited ${code === null ? 'null' : String(code)}\n${stdout}\n${stderr}`));
+      if (!settled && code !== 0)
+        finish(
+          new Error(
+            `RPC prompt exited ${code === null ? 'null' : String(code)}\n${stdout}\n${stderr}`,
+          ),
+        );
     });
-    child.stdin.end(`${JSON.stringify({ type: 'prompt', message: prompt, id: 'compat-rpc-prompt' })}\n`);
+    child.stdin.end(
+      `${JSON.stringify({ type: 'prompt', message: prompt, id: 'compat-rpc-prompt' })}\n`,
+    );
   });
 }
 
@@ -103,13 +117,25 @@ async function smokeVersion(version: string, tarballPath: string): Promise<void>
       temp,
     );
     const cli = join(temp, 'node_modules', '@earendil-works', 'pi-coding-agent', 'dist', 'cli.js');
-    const extension = join(temp, 'node_modules', 'pi-background-tasks', 'extensions', 'background-tasks.ts');
+    const extension = join(
+      temp,
+      'node_modules',
+      'pi-background-tasks',
+      'extensions',
+      'background-tasks.ts',
+    );
     if (!existsSync(cli)) throw new Error(`Pi CLI not installed for ${version}: ${cli}`);
-    if (!existsSync(extension)) throw new Error(`package extension missing for ${version}: ${extension}`);
+    if (!existsSync(extension))
+      throw new Error(`package extension missing for ${version}: ${extension}`);
     const agentDir = join(temp, 'agent');
     await mkdir(agentDir, { recursive: true });
     const fake = await installFusionFakePi(temp, { mergedText: `compat fusion ${version}` });
-    const scriptedProviderPath = join(root, 'tests', 'scripted-provider', 'scripted-provider-extension.ts');
+    const scriptedProviderPath = join(
+      root,
+      'tests',
+      'scripted-provider',
+      'scripted-provider-extension.ts',
+    );
     const env: NodeJS.ProcessEnv = {
       ...process.env,
       ...isolatedTestEnv,
@@ -156,8 +182,12 @@ async function smokeVersion(version: string, tarballPath: string): Promise<void>
       env,
     );
     const childCalls = await readFile(fake.logPath, 'utf8');
-    const childCallCount = childCalls.trim().length === 0 ? 0 : childCalls.trim().split('\n').length;
-    if (childCallCount !== 5) throw new Error(`Fusion compatibility expected five child calls for ${version}, saw ${String(childCallCount)}`);
+    const childCallCount =
+      childCalls.trim().length === 0 ? 0 : childCalls.trim().split('\n').length;
+    if (childCallCount !== 5)
+      throw new Error(
+        `Fusion compatibility expected five child calls for ${version}, saw ${String(childCallCount)}`,
+      );
     await runRpcPromptUntil(
       process.execPath,
       [

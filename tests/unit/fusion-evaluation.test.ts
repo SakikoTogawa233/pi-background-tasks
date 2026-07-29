@@ -59,12 +59,18 @@ void describe('fusion evaluation schema', () => {
   void it('accepts a closed valid evaluation object', () => {
     const parsed = parseFusionEvaluation(JSON.stringify(validEvaluation()));
     assert.equal(parsed.schema_version, FUSION_EVALUATION_SCHEMA_VERSION);
-    assert.deepEqual(parsed.candidate_assessments.map((entry) => entry.candidate_id), ['A', 'B', 'C']);
+    assert.deepEqual(
+      parsed.candidate_assessments.map((entry) => entry.candidate_id),
+      ['A', 'B', 'C'],
+    );
   });
 
   void it('rejects wrappers and invalid JSON without substring extraction', () => {
     assert.throws(() => parseFusionEvaluation('```json\n{}\n```'), /JSON only/);
-    assert.throws(() => parseFusionEvaluation(`${JSON.stringify(validEvaluation())}\nprose`), /JSON only/);
+    assert.throws(
+      () => parseFusionEvaluation(`${JSON.stringify(validEvaluation())}\nprose`),
+      /JSON only/,
+    );
   });
 
   void it('rejects unknown fields, duplicate IDs, and blank strings', () => {
@@ -125,7 +131,10 @@ void describe('fusion evaluation schema', () => {
   });
 
   void it('bounds validation errors for repair prompts and user-facing failures', () => {
-    const errors = Array.from({ length: 200 }, (_, index) => `error-${String(index)}-${'x'.repeat(800)}`);
+    const errors = Array.from(
+      { length: 200 },
+      (_, index) => `error-${String(index)}-${'x'.repeat(800)}`,
+    );
     const bounded = boundedEvaluationErrors(errors);
     assert.ok(bounded.length < errors.length);
     assert.ok(bounded.join('').length < 4300);
@@ -134,7 +143,8 @@ void describe('fusion evaluation schema', () => {
 
   void it('throws a typed error for invalid parsed content', () => {
     assert.throws(
-      () => parseFusionEvaluation(JSON.stringify({ schema_version: FUSION_EVALUATION_SCHEMA_VERSION })),
+      () =>
+        parseFusionEvaluation(JSON.stringify({ schema_version: FUSION_EVALUATION_SCHEMA_VERSION })),
       (error: unknown) => {
         assert.ok(error instanceof FusionError);
         assert.equal(error.code, 'evaluation_invalid');

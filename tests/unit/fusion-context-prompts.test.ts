@@ -14,7 +14,10 @@ import {
   buildMergeInput,
   buildMergePrompt,
 } from '../../src/core/fusion/prompts.js';
-import { FUSION_EVALUATION_SCHEMA_VERSION, type FusionEvaluationV1 } from '../../src/core/fusion/types.js';
+import {
+  FUSION_EVALUATION_SCHEMA_VERSION,
+  type FusionEvaluationV1,
+} from '../../src/core/fusion/types.js';
 
 function usage() {
   return {
@@ -31,19 +34,47 @@ function evaluation(): FusionEvaluationV1 {
   return {
     schema_version: FUSION_EVALUATION_SCHEMA_VERSION,
     candidate_assessments: [
-      { candidate_id: 'A', summary: 'a', strengths: ['a'], limitations: ['a'], useful_contributions: ['a'], risks: ['a'] },
-      { candidate_id: 'B', summary: 'b', strengths: ['b'], limitations: ['b'], useful_contributions: ['b'], risks: ['b'] },
-      { candidate_id: 'C', summary: 'c', strengths: ['c'], limitations: ['c'], useful_contributions: ['c'], risks: ['c'] },
+      {
+        candidate_id: 'A',
+        summary: 'a',
+        strengths: ['a'],
+        limitations: ['a'],
+        useful_contributions: ['a'],
+        risks: ['a'],
+      },
+      {
+        candidate_id: 'B',
+        summary: 'b',
+        strengths: ['b'],
+        limitations: ['b'],
+        useful_contributions: ['b'],
+        risks: ['b'],
+      },
+      {
+        candidate_id: 'C',
+        summary: 'c',
+        strengths: ['c'],
+        limitations: ['c'],
+        useful_contributions: ['c'],
+        risks: ['c'],
+      },
     ],
     agreements: ['agree'],
     conflicts: [],
-    synthesis_plan: { must_include: [{ candidate_id: 'A', contribution: 'a' }], must_resolve: [], must_avoid: [] },
+    synthesis_plan: {
+      must_include: [{ candidate_id: 'A', contribution: 'a' }],
+      must_resolve: [],
+      must_avoid: [],
+    },
   };
 }
 
 void describe('fusion context and prompts', () => {
   void it('trims only command edges and preserves internal whitespace', () => {
-    assert.equal(normalizeFusionCommandRequest('  line one\n\n  line two  '), 'line one\n\n  line two');
+    assert.equal(
+      normalizeFusionCommandRequest('  line one\n\n  line two  '),
+      'line one\n\n  line two',
+    );
   });
 
   void it('builds deterministic canonical command input', () => {
@@ -89,8 +120,14 @@ void describe('fusion context and prompts', () => {
     );
     assert.match(built.input.conversation_transcript, /user text before image/);
     assert.match(built.input.conversation_transcript, /user text after image/);
-    assert.match(built.input.conversation_transcript, /\[Image omitted from fusion text transcript: image\/png\]/);
-    assert.match(built.input.conversation_transcript, /\[Image omitted from fusion text transcript: image\/jpeg\]/);
+    assert.match(
+      built.input.conversation_transcript,
+      /\[Image omitted from fusion text transcript: image\/png\]/,
+    );
+    assert.match(
+      built.input.conversation_transcript,
+      /\[Image omitted from fusion text transcript: image\/jpeg\]/,
+    );
     assert.doesNotMatch(built.serialized, /raw-user-image-base64|raw-tool-image-base64/);
   });
 
@@ -160,7 +197,10 @@ void describe('fusion context and prompts', () => {
   });
 
   void it('gives the evaluation repair child the full closed schema and blind constraints', () => {
-    assert.match(FUSION_EVALUATION_REPAIR_SYSTEM_PROMPT, new RegExp(FUSION_EVALUATION_SCHEMA_VERSION));
+    assert.match(
+      FUSION_EVALUATION_REPAIR_SYSTEM_PROMPT,
+      new RegExp(FUSION_EVALUATION_SCHEMA_VERSION),
+    );
     assert.match(FUSION_EVALUATION_REPAIR_SYSTEM_PROMPT, /candidate_assessments/);
     assert.match(FUSION_EVALUATION_REPAIR_SYSTEM_PROMPT, /Objects must be closed/);
     assert.match(FUSION_EVALUATION_REPAIR_SYSTEM_PROMPT, /Preserve blindness/);

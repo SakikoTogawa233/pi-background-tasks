@@ -1,9 +1,6 @@
 import type { Theme } from '@earendil-works/pi-coding-agent';
 import { Key, matchesKey, truncateToWidth, type Component } from '@earendil-works/pi-tui';
-import {
-  CURRENT_MODEL_SELECTION,
-  defaultFusionModelConfig,
-} from '../core/fusion/config.js';
+import { CURRENT_MODEL_SELECTION, defaultFusionModelConfig } from '../core/fusion/config.js';
 import type { FusionModelConfigV1, FusionModelSelection } from '../core/fusion/types.js';
 
 export const FUSION_MODEL_SLOT_IDS = [
@@ -65,9 +62,12 @@ function updateConfig(
   id: FusionModelSlotId,
   value: FusionModelSelection,
 ): FusionModelConfigV1 {
-  if (id === 'candidate-1') return { ...config, candidates: [value, config.candidates[1], config.candidates[2]] };
-  if (id === 'candidate-2') return { ...config, candidates: [config.candidates[0], value, config.candidates[2]] };
-  if (id === 'candidate-3') return { ...config, candidates: [config.candidates[0], config.candidates[1], value] };
+  if (id === 'candidate-1')
+    return { ...config, candidates: [value, config.candidates[1], config.candidates[2]] };
+  if (id === 'candidate-2')
+    return { ...config, candidates: [config.candidates[0], value, config.candidates[2]] };
+  if (id === 'candidate-3')
+    return { ...config, candidates: [config.candidates[0], config.candidates[1], value] };
   if (id === 'evaluator') return { ...config, evaluator: value };
   return { ...config, merger: value };
 }
@@ -91,7 +91,11 @@ function modelChoiceLine(choice: FusionModelChoice): string {
 }
 
 function slotViews(config: FusionModelConfigV1): SlotView[] {
-  return FUSION_MODEL_SLOT_IDS.map((id) => ({ id, label: slotLabel(id), value: configValue(config, id) }));
+  return FUSION_MODEL_SLOT_IDS.map((id) => ({
+    id,
+    label: slotLabel(id),
+    value: configValue(config, id),
+  }));
 }
 
 export class FusionModelSelector implements Component {
@@ -159,7 +163,8 @@ export class FusionModelSelector implements Component {
 
   private renderChoices(width: number): string[] {
     const selectedSlot = FUSION_MODEL_SLOT_IDS[this.selectedSlot];
-    const title = selectedSlot === undefined ? 'Choose model' : `Choose model for ${slotLabel(selectedSlot)}`;
+    const title =
+      selectedSlot === undefined ? 'Choose model' : `Choose model for ${slotLabel(selectedSlot)}`;
     const filtered = this.filteredChoices();
     const lines = [
       this.theme.fg('accent', this.theme.bold(title)),
@@ -169,18 +174,28 @@ export class FusionModelSelector implements Component {
     if (filtered.length === 0) {
       lines.push(this.theme.fg('warning', 'No matching models.'));
     } else {
-      const windowStart = Math.max(0, Math.min(this.selectedChoice - 6, Math.max(0, filtered.length - 12)));
+      const windowStart = Math.max(
+        0,
+        Math.min(this.selectedChoice - 6, Math.max(0, filtered.length - 12)),
+      );
       const windowItems = filtered.slice(windowStart, windowStart + 12);
       for (const [offset, choice] of windowItems.entries()) {
         const index = windowStart + offset;
         const marker = index === this.selectedChoice ? this.theme.fg('accent', '›') : ' ';
         const label = choice.available ? choice.label : this.theme.fg('warning', choice.label);
-        const description = choice.description ? this.theme.fg('dim', ` — ${choice.description}`) : '';
+        const description = choice.description
+          ? this.theme.fg('dim', ` — ${choice.description}`)
+          : '';
         const stale = choice.available ? '' : this.theme.fg('warning', ' (unavailable)');
         lines.push(`${marker} ${label}${stale}${description}`);
       }
       if (filtered.length > windowItems.length) {
-        lines.push(this.theme.fg('dim', `${String(windowStart + 1)}-${String(windowStart + windowItems.length)} of ${String(filtered.length)}`));
+        lines.push(
+          this.theme.fg(
+            'dim',
+            `${String(windowStart + 1)}-${String(windowStart + windowItems.length)} of ${String(filtered.length)}`,
+          ),
+        );
       }
     }
     lines.push('');
