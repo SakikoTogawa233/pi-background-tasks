@@ -31,6 +31,7 @@ function script(options: FusionFakePiInstallOptions, logPath: string): string {
   return `#!/usr/bin/env node
 const { appendFileSync, readFileSync } = require('node:fs');
 const { spawnSync } = require('node:child_process');
+const { createHash } = require('node:crypto');
 const args = process.argv.slice(2);
 const logPath = ${JSON.stringify(logPath)};
 const delegate = ${JSON.stringify(delegate)};
@@ -43,7 +44,8 @@ function argValue(name) {
   return index >= 0 ? args[index + 1] : undefined;
 }
 function isFusionChild() {
-  return argValue('--mode') === 'json' && args.includes('--no-tools') && args.includes('--no-extensions') && args.includes('--no-context-files');
+  const extension = argValue('--extension');
+  return argValue('--mode') === 'text' && args.includes('--no-tools') && args.includes('--no-extensions') && args.includes('--no-context-files') && typeof extension === 'string' && /fusion-child\\.(?:ts|js)$/.test(extension);
 }
 if (!isFusionChild()) {
   if (!delegate) {
@@ -92,9 +94,18 @@ function responseText() {
 }
 function emit() {
   const text = responseText();
-  const usage = { input: 11, output: 7, cacheRead: 2, cacheWrite: 3, totalTokens: 23, cost: { total: 0.01 } };
-  console.log(JSON.stringify({ type: 'session', version: 3, id: 'fusion-fake-' + process.pid, timestamp: new Date().toISOString(), cwd: process.cwd() }));
-  console.log(JSON.stringify({ type: 'message_end', message: { role: 'assistant', provider, model, usage, content: [{ type: 'text', text }], stopReason: 'stop', timestamp: Date.now() } }));
+  const digest = createHash('sha256').update(text, 'utf8').digest('hex');
+  const metadata = {
+    schema_version: 'pi-background-tasks.fusion-child-result.v1',
+    provider,
+    model,
+    stop_reason: 'stop',
+    text_blocks: [{ utf8_bytes: Buffer.byteLength(text, 'utf8'), sha256: digest }],
+    text_sha256: digest,
+    usage: { input: 11, output: 7, cacheRead: 2, cacheWrite: 3, totalTokens: 23, costTotal: 0.01 }
+  };
+  process.stderr.write('\\x1ePI_FUSION_CHILD_RESULT ' + JSON.stringify(metadata) + '\\n');
+  process.stdout.write(text + '\\n');
 }
 if (delayMs > 0) setTimeout(emit, delayMs);
 else emit();

@@ -66,6 +66,7 @@ interface Harness {
 
 interface HarnessOptions {
   fakeDelayMs?: number | undefined;
+  fakeFailStage?: 'candidate' | 'evaluation' | 'evaluation-repair' | 'merge' | undefined;
 }
 
 function rememberEnv(): void {
@@ -186,6 +187,7 @@ async function harness(options: HarnessOptions = {}): Promise<Harness> {
   const fake = await installFusionFakePi(root, {
     mergedText: 'SDK fused answer.',
     delayMs: options.fakeDelayMs,
+    failStage: options.fakeFailStage,
   });
   process.env['PATH'] = fake.env['PATH'];
   const settingsManager = SettingsManager.inMemory({
@@ -535,6 +537,27 @@ void describe('fusion SDK integration', { concurrency: false }, () => {
       assert.doesNotMatch(String(parsedInput['conversation_transcript']), /sdk-raw-image-base64/);
       assert.doesNotMatch(String(parsedInput['conversation_transcript']), /partial assistant text/);
       assert.doesNotMatch(String(parsedInput['conversation_transcript']), /call-sibling|bg_status/);
+    } finally {
+      await disposeHarness(h);
+    }
+  });
+
+  void it('reports tool failure stage, slot, attempt, and durable artifact directory', async () => {
+    const h = await harness({ fakeFailStage: 'candidate' });
+    try {
+      const tool = h.session.getToolDefinition('fusion_brainstorm');
+      assert.ok(tool, 'fusion tool should be registered');
+      await assert.rejects(
+        () =>
+          tool.execute(
+            'call-failure-diagnostics',
+            { prompt: 'fail with coordinates' },
+            undefined,
+            undefined,
+            h.session.extensionRunner.createContext(),
+          ),
+        /Fusion failed \(stage=candidate, slot=[123], attempt=1\):.*exited with code 42.*Artifacts: \.pi\/fusion\//s,
+      );
     } finally {
       await disposeHarness(h);
     }

@@ -232,7 +232,7 @@ export interface FusionChildRunResult {
   qualifiedId: string;
   text: string;
   usage: FusionUsage;
-  stdout: Buffer;
+  events: Buffer;
   stderr: Buffer;
   exitCode: number;
   signal: NodeJS.Signals | null;
@@ -247,6 +247,7 @@ export interface FusionAttemptArtifactRecord {
   events_path?: string;
   stderr_path?: string;
   response_path?: string;
+  partial_response_path?: string;
   provider?: string;
   model?: string;
   qualifiedId?: string;

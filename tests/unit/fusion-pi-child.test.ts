@@ -4,14 +4,19 @@ import { EventEmitter } from 'node:events';
 import type { SpawnOptions } from 'node:child_process';
 import {
   FusionChildRunError,
-  FusionPiJsonEventParser,
+  FusionPiCompactResultParser,
   buildFusionPiChildArgv,
   fusionPiChildEnv,
+  parseFusionChildStderr,
   runPiChild,
   type FusionChildProcess,
   type FusionChildSpawn,
 } from '../../src/core/fusion/pi-child.js';
 import type { ResolvedFusionModel } from '../../src/core/fusion/types.js';
+import {
+  FUSION_CHILD_RESULT_PREFIX,
+  buildFusionChildResultMetadata,
+} from '../../src/fusion-child-extension.js';
 
 class FakeReadable extends EventEmitter {
   emitData(value: Buffer | string): void {
@@ -93,52 +98,60 @@ function makeSpawn(child = new FakeChild()): { records: SpawnRecord[]; spawn: Fu
   };
 }
 
-function piEvents(provider = 'openai-codex', model = 'gpt-5.5'): string {
+function compactFrame(input: {
+  provider?: string;
+  model?: string;
+  text: string;
+  stopReason: string;
+  usage: {
+    input: number;
+    output: number;
+    cacheRead: number;
+    cacheWrite: number;
+    totalTokens: number;
+    cost: { total: number };
+  };
+}): string {
+  const record = buildFusionChildResultMetadata({
+    provider: input.provider ?? 'openai-codex',
+    model: input.model ?? 'gpt-5.5',
+    stopReason: input.stopReason,
+    content: [{ type: 'text', text: input.text }],
+    usage: input.usage,
+  });
+  return `${FUSION_CHILD_RESULT_PREFIX}${JSON.stringify(record)}\n`;
+}
+
+function compactMetadata(provider = 'openai-codex', model = 'gpt-5.5'): string {
   return (
-    [
-      { type: 'session', id: 's1', cwd: '/tmp/project' },
-      { type: 'agent_start' },
-      {
-        type: 'message_end',
-        message: {
-          role: 'assistant',
-          provider,
-          model,
-          usage: {
-            input: 1,
-            output: 2,
-            cacheRead: 3,
-            cacheWrite: 4,
-            totalTokens: 10,
-            cost: { total: 0.1 },
-          },
-          content: [{ type: 'text', text: 'draft' }],
-          stopReason: 'length',
-        },
+    compactFrame({
+      provider,
+      model,
+      text: 'draft',
+      stopReason: 'length',
+      usage: {
+        input: 1,
+        output: 2,
+        cacheRead: 3,
+        cacheWrite: 4,
+        totalTokens: 10,
+        cost: { total: 0.1 },
       },
-      { type: 'agent_start' },
-      {
-        type: 'message_end',
-        message: {
-          role: 'assistant',
-          provider,
-          model,
-          usage: {
-            input: 5,
-            output: 6,
-            cacheRead: 0,
-            cacheWrite: 0,
-            totalTokens: 11,
-            cost: { total: 0.2 },
-          },
-          content: [{ type: 'text', text: 'final héllo' }],
-          stopReason: 'stop',
-        },
+    }) +
+    compactFrame({
+      provider,
+      model,
+      text: 'final héllo',
+      stopReason: 'stop',
+      usage: {
+        input: 5,
+        output: 6,
+        cacheRead: 0,
+        cacheWrite: 0,
+        totalTokens: 11,
+        cost: { total: 0.2 },
       },
-      { type: 'agent_end' },
-    ]
-      .map((event) => JSON.stringify(event))
-      .join('\n') + '\n'
+    })
   );
 }
 
@@ -147,11 +160,11 @@ async function tick(): Promise<void> {
 }
 
 void describe('fusion Pi child runner', () => {
-  void it('builds isolated argv and sanitizes only stale Pi session env', () => {
+  void it('BUG-180 launches a final-text child with only the private compact metadata extension', () => {
     const argv = buildFusionPiChildArgv(resolvedModel(), 'system');
     assert.deepEqual(argv.slice(0, 8), [
       '--mode',
-      'json',
+      'text',
       '--no-session',
       '--no-tools',
       '--no-extensions',
@@ -161,6 +174,9 @@ void describe('fusion Pi child runner', () => {
     ]);
     assert.ok(argv.includes('--no-context-files'));
     assert.ok(argv.includes('--system-prompt'));
+    const extensionIndex = argv.indexOf('--extension');
+    assert.ok(extensionIndex >= 0, 'private compact metadata extension flag');
+    assert.match(argv[extensionIndex + 1] ?? '', /extensions\/fusion-child\.ts$/);
     const env = fusionPiChildEnv({
       PI_SESSION_ID: 'old',
       PI_MODEL: 'old-model',
@@ -172,7 +188,31 @@ void describe('fusion Pi child runner', () => {
     assert.equal(env['PI_SKIP_VERSION_CHECK'], '1');
   });
 
-  void it('pipes the prompt through stdin and parses fragmented JSON events', async () => {
+  void it('keeps reasoning and full response text out of compact child metadata', () => {
+    const record = buildFusionChildResultMetadata({
+      provider: 'openai-codex',
+      model: 'gpt-5.5',
+      stopReason: 'stop',
+      content: [
+        { type: 'thinking', text: 'private reasoning must not cross the child boundary' },
+        { type: 'text', text: 'complete final answer' },
+      ],
+      usage: {
+        input: 1,
+        output: 2,
+        cacheRead: 0,
+        cacheWrite: 0,
+        totalTokens: 3,
+        cost: { total: 0 },
+      },
+    });
+    const serialized = JSON.stringify(record);
+    assert.doesNotMatch(serialized, /private reasoning/);
+    assert.doesNotMatch(serialized, /complete final answer/);
+    assert.deepEqual(record.text_blocks.map((block) => block.utf8_bytes), [21]);
+  });
+
+  void it('pipes the prompt through stdin and returns the exact full text with compact metadata', async () => {
     const child = new FakeChild(777);
     const harness = makeSpawn(child);
     const run = runPiChild({
@@ -201,11 +241,13 @@ void describe('fusion Pi child runner', () => {
     );
     assert.equal(child.stdin.ended, true);
 
-    const bytes = Buffer.from(piEvents(), 'utf8');
-    child.stdout.emitData(bytes.subarray(0, 17));
-    child.stdout.emitData(bytes.subarray(17, 101));
-    child.stdout.emitData(bytes.subarray(101));
+    const response = Buffer.from('final héllo\n', 'utf8');
+    child.stdout.emitData(response.subarray(0, 4));
+    child.stdout.emitData(response.subarray(4));
+    const metadata = Buffer.from(compactMetadata(), 'utf8');
     child.stderr.emitData('diagnostic');
+    child.stderr.emitData(metadata.subarray(0, 23));
+    child.stderr.emitData(metadata.subarray(23));
     child.close(0, null);
     const result = await run;
     assert.equal(result.text, 'final héllo');
@@ -214,12 +256,13 @@ void describe('fusion Pi child runner', () => {
     assert.equal(result.usage.totalTokens, 21);
     assert.equal(result.usage.costTotal, 0.30000000000000004);
     assert.equal(result.stderr.toString('utf8'), 'diagnostic');
+    assert.equal(result.events.toString('utf8').split('\n').filter(Boolean).length, 2);
+    assert.doesNotMatch(result.events.toString('utf8'), /final héllo/);
   });
 
-  void it('rejects malformed JSON lines and terminates the process group', async () => {
+  void it('rejects malformed compact metadata loudly', async () => {
     const child = new FakeChild(888);
     const harness = makeSpawn(child);
-    const kills: Array<{ pid: number; signal: NodeJS.Signals | number | undefined }> = [];
     const run = runPiChild({
       stage: 'candidate',
       slot: 2,
@@ -230,22 +273,18 @@ void describe('fusion Pi child runner', () => {
       userPrompt: 'prompt',
       spawn: harness.spawn,
       platform: 'linux',
-      killProcess: (pid, signal) => {
-        kills.push({ pid, signal });
-        return true;
-      },
       killGraceMs: 50,
       sigkillWaitMs: 50,
     });
     await tick();
-    child.stdout.emitData('{broken}\n');
-    child.close(null, 'SIGTERM');
+    child.stdout.emitData('x\n');
+    child.stderr.emitData(`${FUSION_CHILD_RESULT_PREFIX}{broken}\n`);
+    child.close(0, null);
     await assert.rejects(run, (error: unknown) => {
       assert.ok(error instanceof FusionChildRunError);
       assert.equal(error.code, 'child_event_invalid');
       return true;
     });
-    assert.deepEqual(kills[0], { pid: -888, signal: 'SIGTERM' });
   });
 
   void it('fails before spawn when the abort signal is already set', async () => {
@@ -301,21 +340,80 @@ void describe('fusion Pi child runner', () => {
     });
   });
 
-  void it('rejects non-stop final reasons, model mismatch, and missing newline', () => {
-    const parser = new FusionPiJsonEventParser('p', 'm');
-    parser.push(
-      Buffer.from(
-        '{"type":"session","id":"s","cwd":"/tmp"}\n{"type":"message_end","message":{"role":"assistant","provider":"p","model":"m","content":[{"type":"text","text":"x"}],"stopReason":"toolUse"}}\n',
-      ),
+  void it('reconstructs multiple print-mode text blocks without compacting the final answer', () => {
+    const record = buildFusionChildResultMetadata({
+      provider: 'p',
+      model: 'm',
+      stopReason: 'stop',
+      content: [
+        { type: 'text', text: 'first line\n' },
+        { type: 'text', text: '世界' },
+      ],
+      usage: {
+        input: 1,
+        output: 2,
+        cacheRead: 0,
+        cacheWrite: 0,
+        totalTokens: 3,
+        cost: { total: 0 },
+      },
+    });
+    const stderr = Buffer.from(
+      `${FUSION_CHILD_RESULT_PREFIX}${JSON.stringify(record)}\n`,
+      'utf8',
     );
-    assert.throws(() => parser.finish(), /not stop/);
+    const response = Buffer.from('first line\n\n世界\n', 'utf8');
+    const parsed = new FusionPiCompactResultParser('p', 'm').finish(response, stderr);
+    assert.equal(parsed.text, 'first line\n世界');
+  });
 
-    const mismatch = new FusionPiJsonEventParser('p', 'm');
-    assert.throws(() => mismatch.push(Buffer.from(piEvents('p', 'other'))), /model mismatch/);
+  void it('rejects non-stop final reasons, model mismatch, and unterminated metadata', () => {
+    const usage = {
+      input: 1,
+      output: 2,
+      cacheRead: 0,
+      cacheWrite: 0,
+      totalTokens: 3,
+      cost: { total: 0.1 },
+    };
+    const parser = new FusionPiCompactResultParser('p', 'm');
+    const nonStop = compactFrame({
+      provider: 'p',
+      model: 'm',
+      text: 'x',
+      stopReason: 'length',
+      usage,
+    });
+    assert.throws(() => parser.finish(Buffer.from('x\n'), Buffer.from(nonStop)), /not stop/);
 
-    const noNewline = new FusionPiJsonEventParser('p', 'm');
-    noNewline.push(Buffer.from('{"type":"session","id":"s","cwd":"/tmp"}'));
-    assert.throws(() => noNewline.finish(), /newline-terminated/);
+    const mismatch = compactFrame({
+      provider: 'p',
+      model: 'other',
+      text: 'x',
+      stopReason: 'stop',
+      usage,
+    });
+    assert.throws(
+      () => parser.finish(Buffer.from('x\n'), Buffer.from(mismatch)),
+      /model mismatch/,
+    );
+
+    const valid = compactFrame({
+      provider: 'p',
+      model: 'm',
+      text: 'expected',
+      stopReason: 'stop',
+      usage,
+    });
+    assert.throws(
+      () => parser.finish(Buffer.from('tampered\n'), Buffer.from(valid)),
+      /hash mismatch/,
+    );
+    assert.throws(() => parser.finish(Buffer.from('x\n'), Buffer.alloc(0)), /no compact result/);
+    assert.throws(
+      () => parseFusionChildStderr(Buffer.from(`${FUSION_CHILD_RESULT_PREFIX}{}`)),
+      /newline-terminated/,
+    );
   });
 
   void it('rejects stdin write failures and terminates the child loudly', async () => {
@@ -360,15 +458,16 @@ void describe('fusion Pi child runner', () => {
       spawn: harness.spawn,
       platform: 'linux',
       killProcess: () => false,
+      stdoutLimitBytes: 4,
       killGraceMs: 20,
       sigkillWaitMs: 20,
     });
     await tick();
-    child.stdout.emitData('{broken}\n');
+    child.stdout.emitData('abcdef');
     child.close(null, 'SIGTERM');
     await assert.rejects(run, (error: unknown) => {
       assert.ok(error instanceof FusionChildRunError);
-      assert.equal(error.code, 'child_event_invalid');
+      assert.equal(error.code, 'child_output_cap');
       assert.match(error.message, /process cleanup issues/);
       assert.match(error.message, /process group kill returned false/);
       return true;
@@ -418,7 +517,8 @@ void describe('fusion Pi child runner', () => {
       sigkillWaitMs: 20,
     });
     await tick();
-    child.stdout.emitData(piEvents());
+    child.stdout.emitData('final héllo\n');
+    child.stderr.emitData(compactMetadata());
     child.close(42, null);
     await assert.rejects(run, (error: unknown) => {
       assert.ok(error instanceof FusionChildRunError);
@@ -451,7 +551,7 @@ void describe('fusion Pi child runner', () => {
     await assert.rejects(run, (error: unknown) => {
       assert.ok(error instanceof FusionChildRunError);
       assert.equal(error.code, 'child_output_cap');
-      assert.equal(error.stdout.toString('utf8'), 'abcde');
+      assert.equal(error.response.toString('utf8'), 'abcde');
       return true;
     });
     assert.deepEqual(child.killCalls, ['SIGTERM']);

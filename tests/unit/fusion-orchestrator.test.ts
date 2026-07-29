@@ -99,7 +99,7 @@ function childResult(options: RunPiChildOptions, text: string): FusionChildRunRe
     qualifiedId: options.model.qualifiedId,
     text,
     usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2 },
-    stdout: Buffer.from('{"type":"session","id":"s","cwd":"/tmp"}\n'),
+    events: Buffer.from('{"schema_version":"pi-background-tasks.fusion-child-result.v1"}\n'),
     stderr: Buffer.alloc(0),
     exitCode: 0,
     signal: null,
@@ -136,7 +136,8 @@ function childRunError(
   );
   return new FusionChildRunError(
     fusionError,
-    Buffer.from('{"type":"session","id":"s","cwd":"/tmp"}\n'),
+    Buffer.from('{"schema_version":"pi-background-tasks.fusion-child-result.v1"}\n'),
+    Buffer.alloc(0),
     Buffer.alloc(0),
     {
       code: code === 'child_exit_failed' ? 1 : null,

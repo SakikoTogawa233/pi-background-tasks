@@ -124,6 +124,17 @@ function errorArtifactSuffix(error: unknown): string {
     : '';
 }
 
+function toolFailureMessage(error: unknown): string {
+  const coordinates: string[] = [];
+  if (error instanceof FusionError) {
+    if (error.stage !== undefined) coordinates.push(`stage=${error.stage}`);
+    if (error.slot !== undefined) coordinates.push(`slot=${String(error.slot)}`);
+    if (error.attempt !== undefined) coordinates.push(`attempt=${String(error.attempt)}`);
+  }
+  const location = coordinates.length === 0 ? '' : ` (${coordinates.join(', ')})`;
+  return `Fusion failed${location}: ${errorMessage(error)}${errorArtifactSuffix(error)}`;
+}
+
 function progressText(event: FusionProgressEvent): string {
   if (event.type === 'state') return `fusion: ${event.state.replace(/_/g, ' ')}`;
   if (event.type === 'candidate_started') return `fusion: candidate ${String(event.slot)} starting`;
@@ -546,19 +557,24 @@ export function registerFusionExtension(pi: ExtensionAPI): void {
     prepareArguments: prepareFusionArguments,
     async execute(toolCallId, params, signal, onUpdate, ctx) {
       const prompt = normalizeToolPrompt(params.prompt);
-      const result = await runFusion({
-        source: 'tool',
-        ctx,
-        request: prompt,
-        signal,
-        toolCallId,
-        onProgress: (event) => {
-          onUpdate?.({
-            content: textContent(progressText(event)),
-            details: makeProgressDetails(event),
-          });
-        },
-      });
+      let result: FusionRunResult;
+      try {
+        result = await runFusion({
+          source: 'tool',
+          ctx,
+          request: prompt,
+          signal,
+          toolCallId,
+          onProgress: (event) => {
+            onUpdate?.({
+              content: textContent(progressText(event)),
+              details: makeProgressDetails(event),
+            });
+          },
+        });
+      } catch (error) {
+        throw new Error(toolFailureMessage(error), { cause: error });
+      }
       const toolResult: FusionToolResultWithUsage = {
         content: textContent(result.mergedText),
         details: result.details,

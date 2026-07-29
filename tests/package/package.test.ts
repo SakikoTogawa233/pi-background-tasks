@@ -174,7 +174,9 @@ void describe('package', () => {
       'src/core/fusion/orchestrator.ts',
       'src/core/fusion/pi-child.ts',
       'src/fusion-extension.ts',
+      'src/fusion-child-extension.ts',
       'extensions/background-tasks.ts',
+      'extensions/fusion-child.ts',
     ])
       assert.ok(existsSync(new URL(f, root)), f);
 
@@ -233,7 +235,9 @@ void describe('package', () => {
       'src/core/fusion/artifacts.ts',
       'src/core/fusion/orchestrator.ts',
       'src/ui/fusion-model-selector.ts',
+      'src/fusion-child-extension.ts',
       'extensions/background-tasks.ts',
+      'extensions/fusion-child.ts',
     ];
     for (const file of fusionFiles) {
       const source = await text(file);
@@ -271,7 +275,9 @@ void describe('package', () => {
     const files = firstEntry.files.map((file) => file.path).sort();
     for (const f of [
       'extensions/background-tasks.ts',
+      'extensions/fusion-child.ts',
       'src/extension.ts',
+      'src/fusion-child-extension.ts',
       'src/core/common.ts',
       'src/core/registry.ts',
       'src/core/extension-api.ts',
@@ -345,8 +351,10 @@ void describe('package', () => {
       for (const f of [
         'package.json',
         'extensions/background-tasks.ts',
+        'extensions/fusion-child.ts',
         'src/extension.ts',
         'src/fusion-extension.ts',
+        'src/fusion-child-extension.ts',
         'src/core/registry.ts',
         'src/core/extension-api.ts',
         'src/core/attested-pi-run.ts',

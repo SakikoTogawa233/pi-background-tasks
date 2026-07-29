@@ -48,7 +48,7 @@ function childResult(
     qualifiedId: 'p/a',
     text,
     usage: { input: 1, output: 2, cacheRead: 0, cacheWrite: 0, totalTokens: 3 },
-    stdout: Buffer.from('{"type":"session"}\n'),
+    events: Buffer.from('{"schema_version":"pi-background-tasks.fusion-child-result.v1"}\n'),
     stderr: Buffer.from('stderr'),
     exitCode: 0,
     signal: null,
@@ -165,7 +165,8 @@ void describe('fusion artifacts', () => {
         slot: 2,
         attempt: 1,
         prompt: 'prompt',
-        stdout: Buffer.from('raw'),
+        events: Buffer.from('compact-event'),
+        partialResponse: Buffer.from('partial response'),
         stderr: Buffer.from('err'),
         error: 'boom',
         status: 'failed',
@@ -188,6 +189,21 @@ void describe('fusion artifacts', () => {
       assert.ok(typeof firstAttempt === 'object' && firstAttempt !== null);
       assert.equal(field(firstAttempt, 'status'), 'failed');
       assert.equal(field(firstAttempt, 'response_path'), 'candidate-2.attempt-1.response.md');
+      assert.equal(
+        field(firstAttempt, 'partial_response_path'),
+        'candidate-2.attempt-1.response.partial.md',
+      );
+      assert.equal(
+        await readFile(join(store.artifactDirAbs, 'candidate-2.attempt-1.response.md'), 'utf8'),
+        '',
+      );
+      assert.equal(
+        await readFile(
+          join(store.artifactDirAbs, 'candidate-2.attempt-1.response.partial.md'),
+          'utf8',
+        ),
+        'partial response',
+      );
       assert.equal(field(firstAttempt, 'qualifiedId'), 'p/b');
       const failedUsage = field(firstAttempt, 'usage');
       assert.ok(typeof failedUsage === 'object' && failedUsage !== null);

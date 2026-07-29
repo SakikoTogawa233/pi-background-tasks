@@ -1,5 +1,13 @@
 import { spawn as nodeSpawn, type SpawnOptions } from 'node:child_process';
-import { StringDecoder } from 'node:string_decoder';
+import { createHash } from 'node:crypto';
+import { existsSync } from 'node:fs';
+import { dirname, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import {
+  FUSION_CHILD_RESULT_PREFIX,
+  FUSION_CHILD_RESULT_SCHEMA_VERSION,
+  type FusionChildResultMetadata,
+} from '../../fusion-child-extension.js';
 import type { ResolvedFusionModel } from './types.js';
 import {
   FusionError,
@@ -10,6 +18,7 @@ import {
 } from './types.js';
 import { isJsonObject, parseJsonText } from '../common.js';
 
+// The response cap now applies to one final full answer, not cumulative Pi JSON events.
 export const FUSION_CHILD_STDOUT_LIMIT_BYTES = 32 * 1024 * 1024;
 export const FUSION_CHILD_STDERR_LIMIT_BYTES = 4 * 1024 * 1024;
 export const FUSION_CHILD_TIMEOUT_MS = 30 * 60 * 1000;
@@ -76,6 +85,7 @@ export interface RunPiChildOptions {
   platform?: NodeJS.Platform | undefined;
   env?: NodeJS.ProcessEnv | undefined;
   stdoutLimitBytes?: number | undefined;
+  childExtensionPath?: string | undefined;
   stderrLimitBytes?: number | undefined;
   timeoutMs?: number | undefined;
   killGraceMs?: number | undefined;
@@ -105,7 +115,8 @@ interface ObservedChildSnapshot {
 }
 
 export class FusionChildRunError extends FusionError {
-  readonly stdout: Buffer;
+  readonly events: Buffer;
+  readonly response: Buffer;
   readonly stderr: Buffer;
   readonly exitCode: number | null;
   readonly signalName: NodeJS.Signals | null;
@@ -116,7 +127,8 @@ export class FusionChildRunError extends FusionError {
 
   constructor(
     error: FusionError,
-    stdout: Buffer,
+    events: Buffer,
+    response: Buffer,
     stderr: Buffer,
     close: CloseRecord,
     observed: ObservedChildSnapshot,
@@ -132,7 +144,8 @@ export class FusionChildRunError extends FusionError {
     if (error.artifactDir !== undefined) details.artifactDir = error.artifactDir;
     super(error.message, details);
     this.name = 'FusionChildRunError';
-    this.stdout = stdout;
+    this.events = events;
+    this.response = response;
     this.stderr = stderr;
     this.exitCode = close.code;
     this.signalName = close.signal;
@@ -150,10 +163,27 @@ export function fusionPiChildEnv(env: NodeJS.ProcessEnv = process.env): NodeJS.P
   return out;
 }
 
-export function buildFusionPiChildArgv(model: ResolvedFusionModel, systemPrompt: string): string[] {
+export function resolveFusionChildExtensionPath(
+  moduleUrl = import.meta.url,
+  pathExists: (path: string) => boolean = existsSync,
+): string {
+  const modulePath = fileURLToPath(moduleUrl);
+  const extension = modulePath.endsWith('.ts') ? 'fusion-child.ts' : 'fusion-child.js';
+  const candidate = resolve(dirname(modulePath), '../../../extensions', extension);
+  if (!pathExists(candidate)) {
+    throw new Error(`Fusion child metadata extension is missing: ${candidate}`);
+  }
+  return candidate;
+}
+
+export function buildFusionPiChildArgv(
+  model: ResolvedFusionModel,
+  systemPrompt: string,
+  childExtensionPath = resolveFusionChildExtensionPath(),
+): string[] {
   return [
     '--mode',
-    'json',
+    'text',
     '--no-session',
     '--no-tools',
     '--no-extensions',
@@ -161,6 +191,8 @@ export function buildFusionPiChildArgv(model: ResolvedFusionModel, systemPrompt:
     '--no-prompt-templates',
     '--no-themes',
     '--no-context-files',
+    '--extension',
+    childExtensionPath,
     '--provider',
     model.provider,
     '--model',
@@ -172,40 +204,6 @@ export function buildFusionPiChildArgv(model: ResolvedFusionModel, systemPrompt:
   ];
 }
 
-function nonNegativeInteger(value: unknown): number {
-  return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? Math.floor(value) : 0;
-}
-
-function readString(record: Record<PropertyKey, unknown>, key: string): string | undefined {
-  const value = record[key];
-  return typeof value === 'string' ? value : undefined;
-}
-
-function readRecord(
-  record: Record<PropertyKey, unknown>,
-  key: string,
-): Record<PropertyKey, unknown> | undefined {
-  const value = record[key];
-  return isJsonObject(value) && !Array.isArray(value) ? value : undefined;
-}
-
-function normalizeUsage(value: unknown): FusionUsage {
-  const usage: FusionUsage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0 };
-  if (!isJsonObject(value) || Array.isArray(value)) return usage;
-  usage.input = nonNegativeInteger(value['input']);
-  usage.output = nonNegativeInteger(value['output']);
-  usage.cacheRead = nonNegativeInteger(value['cacheRead']);
-  usage.cacheWrite = nonNegativeInteger(value['cacheWrite']);
-  usage.totalTokens = nonNegativeInteger(value['totalTokens']);
-  if (usage.totalTokens <= 0) {
-    usage.totalTokens = usage.input + usage.output + usage.cacheRead + usage.cacheWrite;
-  }
-  const cost = readRecord(value, 'cost');
-  const total = cost === undefined ? undefined : cost['total'];
-  if (typeof total === 'number' && Number.isFinite(total) && total >= 0) usage.costTotal = total;
-  return usage;
-}
-
 function addUsage(target: FusionUsage, delta: FusionUsage): void {
   target.input += delta.input;
   target.output += delta.output;
@@ -215,164 +213,253 @@ function addUsage(target: FusionUsage, delta: FusionUsage): void {
   if (delta.costTotal !== undefined) target.costTotal = (target.costTotal ?? 0) + delta.costTotal;
 }
 
-function textBlocks(message: Record<PropertyKey, unknown>): string[] {
-  const content = message['content'];
-  if (!Array.isArray(content)) return [];
-  const out: string[] = [];
-  for (const part of content) {
-    if (!isJsonObject(part) || Array.isArray(part)) continue;
-    if (part['type'] === 'text' && typeof part['text'] === 'string') out.push(part['text']);
-  }
-  return out;
+const SHA256_HEX_PATTERN = /^[0-9a-f]{64}$/;
+const FUSION_CHILD_RESULT_PREFIX_BYTES = Buffer.from(FUSION_CHILD_RESULT_PREFIX, 'utf8');
+
+interface ParsedFusionChildStderr {
+  records: FusionChildResultMetadata[];
+  events: Buffer;
+  diagnostics: Buffer;
 }
 
-export class FusionPiJsonEventParser {
-  private readonly decoder = new StringDecoder('utf8');
+function assertClosedRecord(
+  value: unknown,
+  keys: readonly string[],
+  label: string,
+): Record<PropertyKey, unknown> {
+  if (!isJsonObject(value) || Array.isArray(value)) throw new Error(`${label} must be an object`);
+  const actual = Object.keys(value).sort();
+  const expected = [...keys].sort();
+  if (actual.length !== expected.length || actual.some((key, index) => key !== expected[index])) {
+    throw new Error(`${label} keys mismatch: expected ${expected.join(', ')}`);
+  }
+  return value;
+}
+
+function requireNonBlankString(
+  record: Record<PropertyKey, unknown>,
+  key: string,
+  label: string,
+): string {
+  const value = record[key];
+  if (typeof value !== 'string' || value.trim().length === 0)
+    throw new Error(`${label}.${key} must be a non-blank string`);
+  return value;
+}
+
+function requireSha256(record: Record<PropertyKey, unknown>, key: string, label: string): string {
+  const value = record[key];
+  if (typeof value !== 'string' || !SHA256_HEX_PATTERN.test(value))
+    throw new Error(`${label}.${key} must be a lowercase SHA-256 hex digest`);
+  return value;
+}
+
+function requireUsageInteger(
+  record: Record<PropertyKey, unknown>,
+  key: string,
+  label: string,
+): number {
+  const value = record[key];
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0)
+    throw new Error(`${label}.${key} must be a non-negative safe integer`);
+  return value;
+}
+
+function parseCompactUsage(value: unknown): FusionUsage {
+  if (!isJsonObject(value) || Array.isArray(value))
+    throw new Error('fusion child usage must be an object');
+  const allowed = new Set(['input', 'output', 'cacheRead', 'cacheWrite', 'totalTokens', 'costTotal']);
+  for (const key of Object.keys(value)) {
+    if (!allowed.has(key)) throw new Error(`fusion child usage contains unknown key ${key}`);
+  }
+  for (const key of ['input', 'output', 'cacheRead', 'cacheWrite', 'totalTokens']) {
+    if (!Object.prototype.hasOwnProperty.call(value, key))
+      throw new Error(`fusion child usage is missing key ${key}`);
+  }
+  const record = value;
+  const usage: FusionUsage = {
+    input: requireUsageInteger(record, 'input', 'fusion child usage'),
+    output: requireUsageInteger(record, 'output', 'fusion child usage'),
+    cacheRead: requireUsageInteger(record, 'cacheRead', 'fusion child usage'),
+    cacheWrite: requireUsageInteger(record, 'cacheWrite', 'fusion child usage'),
+    totalTokens: requireUsageInteger(record, 'totalTokens', 'fusion child usage'),
+  };
+  const costTotal = record['costTotal'];
+  if (costTotal !== undefined) {
+    if (typeof costTotal !== 'number' || !Number.isFinite(costTotal) || costTotal < 0)
+      throw new Error('fusion child usage.costTotal must be a non-negative finite number');
+    usage.costTotal = costTotal;
+  }
+  return usage;
+}
+
+function parseChildResultMetadata(value: unknown): FusionChildResultMetadata {
+  const record = assertClosedRecord(
+    value,
+    ['schema_version', 'provider', 'model', 'stop_reason', 'text_blocks', 'text_sha256', 'usage'],
+    'fusion child result',
+  );
+  if (record['schema_version'] !== FUSION_CHILD_RESULT_SCHEMA_VERSION)
+    throw new Error('fusion child result schema_version mismatch');
+  const textBlocksValue = record['text_blocks'];
+  if (!Array.isArray(textBlocksValue))
+    throw new Error('fusion child result.text_blocks must be an array');
+  const textBlocks = textBlocksValue.map((value, index) => {
+    const label = `fusion child result.text_blocks[${String(index)}]`;
+    const block = assertClosedRecord(value, ['utf8_bytes', 'sha256'], label);
+    return {
+      utf8_bytes: requireUsageInteger(block, 'utf8_bytes', label),
+      sha256: requireSha256(block, 'sha256', label),
+    };
+  });
+  const usage = parseCompactUsage(record['usage']);
+  return {
+    schema_version: FUSION_CHILD_RESULT_SCHEMA_VERSION,
+    provider: requireNonBlankString(record, 'provider', 'fusion child result'),
+    model: requireNonBlankString(record, 'model', 'fusion child result'),
+    stop_reason: requireNonBlankString(record, 'stop_reason', 'fusion child result'),
+    text_blocks: textBlocks,
+    text_sha256: requireSha256(record, 'text_sha256', 'fusion child result'),
+    usage,
+  };
+}
+
+export function parseFusionChildStderr(stderr: Buffer): ParsedFusionChildStderr {
+  const records: FusionChildResultMetadata[] = [];
+  const diagnostics: Buffer[] = [];
+  let cursor = 0;
+  for (;;) {
+    const frameStart = stderr.indexOf(FUSION_CHILD_RESULT_PREFIX_BYTES, cursor);
+    if (frameStart < 0) {
+      if (cursor < stderr.length) diagnostics.push(stderr.subarray(cursor));
+      break;
+    }
+    if (frameStart > cursor) diagnostics.push(stderr.subarray(cursor, frameStart));
+    const payloadStart = frameStart + FUSION_CHILD_RESULT_PREFIX_BYTES.length;
+    const newline = stderr.indexOf(10, payloadStart);
+    if (newline < 0) throw new Error('fusion child metadata frame is not newline-terminated');
+    const payloadBytes = stderr.subarray(payloadStart, newline);
+    const payloadText = payloadBytes.toString('utf8');
+    if (!Buffer.from(payloadText, 'utf8').equals(payloadBytes))
+      throw new Error('fusion child metadata frame is not valid UTF-8');
+    let parsed: unknown;
+    try {
+      parsed = parseJsonText(payloadText);
+    } catch (error) {
+      throw new Error(
+        `fusion child metadata frame is invalid JSON: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+    records.push(parseChildResultMetadata(parsed));
+    cursor = newline + 1;
+  }
+  const events = Buffer.from(
+    records.length === 0 ? '' : `${records.map((record) => JSON.stringify(record)).join('\n')}\n`,
+    'utf8',
+  );
+  return { records, events, diagnostics: Buffer.concat(diagnostics) };
+}
+
+function sha256Buffer(bytes: Buffer): string {
+  return createHash('sha256').update(bytes).digest('hex');
+}
+
+function reconstructFinalText(response: Buffer, record: FusionChildResultMetadata): string {
+  const blocks: Buffer[] = [];
+  let cursor = 0;
+  for (const [index, block] of record.text_blocks.entries()) {
+    const end = cursor + block.utf8_bytes;
+    if (end > response.length)
+      throw new Error(`Pi final text block ${String(index)} is shorter than its metadata length`);
+    const bytes = response.subarray(cursor, end);
+    if (sha256Buffer(bytes) !== block.sha256)
+      throw new Error(`Pi final text block ${String(index)} hash mismatch`);
+    blocks.push(bytes);
+    if (response.at(end) !== 10)
+      throw new Error(`Pi final text block ${String(index)} lacks its print-mode newline`);
+    cursor = end + 1;
+  }
+  if (cursor !== response.length)
+    throw new Error('Pi final text stdout contains bytes outside declared text blocks');
+  const joined = Buffer.concat(blocks);
+  if (sha256Buffer(joined) !== record.text_sha256)
+    throw new Error('Pi final text aggregate hash mismatch');
+  const text = joined.toString('utf8');
+  if (!Buffer.from(text, 'utf8').equals(joined)) throw new Error('Pi final text is not valid UTF-8');
+  if (text.trim().length === 0) throw new Error('Pi assistant response is empty');
+  return text;
+}
+
+export class FusionPiCompactResultParser {
   private readonly expectedProvider: string;
   private readonly expectedModel: string;
-  private lineBuffer = '';
-  private bytesSeen = 0;
-  private lastByteWasLf = false;
-  private sessionCount = 0;
-  private sessionId: string | undefined;
-  private sessionCwd: string | undefined;
-  private assistantCount = 0;
-  private finalProvider: string | undefined;
-  private finalModel: string | undefined;
-  private finalStopReason: string | undefined;
-  private finalText = '';
-  private readonly usage: FusionUsage = {
-    input: 0,
-    output: 0,
-    cacheRead: 0,
-    cacheWrite: 0,
-    totalTokens: 0,
-  };
 
   constructor(expectedProvider: string, expectedModel: string) {
     this.expectedProvider = expectedProvider;
     this.expectedModel = expectedModel;
   }
 
-  push(chunk: Buffer): void {
-    if (chunk.length === 0) return;
-    this.bytesSeen += chunk.length;
-    this.lastByteWasLf = chunk.at(-1) === 10;
-    this.lineBuffer += this.decoder.write(chunk);
-    this.consumeLines();
-  }
-
-  snapshot(): ObservedChildSnapshot {
-    const observed: ObservedChildSnapshot = { usage: { ...this.usage } };
-    if (this.finalProvider !== undefined) observed.provider = this.finalProvider;
-    if (this.finalModel !== undefined) observed.model = this.finalModel;
-    if (this.finalProvider !== undefined && this.finalModel !== undefined) {
-      observed.qualifiedId = `${this.finalProvider}/${this.finalModel}`;
+  snapshot(stderr: Buffer): ObservedChildSnapshot {
+    try {
+      const parsed = parseFusionChildStderr(stderr);
+      return this.observedFromRecords(parsed.records);
+    } catch {
+      return { usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0 } };
     }
-    return observed;
   }
 
-  finish(): {
+  finish(response: Buffer, stderr: Buffer): {
     text: string;
     usage: FusionUsage;
     provider: string;
     model: string;
     qualifiedId: string;
+    events: Buffer;
+    diagnostics: Buffer;
   } {
-    const rest = this.decoder.end();
-    if (rest.length > 0) this.lineBuffer += rest;
-    if (this.bytesSeen > 0 && !this.lastByteWasLf)
-      throw new Error('Pi JSON event stream is not newline-terminated');
-    if (this.lineBuffer.length > 0)
-      throw new Error('Pi JSON event stream has an unterminated line');
-    if (this.sessionCount !== 1 || this.sessionId === undefined || this.sessionCwd === undefined) {
-      throw new Error('Pi JSON events must contain exactly one session header');
-    }
-    if (this.assistantCount < 1) throw new Error('Pi JSON events contain no assistant message');
-    if (this.finalProvider !== this.expectedProvider || this.finalModel !== this.expectedModel) {
-      throw new Error(
-        `Pi final model mismatch: expected ${this.expectedProvider}/${this.expectedModel}, observed ${this.finalProvider ?? 'missing'}/${this.finalModel ?? 'missing'}`,
-      );
-    }
-    if (this.finalStopReason !== 'stop') {
-      throw new Error(`Pi final stop reason is not stop: ${this.finalStopReason ?? 'missing'}`);
-    }
-    if (this.finalText.trim().length === 0) throw new Error('Pi assistant response is empty');
+    const parsed = parseFusionChildStderr(stderr);
+    const final = parsed.records.at(-1);
+    if (final === undefined) throw new Error('Pi child emitted no compact result metadata');
+    for (const record of parsed.records) this.assertModel(record);
+    if (final.stop_reason !== 'stop')
+      throw new Error(`Pi final stop reason is not stop: ${final.stop_reason}`);
+    const observed = this.observedFromRecords(parsed.records);
     return {
-      text: this.finalText,
-      usage: { ...this.usage },
-      provider: this.finalProvider,
-      model: this.finalModel,
-      qualifiedId: `${this.finalProvider}/${this.finalModel}`,
+      text: reconstructFinalText(response, final),
+      usage: observed.usage,
+      provider: final.provider,
+      model: final.model,
+      qualifiedId: `${final.provider}/${final.model}`,
+      events: parsed.events,
+      diagnostics: parsed.diagnostics,
     };
   }
 
-  private consumeLines(): void {
-    let newlineIndex = this.lineBuffer.indexOf('\n');
-    while (newlineIndex >= 0) {
-      const raw = this.lineBuffer.slice(0, newlineIndex);
-      this.lineBuffer = this.lineBuffer.slice(newlineIndex + 1);
-      this.consumeLine(raw.endsWith('\r') ? raw.slice(0, -1) : raw);
-      newlineIndex = this.lineBuffer.indexOf('\n');
-    }
-  }
-
-  private consumeLine(line: string): void {
-    if (line.length === 0) throw new Error('Pi JSON event line is blank');
-    let parsed: unknown;
-    try {
-      parsed = parseJsonText(line);
-    } catch (error) {
+  private assertModel(record: FusionChildResultMetadata): void {
+    if (record.provider !== this.expectedProvider || record.model !== this.expectedModel) {
       throw new Error(
-        `Pi JSON event line is invalid JSON: ${error instanceof Error ? error.message : String(error)}`,
+        `Pi assistant model mismatch: expected ${this.expectedProvider}/${this.expectedModel}, observed ${record.provider}/${record.model}`,
       );
     }
-    if (!isJsonObject(parsed) || Array.isArray(parsed))
-      throw new Error('Pi JSON event line is not an object');
-    const eventType = parsed['type'];
-    if (eventType === 'session') {
-      this.consumeSession(parsed);
-      return;
-    }
-    if (eventType === 'message_end') this.consumeMessageEnd(parsed);
   }
 
-  private consumeSession(event: Record<PropertyKey, unknown>): void {
-    this.sessionCount += 1;
-    const id = readString(event, 'id');
-    const cwd = readString(event, 'cwd');
-    if (id === undefined || id.trim().length === 0) throw new Error('Pi session event lacks id');
-    if (cwd === undefined || cwd.trim().length === 0) throw new Error('Pi session event lacks cwd');
-    this.sessionId = id;
-    this.sessionCwd = cwd;
-  }
-
-  private consumeMessageEnd(event: Record<PropertyKey, unknown>): void {
-    const message = readRecord(event, 'message');
-    if (message === undefined) throw new Error('Pi message_end event lacks message object');
-    if (message['role'] !== 'assistant') return;
-    const provider = readString(message, 'provider');
-    const model = readString(message, 'model');
-    if (
-      provider === undefined ||
-      provider.trim().length === 0 ||
-      model === undefined ||
-      model.trim().length === 0
-    ) {
-      throw new Error('Pi assistant message lacks provider/model');
-    }
-    if (provider !== this.expectedProvider || model !== this.expectedModel) {
-      throw new Error(
-        `Pi assistant model mismatch: expected ${this.expectedProvider}/${this.expectedModel}, observed ${provider}/${model}`,
-      );
-    }
-    this.assistantCount += 1;
-    this.finalProvider = provider;
-    this.finalModel = model;
-    const stopReason = readString(message, 'stopReason');
-    this.finalStopReason = stopReason;
-    this.finalText = textBlocks(message).join('');
-    addUsage(this.usage, normalizeUsage(message['usage']));
+  private observedFromRecords(records: readonly FusionChildResultMetadata[]): ObservedChildSnapshot {
+    const usage: FusionUsage = {
+      input: 0,
+      output: 0,
+      cacheRead: 0,
+      cacheWrite: 0,
+      totalTokens: 0,
+    };
+    for (const record of records) addUsage(usage, record.usage);
+    const final = records.at(-1);
+    if (final === undefined) return { usage };
+    return {
+      usage,
+      provider: final.provider,
+      model: final.model,
+      qualifiedId: `${final.provider}/${final.model}`,
+    };
   }
 }
 
@@ -591,8 +678,12 @@ export async function runPiChild(options: RunPiChildOptions): Promise<FusionChil
   const timeoutMs = options.timeoutMs ?? FUSION_CHILD_TIMEOUT_MS;
   const killGraceMs = options.killGraceMs ?? FUSION_CHILD_KILL_GRACE_MS;
   const sigkillWaitMs = options.sigkillWaitMs ?? FUSION_CHILD_SIGKILL_WAIT_MS;
-  const argv = buildFusionPiChildArgv(options.model, options.systemPrompt);
-  const parser = new FusionPiJsonEventParser(options.model.provider, options.model.model);
+  const argv = buildFusionPiChildArgv(
+    options.model,
+    options.systemPrompt,
+    options.childExtensionPath ?? resolveFusionChildExtensionPath(),
+  );
+  const parser = new FusionPiCompactResultParser(options.model.provider, options.model.model);
   const stdoutChunks: Buffer[] = [];
   const stderrChunks: Buffer[] = [];
   let stdoutBytes = 0;
@@ -648,29 +739,9 @@ export async function runPiChild(options: RunPiChildOptions): Promise<FusionChil
     const chunk = Buffer.isBuffer(data) ? data : Buffer.from(data, 'utf8');
     const appended = appendCapped(stdoutChunks, stdoutBytes, chunk, stdoutLimit);
     stdoutBytes = appended.bytes;
-    if (state.primaryError === undefined && appended.accepted.length > 0) {
-      try {
-        parser.push(appended.accepted);
-      } catch (error) {
-        state.primaryError = childError(
-          `Pi child JSON event stream invalid: ${error instanceof Error ? error.message : String(error)}`,
-          'child_event_invalid',
-          options,
-        );
-        terminateChild(
-          child,
-          state,
-          platform,
-          killProcess,
-          killGraceMs,
-          sigkillWaitMs,
-          settleClose,
-        );
-      }
-    }
     if (appended.exceeded && state.primaryError === undefined) {
       state.primaryError = childError(
-        `Pi child stdout exceeded ${String(stdoutLimit)} bytes`,
+        `Pi child final response exceeded ${String(stdoutLimit)} bytes`,
         'child_output_cap',
         options,
       );
@@ -743,15 +814,26 @@ export async function runPiChild(options: RunPiChildOptions): Promise<FusionChil
     }
 
     const close = await closePromise;
-    const stdout = Buffer.concat(stdoutChunks);
-    const stderr = Buffer.concat(stderrChunks);
-    const observed = parser.snapshot();
+    const response = Buffer.concat(stdoutChunks);
+    const rawStderr = Buffer.concat(stderrChunks);
+    const observed = parser.snapshot(rawStderr);
+    let compactEvents: Buffer = Buffer.alloc(0);
+    let diagnostics: Buffer = rawStderr;
+    try {
+      const decoded = parseFusionChildStderr(rawStderr);
+      compactEvents = decoded.events;
+      diagnostics = decoded.diagnostics;
+    } catch {
+      // A primary process/cap error remains authoritative; malformed metadata is
+      // surfaced below when the child otherwise exits successfully.
+    }
     const primary = state.primaryError;
     if (primary !== undefined)
       throw new FusionChildRunError(
         withCleanupErrors(primary, state.cleanupErrors),
-        stdout,
-        stderr,
+        compactEvents,
+        response,
+        diagnostics,
         close,
         observed,
       );
@@ -765,27 +847,29 @@ export async function runPiChild(options: RunPiChildOptions): Promise<FusionChil
           ),
           state.cleanupErrors,
         ),
-        stdout,
-        stderr,
+        compactEvents,
+        response,
+        diagnostics,
         close,
         observed,
       );
     }
-    let parsed: ReturnType<FusionPiJsonEventParser['finish']>;
+    let parsed: ReturnType<FusionPiCompactResultParser['finish']>;
     try {
-      parsed = parser.finish();
+      parsed = parser.finish(response, rawStderr);
     } catch (error) {
       throw new FusionChildRunError(
         withCleanupErrors(
           childError(
-            `Pi child JSON event stream invalid: ${error instanceof Error ? error.message : String(error)}`,
+            `Pi child compact result invalid: ${error instanceof Error ? error.message : String(error)}`,
             'child_event_invalid',
             options,
           ),
           state.cleanupErrors,
         ),
-        stdout,
-        stderr,
+        compactEvents,
+        response,
+        diagnostics,
         close,
         observed,
       );
@@ -798,8 +882,8 @@ export async function runPiChild(options: RunPiChildOptions): Promise<FusionChil
       qualifiedId: parsed.qualifiedId,
       text: parsed.text,
       usage: parsed.usage,
-      stdout,
-      stderr,
+      events: parsed.events,
+      stderr: parsed.diagnostics,
       exitCode: close.code,
       signal: close.signal,
     };

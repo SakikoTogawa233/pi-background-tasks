@@ -33,7 +33,7 @@ pi install -l npm:pi-background-tasks@0.7.0
 - `/tasks` or `/bg-tasks` — fallback command to open the task manager UI.
 - `/bg-clear` — clear finished background-task footer notices.
 - `/bg-update` — print update instructions when a newer published version exists (instruct-only; never self-installs).
-- `/fusion <prompt>` — run three candidate child Pi JSON-mode calls, one blind evaluator, and one merger, then append the merged answer directly as a visible `fusion-result` custom message without asking the parent model to rewrite it. Running `/fusion` without arguments opens a multiline editor in UI-capable modes; cancelling the editor does not spawn children.
+- `/fusion <prompt>` — run three candidate child Pi final-text calls, one blind evaluator, and one merger, then append the merged answer directly as a visible `fusion-result` custom message without asking the parent model to rewrite it. Running `/fusion` without arguments opens a multiline editor in UI-capable modes; cancelling the editor does not spawn children.
 - `/fusion-models` — TUI-only five-slot global model selector (`Candidate 1`, `Candidate 2`, `Candidate 3`, `Evaluator`, `Merger`). It supports duplicate selections, `$current` defaults, slash-containing model ids, atomic saves to `fusion-models.json`, and rejects non-TUI modes immediately.
 
 ## Footer dock UX
@@ -104,7 +104,9 @@ The lookup runs at most once per session on `session_start`, is time-boxed, and 
 
 ## Fusion workflow
 
-Fusion runs direct child `pi --mode json` processes only; it never calls `pi-ai` completion APIs. Each child is launched with `--no-session`, `--no-tools`, `--no-extensions`, `--no-skills`, `--no-prompt-templates`, `--no-themes`, and `--no-context-files`, plus the resolved provider/model/thinking level. The prompt travels over stdin, not a shell or positional argument.
+Fusion runs direct child `pi --mode text` processes only; it never calls `pi-ai` completion APIs. Each child is launched with `--no-session`, `--no-tools`, `--no-extensions`, `--no-skills`, `--no-prompt-templates`, `--no-themes`, and `--no-context-files`, plus the resolved provider/model/thinking level and the package-owned private `extensions/fusion-child.ts` metadata extension. The prompt travels over stdin, not a shell or positional argument.
+
+Pi text mode writes the final full answer exactly once instead of serializing cumulative reasoning/partial-message events on every token delta. The private child extension emits one compact, reasoning-free metadata record per finalized assistant message for provider/model, stop reason, usage, and response byte/hash validation. Fusion persists those compact records in `*.events.jsonl`; the complete answer remains in the stage response artifact. The 32 MiB child stdout cap therefore applies to one final response, not amplified JSON telemetry. Failed attempts keep the authoritative response artifact empty and, when any stdout was captured, persist it separately as an explicitly incomplete `*.response.partial.*` artifact.
 
 Model configuration is global under the Pi agent directory:
 
@@ -174,7 +176,7 @@ The attestation sidecar uses `schema_version: "phase2.pi_task_attestation.v1"` a
 ## Safety model
 
 - Commands are spawned and tracked with `child_process.spawn`; the package does not rely on shell `&`.
-- Fusion inference is isolated to direct child `pi --mode json` invocations with tools/extensions/skills/session/context files disabled; no direct completion API, API-key argument, or model fallback is used.
+- Fusion inference is isolated to direct child `pi --mode text` invocations with tools/skills/session/context files disabled and only the package-owned compact metadata extension explicitly loaded; no direct completion API, API-key argument, or model fallback is used.
 - Attested Pi tasks are a local, unsigned, same-user-writable attestation path for downstream gates. They bind source bytes and observed Pi/ModelRegistry facts; they are not cryptographic proof against a malicious local user, compromised Pi binary, or compromised provider.
 - stdout/stderr are captured to task output files.
 - Model-visible logs are bounded and point to full output files.

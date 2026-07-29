@@ -67,7 +67,8 @@ export interface RecordFusionFailedAttemptInput {
   slot?: 1 | 2 | 3;
   attempt: number;
   prompt: string;
-  stdout: Buffer;
+  events: Buffer;
+  partialResponse: Buffer;
   stderr: Buffer;
   error: string;
   status: 'failed' | 'cancelled';
@@ -353,7 +354,7 @@ export class FusionArtifactStore {
   async recordChildAttempt(input: RecordFusionChildAttemptInput): Promise<void> {
     const prefix = attemptPrefix(input.result.stage, input.result.slot, input.result.attempt);
     const promptRef = await this.writeArtifact(`${prefix}.prompt.txt`, input.prompt);
-    const eventsRef = await this.writeArtifact(`${prefix}.events.jsonl`, input.result.stdout);
+    const eventsRef = await this.writeArtifact(`${prefix}.events.jsonl`, input.result.events);
     const stderrRef = await this.writeArtifact(`${prefix}.stderr.txt`, input.result.stderr);
     const responseRef = await this.writeArtifact(
       responseName(prefix, input.responseKind),
@@ -381,9 +382,16 @@ export class FusionArtifactStore {
   async recordFailedAttempt(input: RecordFusionFailedAttemptInput): Promise<void> {
     const prefix = attemptPrefix(input.stage, input.slot, input.attempt);
     const promptRef = await this.writeArtifact(`${prefix}.prompt.txt`, input.prompt);
-    const eventsRef = await this.writeArtifact(`${prefix}.events.jsonl`, input.stdout);
+    const eventsRef = await this.writeArtifact(`${prefix}.events.jsonl`, input.events);
     const stderrRef = await this.writeArtifact(`${prefix}.stderr.txt`, input.stderr);
     const responseRef = await this.writeArtifact(responseName(prefix, input.responseKind), '');
+    const partialResponseRef =
+      input.partialResponse.length === 0
+        ? undefined
+        : await this.writeArtifact(
+            `${prefix}.response.partial.${input.responseKind}`,
+            input.partialResponse,
+          );
     await this.updateManifest((manifest) => {
       const record: FusionAttemptArtifactRecord = {
         stage: input.stage,
@@ -395,6 +403,8 @@ export class FusionArtifactStore {
         response_path: responseRef.path,
         error: input.error,
       };
+      if (partialResponseRef !== undefined)
+        record.partial_response_path = partialResponseRef.path;
       if (input.provider !== undefined) record.provider = input.provider;
       if (input.model !== undefined) record.model = input.model;
       if (input.qualifiedId !== undefined) record.qualifiedId = input.qualifiedId;
