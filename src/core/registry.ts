@@ -1538,6 +1538,7 @@ export class BackgroundTaskRegistry {
       error,
       `  <output-file>${escapeXml(task.outputPath)}</output-file>`,
       `  <summary>${escapeXml(`Background task ${JSON.stringify(taskName)} ${task.status}`)}</summary>`,
+      '  <guidance>Terminal state and output metadata are durable. Do not call bg_status to reconfirm; use bg_logs only if output is needed.</guidance>',
       '</background-task-notification>',
     ]
       .filter(Boolean)

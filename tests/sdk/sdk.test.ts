@@ -556,6 +556,117 @@ void describe('sdk', () => {
     }
   });
 
+  void it('BUG-181 exposes an event-driven prompt contract and truthful launch receipts', async () => {
+    const { session } = await harness();
+    try {
+      const ctx = session.extensionRunner.createContext();
+      const systemPrompt = ctx.getSystemPrompt();
+      assert.match(systemPrompt, /Do not call sleep, bg_status, or bg_logs merely to wait/);
+      assert.match(systemPrompt, /automatically starts a follow-up agent turn/);
+      assert.match(systemPrompt, /A running result is not an instruction to poll again/);
+      assert.match(systemPrompt, /Do not repeatedly call bg_logs to wait for completion/);
+      assert.match(systemPrompt, /Treat <background-task-notification> as durable terminal truth/);
+      assert.doesNotMatch(
+        systemPrompt,
+        /After bg_run, use bg_status and bg_logs to inspect progress/,
+      );
+
+      const bgRun = session.getToolDefinition('bg_run');
+      const bgStatus = session.getToolDefinition('bg_status');
+      const bgLogs = session.getToolDefinition('bg_logs');
+      assert.ok(bgRun && bgStatus && bgLogs, 'background tools should be registered');
+      assert.match(bgRun.description, /do not sleep or poll merely to wait/);
+      assert.match(bgStatus.description, /not a waiting primitive/);
+      assert.match(bgLogs.description, /not a waiting primitive/);
+
+      const longCommand = `${shellQuote(process.execPath)} -e ${shellQuote(
+        'setTimeout(() => {}, 10000)',
+      )}`;
+      const cases = [
+        {
+          name: 'Default Delivery',
+          notifyOnCompletion: undefined,
+          triggerOnCompletion: undefined,
+          expectedNotify: true,
+          expectedTrigger: true,
+          expected: [
+            'Terminal notification: enabled.',
+            'Automatic follow-up turn: enabled.',
+            'Next action: do not poll or sleep',
+          ],
+        },
+        {
+          name: 'Notification Only',
+          notifyOnCompletion: true,
+          triggerOnCompletion: false,
+          expectedNotify: true,
+          expectedTrigger: false,
+          expected: [
+            'Terminal notification: enabled.',
+            'Automatic follow-up turn: disabled.',
+            'will not start an agent turn',
+          ],
+        },
+        {
+          name: 'Disabled Requested Wake',
+          notifyOnCompletion: false,
+          triggerOnCompletion: true,
+          expectedNotify: false,
+          expectedTrigger: true,
+          expected: [
+            'Terminal notification: disabled.',
+            'Automatic follow-up turn: disabled because terminal notifications are disabled.',
+            'triggerOnCompletion has no effect',
+          ],
+        },
+        {
+          name: 'Manual Delivery',
+          notifyOnCompletion: false,
+          triggerOnCompletion: false,
+          expectedNotify: false,
+          expectedTrigger: false,
+          expected: [
+            'Terminal notification: disabled.',
+            'Automatic follow-up turn: disabled.',
+            'deliberate manual monitoring',
+          ],
+        },
+      ] as const;
+
+      for (const testCase of cases) {
+        const params = {
+          isAgent: false,
+          name: testCase.name,
+          command: longCommand,
+          ...(testCase.notifyOnCompletion === undefined
+            ? {}
+            : { notifyOnCompletion: testCase.notifyOnCompletion }),
+          ...(testCase.triggerOnCompletion === undefined
+            ? {}
+            : { triggerOnCompletion: testCase.triggerOnCompletion }),
+        };
+        const result = await exec(session, 'bg_run', params);
+        const task = taskFromResult(result);
+        assert.equal(task.notifyOnCompletion, testCase.expectedNotify);
+        assert.equal(task.triggerOnCompletion, testCase.expectedTrigger);
+        for (const expected of testCase.expected) {
+          assert.ok(
+            resultText(result).includes(expected),
+            `${testCase.name} receipt should include ${JSON.stringify(expected)}`,
+          );
+        }
+        assert.equal(
+          Reflect.get(result, 'terminate'),
+          undefined,
+          'bg_run must remain non-terminating for workflows that continue useful work',
+        );
+      }
+    } finally {
+      await session.extensionRunner.emit({ type: 'session_shutdown', reason: 'quit' });
+      session.dispose();
+    }
+  });
+
   void it('serves real extension EventBus requests and terminal events through the shared registry', async () => {
     const eventBus = createEventBus();
     const terminals: BgTaskSnapshot[] = [];

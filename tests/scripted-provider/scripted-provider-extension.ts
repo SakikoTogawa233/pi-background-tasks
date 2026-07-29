@@ -27,6 +27,7 @@ const DEFAULT_USAGE = {
 type Scenario =
   | 'bg-run-follow-up'
   | 'notify-false'
+  | 'wake-false'
   | 'failed-follow-up'
   | 'display-only-bg'
   | 'json-tool-telemetry'
@@ -50,6 +51,7 @@ function parseScenario(value: string | undefined): Scenario {
   if (
     value === 'bg-run-follow-up' ||
     value === 'notify-false' ||
+    value === 'wake-false' ||
     value === 'failed-follow-up' ||
     value === 'display-only-bg' ||
     value === 'json-tool-telemetry' ||
@@ -93,23 +95,66 @@ function shellNode(script: string): string {
   return `node -e ${JSON.stringify(script)}`;
 }
 
+function messageText(message: Message): string {
+  return typeof message.content === 'string'
+    ? message.content
+    : Array.isArray(message.content)
+      ? message.content.map((part) => ('text' in part ? part.text : part.type)).join(' ')
+      : '';
+}
+
 function summarizeMessage(message: Message): string {
-  const content =
-    typeof message.content === 'string'
-      ? message.content
-      : Array.isArray(message.content)
-        ? message.content.map((part) => ('text' in part ? part.text : part.type)).join(' ')
-        : '';
   const customType =
     'customType' in message && typeof message.customType === 'string'
       ? message.customType
       : undefined;
   const toolName =
     'toolName' in message && typeof message.toolName === 'string' ? message.toolName : undefined;
-  return [message.role, customType, toolName, content].filter(Boolean).join(':').slice(0, 500);
+  return [message.role, customType, toolName, messageText(message)]
+    .filter(Boolean)
+    .join(':')
+    .slice(0, 500);
 }
 
-function responseFor(scenario: Scenario, callCount: number): ScriptedAssistantMessage {
+interface EventDrivenContractCheck {
+  readonly systemPrompt: boolean;
+  readonly toolDescriptions: boolean;
+  readonly launchReceipt: boolean;
+}
+
+function inspectEventDrivenContract(context: Context): EventDrivenContractCheck {
+  const systemPrompt = context.systemPrompt ?? '';
+  const toolDescription = (name: string): string =>
+    context.tools?.find((tool) => tool.name === name)?.description ?? '';
+  const bgRunResult = context.messages
+    .filter(
+      (message) =>
+        message.role === 'toolResult' && 'toolName' in message && message.toolName === 'bg_run',
+    )
+    .map(messageText)
+    .at(-1);
+  return {
+    systemPrompt:
+      systemPrompt.includes('Do not call sleep, bg_status, or bg_logs merely to wait') &&
+      systemPrompt.includes('automatically starts a follow-up agent turn') &&
+      systemPrompt.includes('A running result is not an instruction to poll again') &&
+      !systemPrompt.includes('After bg_run, use bg_status and bg_logs to inspect progress'),
+    toolDescriptions:
+      toolDescription('bg_run').includes('do not sleep or poll merely to wait') &&
+      toolDescription('bg_status').includes('not a waiting primitive') &&
+      toolDescription('bg_logs').includes('not a waiting primitive'),
+    launchReceipt:
+      bgRunResult?.includes('Terminal notification: enabled.') === true &&
+      bgRunResult.includes('Automatic follow-up turn: enabled.') &&
+      bgRunResult.includes('Next action: do not poll or sleep'),
+  };
+}
+
+function responseFor(
+  scenario: Scenario,
+  callCount: number,
+  contract: EventDrivenContractCheck,
+): ScriptedAssistantMessage {
   if (scenario === 'fusion-brainstorm') {
     if (callCount === 1) {
       return assistant(
@@ -159,7 +204,15 @@ function responseFor(scenario: Scenario, callCount: number): ScriptedAssistantMe
         'toolUse',
       );
     }
-    if (callCount === 2) return assistant([text('Initial bg_run tool turn finished.')], 'stop');
+    if (callCount === 2) {
+      if (!contract.systemPrompt || !contract.toolDescriptions || !contract.launchReceipt) {
+        return assistant([toolCall('bg_status', {}, 'call-bug-181-regressive-poll')], 'toolUse');
+      }
+      return assistant(
+        [text('Initial bg_run tool turn yielded without polling for the terminal event.')],
+        'stop',
+      );
+    }
     return assistant(
       [text('Follow-up turn observed background-task-notification for Scripted Wakeup.')],
       'stop',
@@ -186,6 +239,28 @@ function responseFor(scenario: Scenario, callCount: number): ScriptedAssistantMe
       );
     }
     return assistant([text('No-notify initial turn finished.')], 'stop');
+  }
+
+  if (scenario === 'wake-false') {
+    if (callCount === 1) {
+      return assistant(
+        [
+          toolCall(
+            'bg_run',
+            {
+              name: 'No Wake Scripted',
+              command: shellNode("setTimeout(() => { console.log('notify only done'); }, 80);"),
+              isAgent: false,
+              notifyOnCompletion: true,
+              triggerOnCompletion: false,
+            },
+            'call-bg-run-no-wake',
+          ),
+        ],
+        'toolUse',
+      );
+    }
+    return assistant([text('Notification-only initial turn finished.')], 'stop');
   }
 
   if (scenario === 'failed-follow-up') {
@@ -293,10 +368,12 @@ export default function scriptedProviderExtension(pi: ExtensionAPI): void {
     ],
     streamSimple(_model: Model<Api>, context: Context): AssistantMessageEventStream {
       callCount += 1;
+      const eventDrivenContract = inspectEventDrivenContract(context);
       record({
         type: 'provider_call',
         scenario,
         callCount,
+        eventDrivenContract,
         roles: context.messages.map((message) => message.role),
         customTypes: context.messages.flatMap((message) =>
           'customType' in message && typeof message.customType === 'string'
@@ -308,7 +385,7 @@ export default function scriptedProviderExtension(pi: ExtensionAPI): void {
       });
       const stream = createAssistantMessageEventStream();
       queueMicrotask(() => {
-        pushMessage(stream, responseFor(scenario, callCount));
+        pushMessage(stream, responseFor(scenario, callCount, eventDrivenContract));
       });
       return stream;
     },

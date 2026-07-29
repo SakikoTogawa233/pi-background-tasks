@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os';
 import {
   boundedRead,
   compareSemver,
+  deriveCompletionDeliveryGuidance,
   deriveTaskNameFromCommand,
   formatAgentActivityLine,
   parseAgentActivity,
@@ -86,6 +87,38 @@ void describe('core', () => {
       'echo one two three four',
     );
     assert.equal(taskDisplayName({ id: 'b123' }), 'b123');
+  });
+
+  void it('derives truthful completion delivery for every notification and wake combination', () => {
+    assert.deepEqual(deriveCompletionDeliveryGuidance(true, true), {
+      mode: 'notification-and-wake',
+      notificationEnabled: true,
+      automaticWakeEnabled: true,
+      text: [
+        'Terminal notification: enabled.',
+        'Automatic follow-up turn: enabled.',
+        'Next action: do not poll or sleep merely to wait; continue only independent useful work, otherwise end this turn and wait for <background-task-notification>.',
+      ].join('\n'),
+    });
+    assert.deepEqual(deriveCompletionDeliveryGuidance(true, false), {
+      mode: 'notification-only',
+      notificationEnabled: true,
+      automaticWakeEnabled: false,
+      text: [
+        'Terminal notification: enabled.',
+        'Automatic follow-up turn: disabled. The terminal notification will be delivered, but it will not start an agent turn.',
+        'Next action: automatic wake-up was explicitly disabled; use bg_status/bg_logs only when deliberate monitoring is required, without tight polling.',
+      ].join('\n'),
+    });
+    const notifyDisabledWithRequestedWake = deriveCompletionDeliveryGuidance(false, true);
+    assert.equal(notifyDisabledWithRequestedWake.mode, 'manual-monitoring');
+    assert.equal(notifyDisabledWithRequestedWake.notificationEnabled, false);
+    assert.equal(notifyDisabledWithRequestedWake.automaticWakeEnabled, false);
+    assert.match(notifyDisabledWithRequestedWake.text, /triggerOnCompletion has no effect/);
+    const manual = deriveCompletionDeliveryGuidance(false, false);
+    assert.equal(manual.mode, 'manual-monitoring');
+    assert.match(manual.text, /deliberate manual monitoring/);
+    assert.doesNotMatch(manual.text, /triggerOnCompletion has no effect/);
   });
 
   void it('formats durations, paths, snapshots, and byte limits', () => {

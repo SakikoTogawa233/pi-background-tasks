@@ -520,6 +520,14 @@ void describe('BackgroundTaskRegistry', () => {
       assert.equal(task.status, 'failed');
       assert.match(task.error ?? '', /spawn exploded/);
       assert.equal(h.notifications.length, 1);
+      // BUG-181: the terminal event itself is authoritative; agents must not poll to reconfirm it.
+      const notification = h.notifications[0];
+      assert.ok(notification, 'terminal notification should be captured');
+      assert.match(
+        notification.message.content,
+        /<guidance>Terminal state and output metadata are durable\. Do not call bg_status to reconfirm; use bg_logs only if output is needed\.<\/guidance>/,
+      );
+      assert.deepEqual(notification.options, { deliverAs: 'followUp', triggerTurn: true });
 
       const capped = await h.registry.startTask(h.ctx, 'node noisy.js', {
         name: 'Output Race',

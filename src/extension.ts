@@ -12,6 +12,7 @@ import { Type, type Static } from 'typebox';
 import {
   DEFAULT_LOG_BYTES,
   MAX_LOG_BYTES,
+  deriveCompletionDeliveryGuidance,
   deriveTaskNameFromCommand,
   formatSnapshotList,
   formatUpdateSegment,
@@ -125,12 +126,15 @@ const BgRunParams = Type.Object({
     Type.Number({ description: 'Optional timeout; task is failed and killed when exceeded' }),
   ),
   notifyOnCompletion: Type.Optional(
-    Type.Boolean({ description: 'Whether to show a completion notification. Default: true.' }),
+    Type.Boolean({
+      description:
+        'Whether to deliver the durable terminal notification. Default: true; disable only when deliberately taking over completion monitoring.',
+    }),
   ),
   triggerOnCompletion: Type.Optional(
     Type.Boolean({
       description:
-        'Whether completion should trigger a follow-up agent turn. Default: true for bg_run.',
+        'Whether that notification should automatically trigger a follow-up agent turn. Default: true for bg_run; requires notifyOnCompletion.',
     }),
   ),
 });
@@ -657,15 +661,18 @@ export default function backgroundTasksExtension(pi: ExtensionAPI): void {
   pi.registerTool<typeof BgRunParams, BgRunDetails>({
     name: 'bg_run',
     label: 'Background Run',
-    description: `Start a named long-running shell command in the background and return immediately with a task ID and output path. Output is written to .pi/tasks and model-visible logs are bounded to ${formatSize(MAX_LOG_BYTES)}.`,
+    description: `Start a named long-running shell command in the background and return immediately with a task ID and output path. By default, completed, failed, or killed terminal state is delivered automatically as <background-task-notification> and starts a follow-up agent turn; do not sleep or poll merely to wait. Output is written to .pi/tasks and model-visible logs are bounded to ${formatSize(MAX_LOG_BYTES)}.`,
     promptSnippet:
-      'Start named long-running shell commands in the background and return a task ID plus output file path',
+      'Start a named long-running shell command; default terminal notification wakes a follow-up turn, so yield instead of polling',
     promptGuidelines: [
-      'Use bg_run instead of bash for commands expected to run for a long time, such as test suites, dev servers, watchers, builds, or sleeps.',
+      'Use bg_run instead of bash for commands expected to run for a long time, such as test suites, dev servers, watchers, or builds.',
       'Always set isAgent: true only when the background task launches an LLM/agent process; set isAgent: false for scripts, tests, dev servers, sleeps, and ordinary shell commands.',
       'When using bg_run, always set name to a concise 2-6 word human-readable label for the footer task dock; do not use the raw command as the name unless it is already short and meaningful.',
-      'After bg_run, use bg_status and bg_logs to inspect progress; do not assume the background task completed until status says completed, failed, or killed.',
-      'When a <background-task-notification> appears, react to it: inspect bg_status/bg_logs as needed, then report completion, failure, or next steps to the user.',
+      'bg_run returns immediately. With notifyOnCompletion:true and triggerOnCompletion:true (both defaults), completed, failed, or killed terminal state is delivered as <background-task-notification> and automatically starts a follow-up agent turn.',
+      'After a default bg_run launch, continue only independent useful work that does not merely wait for the task; otherwise briefly acknowledge it if useful, then end the current turn. Do not call sleep, bg_status, or bg_logs merely to wait; the terminal notification will wake you.',
+      'Treat <background-task-notification> as durable terminal truth. Do not call bg_status to reconfirm it; call bg_logs only when the task output is needed.',
+      'Use bg_status/bg_logs only when the user explicitly requests an update, automatic notification or wake-up was deliberately disabled, there is concrete evidence the task is hung, or a terminal notification arrived and output details are needed.',
+      'Do not set notifyOnCompletion:false or triggerOnCompletion:false unless intentionally opting out of automatic completion handling.',
     ],
     parameters: BgRunParams,
     prepareArguments(args): BgRunParamsValue {
@@ -708,9 +715,13 @@ export default function backgroundTasksExtension(pi: ExtensionAPI): void {
       if (params.description !== undefined) taskOptions.description = params.description;
       if (params.timeoutSeconds !== undefined) taskOptions.timeoutSeconds = params.timeoutSeconds;
       const task = await startTask(ctx, params.command, taskOptions);
+      const completionDelivery = deriveCompletionDeliveryGuidance(
+        task.notifyOnCompletion,
+        task.triggerOnCompletion,
+      );
       return {
         content: textContent(
-          `Started background task ${taskDisplayName(task)} (${task.id})\nStatus: ${task.status}\nPID: ${String(task.pid ?? 'unknown')}\nOutput: ${task.outputPath}`,
+          `Started background task ${taskDisplayName(task)} (${task.id})\nStatus: ${task.status}\nPID: ${String(task.pid ?? 'unknown')}\nOutput: ${task.outputPath}\n${completionDelivery.text}`,
         ),
         details: { task: registry.snapshot(task) },
       };
@@ -800,10 +811,14 @@ export default function backgroundTasksExtension(pi: ExtensionAPI): void {
   pi.registerTool<typeof BgStatusParams, BgStatusDetails>({
     name: 'bg_status',
     label: 'Background Status',
-    description: 'Inspect one background task or list all running/recent background tasks.',
-    promptSnippet: 'Inspect status for one or all background tasks',
+    description:
+      'Inspect one background task or list all running/recent background tasks. This is a point-in-time inspection tool, not a waiting primitive.',
+    promptSnippet:
+      'Inspect point-in-time status for one or all background tasks; never poll it as a wait loop',
     promptGuidelines: [
-      'Use bg_status before bg_logs when you need to know whether a background task is still running or has finished.',
+      'Use bg_status for deliberate point-in-time inspection, not as a waiting primitive.',
+      'A running result is not an instruction to poll again. Do not repeatedly call bg_status while an automatic terminal notification is pending.',
+      'Use bg_status when the user explicitly requests an update, automatic completion handling was disabled, or concrete evidence suggests a task is hung; terminal notifications do not need reconfirmation.',
     ],
     parameters: BgStatusParams,
     execute(_toolCallId, params) {
@@ -827,10 +842,12 @@ export default function backgroundTasksExtension(pi: ExtensionAPI): void {
   pi.registerTool<typeof BgLogsParams, BgLogsDetails>({
     name: 'bg_logs',
     label: 'Background Logs',
-    description: `Read bounded output from a background task. Output is capped at ${formatSize(MAX_LOG_BYTES)} for model safety and points to the full output file when truncated.`,
-    promptSnippet: 'Read bounded output from a background task log',
+    description: `Read bounded output from a background task for deliberate inspection; this is not a waiting primitive. Output is capped at ${formatSize(MAX_LOG_BYTES)} for model safety and points to the full output file when truncated.`,
+    promptSnippet: 'Read bounded task output when needed; never tail it repeatedly as a wait loop',
     promptGuidelines: [
-      'Use bg_logs with a modest maxBytes value to inspect background task progress without flooding context.',
+      'Use bg_logs with a modest maxBytes value only when task output is needed, without flooding context.',
+      'Do not repeatedly call bg_logs to wait for completion while an automatic terminal notification is pending.',
+      'Use bg_status first only when a deliberate inspection requires the current task state; do not reconfirm a terminal notification.',
     ],
     parameters: BgLogsParams,
     async execute(_toolCallId, params) {

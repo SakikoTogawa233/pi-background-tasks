@@ -20,7 +20,12 @@ const backgroundExtensionPath = resolve('extensions/background-tasks.ts');
 const scriptedProviderPath = resolve('tests/scripted-provider/scripted-provider-extension.ts');
 const roots: string[] = [];
 
-type Scenario = 'bg-run-follow-up' | 'notify-false' | 'failed-follow-up' | 'display-only-bg';
+type Scenario =
+  | 'bg-run-follow-up'
+  | 'notify-false'
+  | 'wake-false'
+  | 'failed-follow-up'
+  | 'display-only-bg';
 
 async function harness(scenario: Scenario) {
   const root = await mkdtemp(join(tmpdir(), 'pi-bg-agent-loop-'));
@@ -92,9 +97,16 @@ interface CustomNotificationEntry {
   details: JsonObject;
 }
 
+interface EventDrivenContractCheck extends JsonObject {
+  systemPrompt: boolean;
+  toolDescriptions: boolean;
+  launchReceipt: boolean;
+}
+
 interface ProviderEvent extends JsonObject {
   callCount?: number;
   summaries?: string[];
+  eventDrivenContract?: EventDrivenContractCheck;
 }
 
 function restoreEnvValue(key: string, value: string | undefined): void {
@@ -113,11 +125,22 @@ function isStringArray(value: unknown): value is string[] {
   return Array.isArray(value) && value.every((entry) => typeof entry === 'string');
 }
 
+function isEventDrivenContractCheck(value: unknown): value is EventDrivenContractCheck {
+  return (
+    isJsonObject(value) &&
+    typeof value['systemPrompt'] === 'boolean' &&
+    typeof value['toolDescriptions'] === 'boolean' &&
+    typeof value['launchReceipt'] === 'boolean'
+  );
+}
+
 function isProviderEvent(value: unknown): value is ProviderEvent {
   return (
     isJsonObject(value) &&
     (value['callCount'] === undefined || typeof value['callCount'] === 'number') &&
-    (value['summaries'] === undefined || isStringArray(value['summaries']))
+    (value['summaries'] === undefined || isStringArray(value['summaries'])) &&
+    (value['eventDrivenContract'] === undefined ||
+      isEventDrivenContractCheck(value['eventDrivenContract']))
   );
 }
 
@@ -162,27 +185,34 @@ const ENTRY_ROLE_KEY = 'role';
 const ENTRY_CONTENT_KEY = 'content';
 const ENTRY_TEXT_KEY = 'text';
 
+function assistantContentParts(session: AgentSession): JsonObject[] {
+  return session.sessionManager.getEntries().flatMap((entry) => {
+    if (
+      !isJsonObject(entry) ||
+      entry[ENTRY_TYPE_KEY] !== 'message' ||
+      !isJsonObject(entry[ENTRY_MESSAGE_KEY]) ||
+      entry[ENTRY_MESSAGE_KEY][ENTRY_ROLE_KEY] !== 'assistant'
+    )
+      return [];
+    const content: unknown = entry[ENTRY_MESSAGE_KEY][ENTRY_CONTENT_KEY];
+    if (!Array.isArray(content)) return [];
+    const parts: readonly unknown[] = content;
+    return parts.filter(isJsonObject);
+  });
+}
+
 function assistantTexts(session: AgentSession): string[] {
-  return session.sessionManager
-    .getEntries()
-    .flatMap((entry) => {
-      if (
-        !isJsonObject(entry) ||
-        entry[ENTRY_TYPE_KEY] !== 'message' ||
-        !isJsonObject(entry[ENTRY_MESSAGE_KEY]) ||
-        entry[ENTRY_MESSAGE_KEY][ENTRY_ROLE_KEY] !== 'assistant'
-      )
-        return [];
-      const content = entry[ENTRY_MESSAGE_KEY][ENTRY_CONTENT_KEY];
-      return Array.isArray(content) ? content : [];
-    })
-    .flatMap((part) =>
-      isJsonObject(part) &&
-      part[ENTRY_TYPE_KEY] === 'text' &&
-      typeof part[ENTRY_TEXT_KEY] === 'string'
-        ? [part[ENTRY_TEXT_KEY]]
-        : [],
-    );
+  return assistantContentParts(session).flatMap((part) =>
+    part[ENTRY_TYPE_KEY] === 'text' && typeof part[ENTRY_TEXT_KEY] === 'string'
+      ? [part[ENTRY_TEXT_KEY]]
+      : [],
+  );
+}
+
+function assistantToolNames(session: AgentSession): string[] {
+  return assistantContentParts(session).flatMap((part) =>
+    part[ENTRY_TYPE_KEY] === 'toolCall' && typeof part['name'] === 'string' ? [part['name']] : [],
+  );
 }
 
 async function providerEvents(path: string): Promise<ProviderEvent[]> {
@@ -215,7 +245,7 @@ async function disposeHarness(h: Awaited<ReturnType<typeof harness>>) {
 
 void describe('scripted-provider completion follow-up behavior', { concurrency: false }, () => {
   void it(
-    'bg_run completion notifications trigger a real follow-up agent turn by default',
+    'BUG-181 bg_run yields without polling and its completion event triggers one real follow-up turn',
     { timeout: 15_000 },
     async () => {
       const h = await harness('bg-run-follow-up');
@@ -230,6 +260,18 @@ void describe('scripted-provider completion follow-up behavior', { concurrency: 
 
         const events = await providerEvents(h.eventsPath);
         assert.equal(events.length, 3);
+        const launchEvent = requiredAt(events, 0, 'launch provider event should be recorded');
+        const launchContract = launchEvent.eventDrivenContract;
+        assert.ok(launchContract, 'launch event should record the effective prompt contract');
+        assert.equal(launchContract.systemPrompt, true);
+        assert.equal(launchContract.toolDescriptions, true);
+        const postToolEvent = requiredAt(events, 1, 'post-tool provider event should be recorded');
+        assert.equal(postToolEvent.eventDrivenContract?.launchReceipt, true);
+        assert.deepEqual(
+          assistantToolNames(h.session),
+          ['bg_run'],
+          'ordinary event-driven waiting must not issue bg_status, bg_logs, or a sleep tool',
+        );
         const followUpEvent = requiredAt(events, 2, 'follow-up provider event should be recorded');
         assert.equal(followUpEvent.callCount, 3);
         assert.match(
@@ -249,6 +291,8 @@ void describe('scripted-provider completion follow-up behavior', { concurrency: 
         );
         assert.match(note.content, /<task-name>Scripted Wakeup<\/task-name>/);
         assert.match(note.content, /<status>completed<\/status>/);
+        assert.match(note.content, /<guidance>Terminal state and output metadata are durable\./);
+        assert.match(note.content, /Do not call bg_status to reconfirm/);
         assert.equal(note.details['triggerOnCompletion'], true);
         assert.equal(note.details['notified'], true);
       } finally {
@@ -272,6 +316,40 @@ void describe('scripted-provider completion follow-up behavior', { concurrency: 
         assert.ok(
           assistantTexts(h.session).some((text) =>
             text.includes('No-notify initial turn finished'),
+          ),
+        );
+      } finally {
+        await disposeHarness(h);
+      }
+    },
+  );
+
+  void it(
+    'notifyOnCompletion:true with triggerOnCompletion:false notifies without a provider wakeup',
+    { timeout: 15_000 },
+    async () => {
+      const h = await harness('wake-false');
+      try {
+        await h.session.prompt('Start the notification-only scripted background task.');
+        await waitFor(() => customNotifications(h.session).length === 1, 'notification-only event');
+        await new Promise((resolve) => setTimeout(resolve, 350));
+        await h.session.agent.waitForIdle();
+
+        const events = await providerEvents(h.eventsPath);
+        assert.equal(events.length, 2);
+        assert.equal(events[1]?.eventDrivenContract?.launchReceipt, false);
+        assert.deepEqual(assistantToolNames(h.session), ['bg_run']);
+        const note = requiredAt(
+          customNotifications(h.session),
+          0,
+          'notification-only completion should be recorded',
+        );
+        assert.match(note.content, /<task-name>No Wake Scripted<\/task-name>/);
+        assert.match(note.content, /<status>completed<\/status>/);
+        assert.equal(note.details['triggerOnCompletion'], false);
+        assert.ok(
+          assistantTexts(h.session).some((text) =>
+            text.includes('Notification-only initial turn finished'),
           ),
         );
       } finally {

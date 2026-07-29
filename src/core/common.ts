@@ -102,6 +102,66 @@ export interface BgTask extends Omit<BgTaskSnapshot, 'name'> {
   waiters: Array<() => void>;
 }
 
+export type CompletionDeliveryMode =
+  | 'notification-and-wake'
+  | 'notification-only'
+  | 'manual-monitoring';
+
+export interface CompletionDeliveryGuidance {
+  readonly mode: CompletionDeliveryMode;
+  readonly notificationEnabled: boolean;
+  readonly automaticWakeEnabled: boolean;
+  readonly text: string;
+}
+
+/**
+ * Describe the actual parent-agent completion path for one bg_run launch.
+ * A wake request cannot take effect without the notification that carries it.
+ */
+export function deriveCompletionDeliveryGuidance(
+  notifyOnCompletion: boolean,
+  triggerOnCompletion: boolean,
+): CompletionDeliveryGuidance {
+  if (notifyOnCompletion && triggerOnCompletion) {
+    return {
+      mode: 'notification-and-wake',
+      notificationEnabled: true,
+      automaticWakeEnabled: true,
+      text: [
+        'Terminal notification: enabled.',
+        'Automatic follow-up turn: enabled.',
+        'Next action: do not poll or sleep merely to wait; continue only independent useful work, otherwise end this turn and wait for <background-task-notification>.',
+      ].join('\n'),
+    };
+  }
+
+  if (notifyOnCompletion) {
+    return {
+      mode: 'notification-only',
+      notificationEnabled: true,
+      automaticWakeEnabled: false,
+      text: [
+        'Terminal notification: enabled.',
+        'Automatic follow-up turn: disabled. The terminal notification will be delivered, but it will not start an agent turn.',
+        'Next action: automatic wake-up was explicitly disabled; use bg_status/bg_logs only when deliberate monitoring is required, without tight polling.',
+      ].join('\n'),
+    };
+  }
+
+  return {
+    mode: 'manual-monitoring',
+    notificationEnabled: false,
+    automaticWakeEnabled: false,
+    text: [
+      'Terminal notification: disabled.',
+      triggerOnCompletion
+        ? 'Automatic follow-up turn: disabled because terminal notifications are disabled. triggerOnCompletion has no effect while notifyOnCompletion is false.'
+        : 'Automatic follow-up turn: disabled.',
+      'Next action: completion delivery was explicitly disabled; use bg_status/bg_logs only for deliberate manual monitoring, without tight polling.',
+    ].join('\n'),
+  };
+}
+
 export interface BgRunDetails {
   task: BgTaskSnapshot;
 }
