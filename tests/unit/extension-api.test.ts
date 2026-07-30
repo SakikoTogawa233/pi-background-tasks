@@ -277,10 +277,14 @@ async function emitRequest(
   return pending;
 }
 
+// Windows process creation through cmd.exe is materially slower than a POSIX
+// fork/exec, so the default budget is raised there rather than globally.
+const TERMINAL_WAIT_TIMEOUT_MS = process.platform === 'win32' ? 15_000 : 1500;
+
 async function waitForTerminal(
   terminals: readonly BackgroundTaskExtensionTerminal[],
   taskId: string,
-  timeoutMs = 1500,
+  timeoutMs = TERMINAL_WAIT_TIMEOUT_MS,
 ): Promise<BackgroundTaskExtensionTerminal> {
   const start = Date.now();
   while (Date.now() - start < timeoutMs) {
@@ -447,7 +451,11 @@ void describe('background EventBus protocol', () => {
         const task = requireTask(run.ok ? run.result : undefined, `${options.label}.run.result`);
         assert.equal(task.command, echoCommand);
         await options.afterRun?.(h, task, order);
-        const terminal = await waitForTerminal(terminals, task.id, options.timeoutMs ?? 1500);
+        const terminal = await waitForTerminal(
+          terminals,
+          task.id,
+          options.timeoutMs ?? TERMINAL_WAIT_TIMEOUT_MS,
+        );
         assert.equal(terminal.task.id, task.id);
         assert.equal(terminal.task.status, options.expectedStatus);
         assert.equal(

@@ -4,7 +4,7 @@ import { EventEmitter } from 'node:events';
 import { existsSync, readFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
-import { dirname, join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { parseJsonText } from '../../src/core/common.js';
 import {
@@ -599,7 +599,8 @@ void describe('BackgroundTaskRegistry', () => {
       assert.deepEqual(child.killCalls, []);
       const windowsSpawn = h.children[0];
       assert.ok(windowsSpawn, 'Windows shell spawn should be recorded');
-      assert.equal(windowsSpawn.shell.toLowerCase(), 'cmd.exe');
+      // ComSpec is a full path on a real Windows host, so compare the basename.
+      assert.equal(basename(windowsSpawn.shell).toLowerCase(), 'cmd.exe');
       assert.deepEqual(windowsSpawn.args.slice(0, 3), ['/d', '/s', '/c']);
     } finally {
       await cleanup(h.root);

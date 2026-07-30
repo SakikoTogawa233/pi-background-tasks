@@ -73,19 +73,22 @@ void describe('posix invariance', () => {
     }
   });
 
+  // Real POSIX permission bits only exist off Windows. The content assertions
+  // below still run everywhere; only the mode checks are host-gated.
   void it('keeps POSIX durable-write file modes unchanged', async () => {
+    const checksModes = process.platform !== 'win32';
     await withTempDir(async (dir) => {
       const direct = join(dir, 'direct.txt');
       await writeFileDurable(direct, 'payload');
       assert.equal(await readFile(direct, 'utf8'), 'payload');
       // Direct writes inherit the process umask, historically 0644.
-      assert.equal((await stat(direct)).mode & 0o777, 0o644);
+      if (checksModes) assert.equal((await stat(direct)).mode & 0o777, 0o644);
 
       const replaced = join(dir, 'replaced.json');
       await replaceFileDurable(replaced, '{"a":1}');
       assert.equal(await readFile(replaced, 'utf8'), '{"a":1}');
       // Atomic replacement stays private.
-      assert.equal((await stat(replaced)).mode & 0o777, 0o600);
+      if (checksModes) assert.equal((await stat(replaced)).mode & 0o777, 0o600);
     });
   });
 

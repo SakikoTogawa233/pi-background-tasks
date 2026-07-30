@@ -581,9 +581,8 @@ void describe('sdk', () => {
       assert.match(bgStatus.description, /not a waiting primitive/);
       assert.match(bgLogs.description, /not a waiting primitive/);
 
-      const longCommand = `${shellQuote(process.execPath)} -e ${shellQuote(
-        'setTimeout(() => {}, 10000)',
-      )}`;
+      // shellQuote emits POSIX single quotes, which cmd.exe does not understand.
+      const longCommand = `node -e ${JSON.stringify('setTimeout(() => {}, 10000)')}`;
       const cases = [
         {
           name: 'Default Delivery',
@@ -734,7 +733,9 @@ void describe('sdk', () => {
 
       const sleep = await emitEventRequest(eventBus, 'sdk-sleep', 'run', {
         name: 'EventBus Sleep',
-        command: `exec ${shellQuote(process.execPath)} -e ${shellQuote('setTimeout(() => {}, 5000)')}`,
+        // `exec` is a POSIX shell builtin and shellQuote emits POSIX quoting;
+        // neither is valid under cmd.exe. Node's own quoting handles both.
+        command: `node -e ${JSON.stringify('setTimeout(() => {}, 5000)')}`,
         isAgent: false,
         notifyOnCompletion: false,
         triggerOnCompletion: false,
