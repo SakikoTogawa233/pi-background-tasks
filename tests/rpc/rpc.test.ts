@@ -1,7 +1,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
-import { mkdir, mkdtemp, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { parseJsonText } from '../../src/core/common.js';
@@ -25,25 +25,28 @@ interface Pending {
 // `printf` and `sleep` are POSIX-only builtins that cmd.exe does not provide, so
 // commands executed through /bg must be dialect-portable.
 //
-// These commands must also quote identically in both dialects. A POSIX shell
-// and cmd.exe disagree about backslash-escaped quotes: sh unescapes \" to a
-// plain quote while cmd.exe does not, so a JSON-quoted payload reaches the child
-// with different bytes on each platform. Parentheses additionally must stay
-// quoted, because an unquoted parenthesis is a syntax error in a POSIX shell.
+// Commands executed through /bg must be valid in both dialects and must survive
+// the cmd.exe wrapper. Inline `node -e` payloads cannot satisfy both: an
+// unquoted parenthesis is a syntax error in a POSIX shell, while cmd.exe is
+// invoked as `/d /s /c "<command>"` with verbatim arguments, and its /s rule
+// strips the outermost quote pair, so an inner double quote collides with that
+// wrapper and mangles the payload.
 //
-// The portable form is therefore one pair of double quotes containing no inner
-// quote and no backslash. Payload text is emitted through String.fromCharCode so
-// no literal quote is ever required, and process.stdout.write stays byte-exact
-// for the surrounding output-length assertions.
-function writeExactly(text: string): string {
-  const codes = Array.from(text)
-    .map((character) => character.charCodeAt(0))
-    .join(',');
-  return `node -e "process.stdout.write(String.fromCharCode(${codes}))"`;
+// Writing a small script into the task cwd and invoking it by relative path
+// avoids the problem entirely: the resulting command contains no quote, no
+// parenthesis, and no space, so both dialects pass it through unchanged.
+// process.stdout.write keeps output byte-exact for the surrounding
+// output-length assertions.
+async function writeExactlyScript(cwd: string, name: string, text: string): Promise<string> {
+  const file = `${name}.cjs`;
+  await writeFile(join(cwd, file), `process.stdout.write(${JSON.stringify(text)});\n`, 'utf8');
+  return `node ${file}`;
 }
 
-function sleepFor(ms: number): string {
-  return `node -e "setTimeout(Boolean,${String(ms)})"`;
+async function sleepScript(cwd: string, name: string, ms: number): Promise<string> {
+  const file = `${name}.cjs`;
+  await writeFile(join(cwd, file), `setTimeout(Boolean, ${String(ms)});\n`, 'utf8');
+  return `node ${file}`;
 }
 
 function isObject(value: unknown): value is object {
@@ -236,7 +239,7 @@ function commandNames(event: object): string[] {
 
 void describe('rpc', () => {
   void it('discovers commands and covers /bg + /logs slash flow', async () => {
-    await withRpc(async (rpc) => {
+    await withRpc(async (rpc, cwd) => {
       const c = await rpc.send({ type: 'get_commands' });
       assert.equal(field(c, 'success'), true);
       const names = commandNames(c);
@@ -251,7 +254,9 @@ void describe('rpc', () => {
         'bg-update',
       ])
         assert.ok(names.includes(name), name);
-      await rpc.prompt(`/bg --name "RPC Echo" ${writeExactly('rpc-ok')}`);
+      await rpc.prompt(
+        `/bg --name "RPC Echo" ${await writeExactlyScript(cwd, 'rpc-echo', 'rpc-ok')}`,
+      );
       const started = await rpc.wait(notifyWith(/Started RPC Echo/));
       const id = extractTaskId(started);
       await new Promise((resolve) => setTimeout(resolve, 250));
@@ -264,8 +269,8 @@ void describe('rpc', () => {
   });
 
   void it('covers /jobs and /kill slash flow', async () => {
-    await withRpc(async (rpc) => {
-      await rpc.prompt(`/bg --name "RPC Sleep" ${sleepFor(10000)}`);
+    await withRpc(async (rpc, cwd) => {
+      await rpc.prompt(`/bg --name "RPC Sleep" ${await sleepScript(cwd, 'rpc-sleep', 10000)}`);
       const started = await rpc.wait(notifyWith(/Started RPC Sleep/));
       const id = extractTaskId(started);
       await rpc.prompt('/jobs');
@@ -291,11 +296,15 @@ void describe('rpc', () => {
   });
 
   void it('handles completed kill errors, logs byte normalization, and ambiguous prefixes', async () => {
-    await withRpc(async (rpc) => {
-      await rpc.prompt(`/bg --name "RPC One" ${writeExactly('abcdef')}`);
+    await withRpc(async (rpc, cwd) => {
+      await rpc.prompt(
+        `/bg --name "RPC One" ${await writeExactlyScript(cwd, 'rpc-one', 'abcdef')}`,
+      );
       const one = await rpc.wait(notifyWith(/Started RPC One/));
       const idOne = extractTaskId(one);
-      await rpc.prompt(`/bg --name "RPC Two" ${writeExactly('123456')}`);
+      await rpc.prompt(
+        `/bg --name "RPC Two" ${await writeExactlyScript(cwd, 'rpc-two', '123456')}`,
+      );
       await rpc.wait(notifyWith(/Started RPC Two/));
       await new Promise((resolve) => setTimeout(resolve, 350));
       await rpc.prompt(`/kill ${idOne}`);
