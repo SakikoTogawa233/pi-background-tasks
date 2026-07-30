@@ -2,9 +2,11 @@ import { spawnSync } from 'node:child_process';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
+import { fileURLToPath } from 'node:url';
 import { isolatedTestEnv } from '../src/testing/normalize.js';
 
-const root = new URL('../', import.meta.url).pathname;
+// `URL.pathname` yields `/D:/...` on Windows, which then joins into `D:\D:\...`.
+const root = fileURLToPath(new URL('../', import.meta.url));
 const agentDir = await mkdtemp(join(tmpdir(), 'pi-bg-smoke-agent-'));
 try {
   const result = spawnSync(

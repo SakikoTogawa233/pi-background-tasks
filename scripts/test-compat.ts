@@ -3,13 +3,15 @@ import { existsSync, readFileSync } from 'node:fs';
 import { mkdir, mkdtemp, readFile, readdir, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
+import { fileURLToPath } from 'node:url';
 import { isDeepStrictEqual } from 'node:util';
 import { parseJsonText } from '../src/core/common.js';
 import { isolatedTestEnv } from '../src/testing/normalize.js';
 import { installFusionFakePi, resolveRealPiCli } from '../tests/helpers/fusion-fake-pi.js';
 
 const requiredVersions = ['0.75.5', '0.81.1', '0.82.1', '0.83.0'] as const;
-const root = new URL('../', import.meta.url).pathname;
+// `URL.pathname` yields `/D:/...` on Windows, which then joins into `D:\D:\...`.
+const root = fileURLToPath(new URL('../', import.meta.url));
 
 /**
  * TypeBox APIs removed in the 1.3.x line bundled by Pi 0.83.0. The package must

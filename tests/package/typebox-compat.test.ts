@@ -2,12 +2,14 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { readdir, readFile } from 'node:fs/promises';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { Type, type Static } from 'typebox';
 import { Value } from 'typebox/value';
 import { Compile } from 'typebox/compile';
 import { parseJsonText } from '../../src/core/common.js';
 
-const packageRoot = new URL('../../', import.meta.url).pathname;
+// `URL.pathname` yields `/D:/...` on Windows, which then joins into `D:\D:\...`.
+const packageRoot = fileURLToPath(new URL('../../', import.meta.url));
 
 /** TypeBox APIs removed in the 1.3.x line bundled by Pi 0.83.0. */
 const REMOVED_TYPEBOX_APIS = [

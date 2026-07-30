@@ -5,6 +5,7 @@ import { mkdtemp, readFile, readdir, rm } from 'node:fs/promises';
 import { spawnSync } from 'node:child_process';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
+import { fileURLToPath } from 'node:url';
 import { parseJsonText } from '../../src/core/common.js';
 
 interface PackageJson {
@@ -484,7 +485,7 @@ void describe('package', () => {
   });
 
   void it('keeps production durable syncing handle-scoped and loud', async () => {
-    const files = await walkSourceTree(new URL('src/', root).pathname);
+    const files = await walkSourceTree(fileURLToPath(new URL('src/', root)));
     const violations: SourceViolation[] = [];
     for (const file of files) {
       const source = stripComments(await readFile(file, 'utf8'));
@@ -514,6 +515,32 @@ void describe('package', () => {
       addSwallowedSyncViolations(violations, label, source);
     }
     assert.equal(violations.length, 0, formatSourceViolations(violations));
+  });
+
+  void it('converts file URLs to native paths instead of using URL.pathname', async () => {
+    // On Windows `new URL(...).pathname` yields `/D:/a/repo/`, and joining that
+    // produces `D:\D:\a\repo\...`, which fails with ENOENT. CI proved this.
+    // `fileURLToPath` is the only correct conversion.
+    const roots = ['src', 'extensions', 'scripts', 'tests'];
+    const offenders: string[] = [];
+    for (const rootDir of roots) {
+      const dir = fileURLToPath(new URL(`${rootDir}/`, root));
+      if (!existsSync(dir)) continue;
+      for (const file of await walkSourceTree(dir)) {
+        const source = await readFile(file, 'utf8');
+        const stripped = source
+          .replace(/\/\*[\s\S]*?\*\//g, '')
+          .split('\n')
+          .filter((line) => !line.trim().startsWith('//'))
+          .join('\n');
+        if (/new URL\([^)]*\)\s*\.pathname/.test(stripped)) offenders.push(file);
+      }
+    }
+    assert.deepEqual(
+      offenders,
+      [],
+      'use fileURLToPath(new URL(...)) so Windows paths resolve correctly',
+    );
   });
 
   void it('typechecks standalone with the full monorepo strictness vendored locally', async () => {
