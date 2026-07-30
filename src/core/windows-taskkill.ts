@@ -239,9 +239,12 @@ export function runWindowsTaskkill(
     };
     abortSignal?.addEventListener('abort', abortListener, { once: true });
 
+    // This timeout is the settlement guarantee for a taskkill helper that never
+    // exits. It must keep the event loop alive: an unref'd timer lets the loop
+    // drain first and leaves this promise pending forever. `settle()` always
+    // clears it, so keeping it referenced cannot leak.
     timeout = setTimeout(() => {
       stopHelper(`Windows taskkill timed out after ${String(timeoutMs)}ms`);
     }, timeoutMs);
-    timeout.unref();
   });
 }

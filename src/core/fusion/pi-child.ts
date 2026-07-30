@@ -539,8 +539,17 @@ function defaultSpawn(command: string, args: string[], options: SpawnOptions): F
   return nodeSpawn(command, args, options);
 }
 
-function setUnref(timer: NodeJS.Timeout): NodeJS.Timeout {
-  timer.unref();
+/**
+ * Termination timers must keep the event loop alive.
+ *
+ * The SIGTERM grace, SIGKILL wait, and overall timeout timers are the only
+ * things that settle the run promise when a child stops emitting events. An
+ * unref'd timer lets the loop drain first, leaving the promise pending forever
+ * ("Promise resolution is still pending but the event loop has already
+ * resolved"). Every timer stored here is cleared in the `finally` of
+ * `runPiChild` via `cleanupTimers`, so keeping them referenced cannot leak.
+ */
+function trackTimer(timer: NodeJS.Timeout): NodeJS.Timeout {
   return timer;
 }
 
@@ -574,7 +583,7 @@ function terminateChild(
       },
     );
   }
-  state.termTimer = setUnref(
+  state.termTimer = trackTimer(
     setTimeout(() => {
       if (state.settled) return;
       const killResult = sendSignal(child, platform, killProcess, 'SIGKILL');
@@ -590,7 +599,7 @@ function terminateChild(
       }
     }, killGraceMs),
   );
-  state.waitTimer = setUnref(
+  state.waitTimer = trackTimer(
     setTimeout(() => {
       if (state.settled) return;
       const message = 'Pi child did not emit close after SIGKILL wait';
@@ -803,7 +812,7 @@ export async function runPiChild(options: RunPiChildOptions): Promise<FusionChil
   child.once('close', closeListener);
   options.signal?.addEventListener('abort', abortListener, { once: true });
   if (options.signal?.aborted) abortListener();
-  state.timeoutTimer = setUnref(
+  state.timeoutTimer = trackTimer(
     setTimeout(() => {
       if (state.primaryError === undefined) {
         state.primaryError = childError(
