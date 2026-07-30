@@ -7,18 +7,25 @@ import { parseJsonText } from '../../src/core/common.js';
 import { FusionOrchestrator, type FusionChildRunner } from '../../src/core/fusion/orchestrator.js';
 import { defaultFusionModelConfig } from '../../src/core/fusion/config.js';
 import {
+  FUSION_COMMAND_CONTEXT_POLICY_ID,
+  FUSION_CONTEXT_TRANSFORM_ID,
   FUSION_EVALUATION_SCHEMA_VERSION,
+  FUSION_INPUT_SCHEMA_VERSION,
   FusionError,
-  type FusionCanonicalInputV1,
+  type FusionCanonicalInputV2,
   type FusionChildRunResult,
+  type FusionContextOmissionLedgerV1,
   type FusionEvaluationV1,
   type FusionUsage,
   type ResolvedFusionModel,
   type ResolvedFusionModels,
 } from '../../src/core/fusion/types.js';
 import { FusionChildRunError, type RunPiChildOptions } from '../../src/core/fusion/pi-child.js';
+import { emptyLedger } from '../helpers/fusion-canonical.js';
 
-function resolved(qualifiedId: string): ResolvedFusionModel {
+const ledger: FusionContextOmissionLedgerV1 = emptyLedger(FUSION_COMMAND_CONTEXT_POLICY_ID);
+
+function resolved(qualifiedId: string, contextWindow = 200_000): ResolvedFusionModel {
   const slash = qualifiedId.indexOf('/');
   const provider = qualifiedId.slice(0, slash);
   const model = qualifiedId.slice(slash + 1);
@@ -29,7 +36,7 @@ function resolved(qualifiedId: string): ResolvedFusionModel {
     model,
     qualifiedId,
     thinkingLevel: 'high',
-    contextWindow: 1000,
+    contextWindow,
   };
 }
 
@@ -41,13 +48,61 @@ function models(): ResolvedFusionModels {
   };
 }
 
-function canonicalInput(): FusionCanonicalInputV1 {
+function canonicalInput(text = 'hello'): FusionCanonicalInputV2 {
   return {
-    schema_version: 'pi-background-tasks.fusion-input.v1',
+    schema_version: FUSION_INPUT_SCHEMA_VERSION,
     cwd: '/tmp/project',
     system_prompt: 'system',
-    conversation_transcript: 'User: hello',
-    request: 'solve',
+    request: {
+      source: 'command',
+      authority: 'directive_over_projected_conversation',
+      text: 'solve',
+      sha256: 'b'.repeat(64),
+    },
+    conversation_projection: {
+      policy: {
+        id: FUSION_COMMAND_CONTEXT_POLICY_ID,
+        transform: FUSION_CONTEXT_TRANSFORM_ID,
+        version: 1,
+        user_text: 'verbatim',
+        assistant_text: 'verbatim',
+        assistant_thinking: 'ledger_only',
+        tool_call_arguments: 'ledger_only',
+        tool_results: 'ledger_only',
+        tool_payload_preview_bytes: 0,
+        images: 'marker_or_ledger_only',
+        unknown_block_behavior: 'error',
+      },
+      branch_filter: {
+        id: 'exclude-active-fusion-subtree-v1',
+        tool_name: 'fusion_brainstorm',
+        tool_call_id: null,
+        active_tool_call_leaf_excluded: false,
+      },
+      entries: [
+        { kind: 'text', source_ordinal: 0, block_ordinal: 0, role: 'user', text },
+      ],
+      accounting: {
+        message_count: 1,
+        included_text_entry_count: 1,
+        included_user_text_bytes: Buffer.byteLength(text, 'utf8'),
+        included_assistant_text_bytes: 0,
+        included_image_marker_count: 0,
+        empty_text_block_count: 0,
+        omitted_run_count: 0,
+        omitted_event_count: 0,
+        omitted_thinking_bytes: 0,
+        omitted_tool_call_count: 0,
+        omitted_tool_call_argument_bytes: 0,
+        omitted_tool_result_text_count: 0,
+        omitted_tool_result_text_bytes: 0,
+        omitted_tool_result_image_count: 0,
+        omitted_tool_result_image_bytes: 0,
+        tool_call_names: [],
+        ledger_entry_count: 0,
+        ledger_root_sha256: 'a'.repeat(64),
+      },
+    },
   };
 }
 
@@ -286,6 +341,7 @@ async function failedManifest(root: string, runner: FusionChildRunner): Promise<
       cwd: root,
       canonicalInput: canonical,
       canonicalInputSerialized: JSON.stringify(canonical),
+        contextLedger: ledger,
       config: defaultFusionModelConfig(),
       models: models(),
     });
@@ -346,6 +402,7 @@ void describe('fusion orchestrator', () => {
         sessionId: 's1',
         canonicalInput: canonical,
         canonicalInputSerialized: JSON.stringify(canonical),
+        contextLedger: ledger,
         config: defaultFusionModelConfig(),
         models: models(),
       });
@@ -410,6 +467,7 @@ void describe('fusion orchestrator', () => {
           cwd: root,
           canonicalInput: canonical,
           canonicalInputSerialized: JSON.stringify(canonical),
+        contextLedger: ledger,
           config: defaultFusionModelConfig(),
           models: models(),
           signal: controller.signal,
@@ -478,6 +536,7 @@ void describe('fusion orchestrator', () => {
           cwd: root,
           canonicalInput: canonical,
           canonicalInputSerialized: JSON.stringify(canonical),
+        contextLedger: ledger,
           config: defaultFusionModelConfig(),
           models: models(),
         }),
@@ -619,6 +678,7 @@ void describe('fusion orchestrator', () => {
           cwd: root,
           canonicalInput: canonical,
           canonicalInputSerialized: JSON.stringify(canonical),
+        contextLedger: ledger,
           config: defaultFusionModelConfig(),
           models: models(),
         });
@@ -685,6 +745,7 @@ void describe('fusion orchestrator', () => {
           cwd: firstCwd,
           canonicalInput: canonical,
           canonicalInputSerialized: JSON.stringify(canonical),
+        contextLedger: ledger,
           config: defaultFusionModelConfig(),
           models: models(),
         }),
@@ -693,6 +754,7 @@ void describe('fusion orchestrator', () => {
           cwd: secondCwd,
           canonicalInput: canonical,
           canonicalInputSerialized: JSON.stringify(canonical),
+        contextLedger: ledger,
           config: defaultFusionModelConfig(),
           models: models(),
         }),

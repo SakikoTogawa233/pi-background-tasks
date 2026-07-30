@@ -12,7 +12,9 @@ import {
   type FusionArtifactManifest,
   type FusionArtifactRef,
   type FusionAttemptArtifactRecord,
+  type FusionBudgetPlanV1,
   type FusionCandidateId,
+  type FusionContextOmissionLedgerV1,
   type FusionChildRunResult,
   type FusionModelConfigV1,
   type FusionSource,
@@ -311,6 +313,20 @@ export class FusionArtifactStore {
 
   async writeCanonicalInput(serialized: string): Promise<void> {
     await this.writeArtifact('canonical-input.json', serialized);
+  }
+
+  /**
+   * Complete, source-ordered ledger of every omitted conversation event. Kept in
+   * a separate artifact so canonical input carries only compact run receipts
+   * while the full omission accounting stays locally auditable.
+   */
+  async writeContextLedger(ledger: FusionContextOmissionLedgerV1): Promise<void> {
+    await this.writeArtifact('context-omission-ledger.json', canonicalJson(ledger));
+  }
+
+  /** Route capacities and the pre-candidate whole-workflow feasibility decision. */
+  async writeBudgetPlan(plan: FusionBudgetPlanV1): Promise<void> {
+    await this.writeArtifact('budget-plan.json', canonicalJson(plan));
   }
 
   async writeBlindCandidates(serialized: string): Promise<void> {

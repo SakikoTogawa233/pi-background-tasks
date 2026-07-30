@@ -6,7 +6,7 @@ import { join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import type { AssistantMessage, UserMessage } from '@earendil-works/pi-ai';
 import {
-  AuthStorage,
+  ModelRuntime,
   createAgentSession,
   DefaultResourceLoader,
   ModelRegistry,
@@ -206,8 +206,11 @@ async function harness(options: HarnessOptions = {}): Promise<Harness> {
     noThemes: true,
   });
   await loader.reload();
-  const authStorage = AuthStorage.create(join(agentDir, 'auth.json'));
-  const modelRegistry = ModelRegistry.inMemory(authStorage);
+  const modelRuntime = await ModelRuntime.create({
+    authPath: join(agentDir, 'auth.json'),
+    modelsPath: null,
+  });
+  const modelRegistry = new ModelRegistry(modelRuntime);
   modelRegistry.registerProvider('pi-bg-fusion', {
     name: 'Fusion SDK Provider',
     baseUrl: 'https://example.invalid',
@@ -220,7 +223,7 @@ async function harness(options: HarnessOptions = {}): Promise<Harness> {
         reasoning: true,
         input: ['text'],
         cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-        contextWindow: 100000,
+        contextWindow: 272000,
         maxTokens: 4096,
       },
       {
@@ -229,7 +232,7 @@ async function harness(options: HarnessOptions = {}): Promise<Harness> {
         reasoning: true,
         input: ['text'],
         cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-        contextWindow: 100000,
+        contextWindow: 272000,
         maxTokens: 4096,
       },
     ],
@@ -240,8 +243,7 @@ async function harness(options: HarnessOptions = {}): Promise<Harness> {
     resourceLoader: loader,
     sessionManager: SessionManager.inMemory(cwd),
     settingsManager,
-    authStorage,
-    modelRegistry,
+    modelRuntime,
     noTools: 'builtin',
   });
   const model = modelRegistry.find('pi-bg-fusion', 'current-model');
@@ -327,6 +329,7 @@ function makeTheme(): Theme {
       thinkingMedium: '#ffffff',
       thinkingHigh: '#ffffff',
       thinkingXhigh: '#ffffff',
+      thinkingMax: '#ffffff',
       bashMode: '#ffffff',
     },
     {
@@ -420,7 +423,11 @@ void describe('fusion SDK integration', { concurrency: false }, () => {
       const firstInput = parseJsonText(calls[0]?.stdin ?? '');
       assert.ok(isRecord(firstInput));
       assert.equal(firstInput['schema_version'], FUSION_INPUT_SCHEMA_VERSION);
-      assert.equal(firstInput['request'], 'command prompt\nwith body');
+      const commandRequest = firstInput['request'];
+      assert.ok(isRecord(commandRequest), 'canonical request must be an object');
+      assert.equal(commandRequest['text'], 'command prompt\nwith body');
+      assert.equal(commandRequest['source'], 'command');
+      assert.equal(commandRequest['authority'], 'directive_over_projected_conversation');
 
       const requests = customEntries(h.session, 'fusion-request');
       const results = customEntries(h.session, 'fusion-result');
@@ -441,7 +448,7 @@ void describe('fusion SDK integration', { concurrency: false }, () => {
           details,
           timestamp: Date.now(),
         },
-        { expanded: true },
+        { expanded: true, outputPad: 0 },
         makeTheme(),
       );
       assert.ok(rendered, 'fusion renderer should produce a component');
@@ -534,19 +541,25 @@ void describe('fusion SDK integration', { concurrency: false }, () => {
       assert.ok(candidate, 'candidate invocation should be logged');
       const parsedInput = parseJsonText(candidate.stdin);
       assert.ok(isRecord(parsedInput), 'canonical input should be an object');
-      assert.equal(parsedInput['request'], 'tool prompt');
-      assert.match(
-        String(parsedInput['conversation_transcript']),
-        /prior user context before image/,
-      );
-      assert.match(String(parsedInput['conversation_transcript']), /after image context/);
-      assert.match(
-        String(parsedInput['conversation_transcript']),
-        /\[Image omitted from fusion text transcript: image\/png\]/,
-      );
-      assert.doesNotMatch(String(parsedInput['conversation_transcript']), /sdk-raw-image-base64/);
-      assert.doesNotMatch(String(parsedInput['conversation_transcript']), /partial assistant text/);
-      assert.doesNotMatch(String(parsedInput['conversation_transcript']), /call-sibling|bg_status/);
+      const toolRequest = parsedInput['request'];
+      assert.ok(isRecord(toolRequest), 'canonical request must be an object');
+      assert.equal(toolRequest['text'], 'tool prompt');
+      assert.equal(toolRequest['authority'], 'explicit_text');
+      // The exact bytes sent to the child carry the projection, not a raw transcript.
+      assert.doesNotMatch(candidate.stdin, /conversation_transcript/);
+      assert.match(candidate.stdin, /conversation_projection/);
+      // Scope conversation assertions to the projection: the parent system prompt
+      // legitimately names package tools such as bg_status.
+      const projection = parsedInput['conversation_projection'];
+      assert.ok(isRecord(projection), 'projection must be an object');
+      const projectionText = JSON.stringify(projection);
+      assert.match(projectionText, /prior user context before image/);
+      assert.match(projectionText, /after image context/);
+      assert.match(projectionText, /\[Image omitted from fusion text transcript: image\/png\]/);
+      assert.doesNotMatch(projectionText, /partial assistant text/);
+      assert.doesNotMatch(projectionText, /call-sibling|bg_status/);
+      // Raw image bytes must not appear anywhere in the child prompt.
+      assert.doesNotMatch(candidate.stdin, /sdk-raw-image-base64/);
     } finally {
       await disposeHarness(h);
     }
@@ -666,10 +679,15 @@ void describe('fusion SDK integration', { concurrency: false }, () => {
             });
         });
       };
-      h.session.extensionRunner.setUIContext({
-        ...baseUi(h.session),
-        custom: selectorCustom,
-      });
+      // Pi 0.83 takes the run mode as a second setUIContext argument (default
+      // "print"); /fusion-models is TUI-only, so the selector needs "tui".
+      h.session.extensionRunner.setUIContext(
+        {
+          ...baseUi(h.session),
+          custom: selectorCustom,
+        },
+        'tui',
+      );
       const selectorCtx = h.session.extensionRunner.createCommandContext();
       await command(h.session, 'fusion-models').handler('', selectorCtx);
       const savedConfigText = await readFile(join(h.agentDir, FUSION_MODEL_CONFIG_FILE), 'utf8');

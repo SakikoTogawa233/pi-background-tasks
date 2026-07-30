@@ -9,19 +9,19 @@ This package adds named, tracked background shell jobs with durable output files
 From npm after publish:
 
 ```bash
-pi install npm:pi-background-tasks@0.7.3
+pi install npm:pi-background-tasks@0.7.4
 ```
 
 From git after pushing this package to its standalone repository and tagging:
 
 ```bash
-pi install git:github.com/ismailsaleekh/pi-background-tasks@v0.7.3
+pi install git:github.com/ismailsaleekh/pi-background-tasks@v0.7.4
 ```
 
 For project-local install:
 
 ```bash
-pi install -l npm:pi-background-tasks@0.7.3
+pi install -l npm:pi-background-tasks@0.7.4
 ```
 
 ## Commands
@@ -95,7 +95,7 @@ The lookup runs at most once per session on `session_start`, is time-boxed, and 
 - `bg_status` — inspect one task or all recent tasks.
 - `bg_logs` — read bounded task output.
 - `bg_kill` — stop a running task.
-- `fusion_brainstorm({prompt})` — always-active tool that runs the Fusion workflow and returns the exact merged text as the tool result for the parent agent to consume, with the exact Pi `Usage` shape attached when the host supports tool-result usage: token fields plus complete `cost.input`, `cost.output`, `cost.cacheRead`, `cost.cacheWrite`, and `cost.total`. Its closed public schema has exactly one required parameter, `prompt`; extra keys are rejected. It has no eligibility, quota, routine, or justification gate. Tool context capture excludes the current assistant tool-call leaf when Pi is executing that `fusion_brainstorm` call, so the nested children do not see the in-progress tool call or sibling calls.
+- `fusion_brainstorm({prompt})` — always-active tool that runs the Fusion workflow and returns the exact merged text as the tool result for the parent agent to consume, with the exact Pi `Usage` shape attached when the host supports tool-result usage: token fields plus complete `cost.input`, `cost.output`, `cost.cacheRead`, `cost.cacheWrite`, and `cost.total`. Its closed public schema has exactly one required parameter, `prompt`; extra keys are rejected. It has no eligibility, quota, routine, or justification gate. Tool context capture excludes the current assistant tool-call leaf when Pi is executing that `fusion_brainstorm` call, so the nested children do not see the in-progress tool call or sibling calls. Children receive the documented conversation projection described under [Conversation context policy](#conversation-context-policy): visible user/assistant text verbatim, with thinking and tool payloads replaced by explicit hash-accounted omission receipts. Because the prompt is composed by the parent agent, it is treated as authoritative and self-contained.
 
 `bg_run` requires a concise `name` for the footer dock, the shell `command`, and required `isAgent: boolean`. Set `isAgent: true` only when the background task launches an LLM/agent process (for example `pi -p ...` or `pi --mode json ...`); set `isAgent: false` for scripts, tests, dev servers, sleeps, and ordinary shell commands. It defaults both `notifyOnCompletion` and `triggerOnCompletion` to `true`. With those defaults, `bg_run` returns immediately, the agent continues only independent useful work or ends its current turn instead of sleeping or polling, and a durable `background-task-notification` for completed, failed, or killed state automatically starts a follow-up turn. The launch receipt states the effective notification/wake behavior explicitly. `bg_status` and `bg_logs` remain available for user-requested inspection, deliberately disabled completion delivery, concrete hang diagnosis, or reading output after the terminal event; they are not waiting primitives, and the terminal notification does not need status reconfirmation. Setting `triggerOnCompletion: false` keeps the notification but prevents it from starting an agent turn. Setting `notifyOnCompletion: false` suppresses both notification and wake-up even if `triggerOnCompletion` is true.
 
@@ -118,7 +118,50 @@ fusion-models.json
 
 Missing config means all five slots are `$current`. Malformed config, stale explicit models, unavailable current models, and concurrent selector write conflicts fail loudly before child inference. Selector saves use an inter-process lock plus revision re-read before rename so simultaneous dialogs cannot silently overwrite each other. Candidate identities are anonymized before evaluation; provider/model metadata stays in local artifacts, not in evaluator prompts.
 
-Progress is surfaced through `fusion` status updates, TUI cancellable loader UI for `/fusion`, and partial `fusion_brainstorm` tool updates. Session shutdown or reload tracks the whole invocation from entry, aborts live or initializing Fusion runs, and waits for cleanup. Captured conversation context is serialized as a full text transcript with no summarization-oriented 2,000-character tool-result truncation. Image bytes/base64 are not forwarded to Fusion children; user/tool-result image blocks are replaced in the transcript with `[Image omitted from fusion text transcript: <mime-type>]`, so visual information must be described in text if the children need it. Provider context-window failures remain loud child failures rather than hidden local truncation.
+Progress is surfaced through `fusion` status updates, TUI cancellable loader UI for `/fusion`, and partial `fusion_brainstorm` tool updates. Session shutdown or reload tracks the whole invocation from entry, aborts live or initializing Fusion runs, and waits for cleanup.
+
+### Conversation context policy
+
+Fusion children receive a **versioned conversation projection**, not a raw execution transcript. The canonical input schema is `pi-background-tasks.fusion-input.v2` and every run states exactly what was included and what was omitted.
+
+The projection transform (`visible-conversation-ledger-v1`) is shared by both entry points:
+
+| Content | Disposition |
+|---|---|
+| User text | included verbatim, never clipped |
+| Assistant text | included verbatim, never clipped |
+| User image blocks | `[Image omitted from fusion text transcript: <mime-type>]` marker |
+| Assistant thinking | excluded; recorded as an omission receipt |
+| Tool-call arguments | excluded; recorded as an omission receipt |
+| Tool-result payloads | excluded; recorded as an omission receipt |
+| Tool-result images | excluded; recorded as an omission receipt (never raw bytes) |
+| Active `fusion_brainstorm` call and its sibling calls | scope-excluded from the branch |
+
+Omissions are **explicit, deterministic, and auditable** — never silent. Each omitted event produces a ledger row with its kind, exact byte count, and SHA-256 of the omitted bytes; contiguous omissions collapse into source-ordered `omitted_activity` receipts carrying counts, byte totals, and a run hash. The complete ledger is persisted as `context-omission-ledger.json`. **No head, tail, or preview of an omitted payload is ever forwarded** (`tool_payload_preview_bytes` is `0`), because an arbitrary prefix is usually irrelevant and can leak secrets or carry tool-output prompt injection. Repeated construction is byte-identical, so hashes are stable.
+
+Two entry points share the transform but differ in request authority:
+
+| Entry point | Policy id | `request.authority` |
+|---|---|---|
+| `fusion_brainstorm({prompt})` | `fusion-tool-explicit-v1` | `explicit_text` — the prompt is authoritative and self-contained |
+| `/fusion [prompt]` | `fusion-command-conversation-v1` | `directive_over_projected_conversation` |
+
+**Documented limitation:** facts that exist only inside omitted tool output are not available to Fusion children. Restate any required finding as visible conversation text, or include it in the `fusion_brainstorm` prompt. Children are instructed to say so plainly rather than guess. No model-generated summarization is used as hidden preprocessing.
+
+### Stage budgets
+
+Every prompt-expansion stage — candidate, evaluator, evaluation repair, and merger — is size-checked **before any child process is created**. Safety is based on the **smallest** configured model's context window, never the largest, so adding one small-context slot cannot be masked by large-context siblings.
+
+The input token bound is `ceil(utf8Bytes / 2)`. This is a ceiling, not an estimate: across 159 real large Fusion prompts the densest observed ratio was 3.552 bytes per input token, so the divisor keeps roughly a 1.7x margin and also bounds dense non-ASCII input.
+
+Downstream growth is guaranteed by two cooperating layers rather than by an assumption:
+
+1. **Enforced output contracts.** Each stage has a maximum response size measured in *JSON-rendered transfer bytes* — the bytes the response actually costs once a later stage embeds it, escaping included (candidate 48 KiB, evaluator 64 KiB, merger 64 KiB, repair diagnostics 8 KiB). Measuring the rendered form removes any escaping guess: quotes, backslashes, and newlines expand 2x and control characters up to 6x, so a raw-byte contract would not bound the embedded size. A response over its contract is a loud `child_output_cap` failure; it is preserved in the run artifacts and is never sliced, truncated, or forwarded.
+2. **An exact reserve.** The canonical input must leave room for the widest stage — the evaluation repair, which embeds three candidate answers, the invalid evaluator output, and diagnostics — plus fixed wrapper overhead. Because the contracts above are already rendered-byte bounds, this is an exact sum, not a raw size inflated by an estimated factor. The reserve is converted to tokens with the *same* `ceil(bytes / 2)` function used to measure prompts; reserving output *tokens* directly would understate the cost of re-embedding those bytes.
+
+Each route additionally reserves its output contract, 4,096 framing, and 4,096 safety tokens. Because every step is uniformly conservative, the policy requires roughly a **168,000-token context window per configured slot**. Smaller routes are rejected at configuration time with an actionable error naming the requirement, rather than being accepted and failing later at the provider. Route capacities and the pre-candidate feasibility decision are persisted as `budget-plan.json`.
+
+If an input still exceeds the safe budget, Fusion fails with a typed `prompt_budget_exceeded` error naming the stage, measured bytes, measured token upper bound, allowed tokens, the limiting configured model and its context window, and concrete remediation. **Zero children are launched** when preflight rejects. Provider context-window failures remain loud child failures; there is no hidden local truncation and no silent fallback anywhere in this path.
 
 ## Extension EventBus API
 
@@ -162,7 +205,7 @@ Fusion writes private debugging artifacts under:
 .pi/fusion/<session-id>-<pid>/<run-id>/
 ```
 
-Each run contains `manifest.json`, `canonical-input.json`, candidate/evaluation/merge prompts, raw child JSONL events, stderr, responses, `blind-candidates.json`, `evaluation.json`, `merged.md`, and `error.json` for failed/cancelled runs. Artifact files are written by private temp-file/fsync/rename, and v2 manifests persist cumulative child usage plus per-attempt observed usage/model data for successful, failed, and cancelled child attempts. Every usage record preserves the complete Pi cost breakdown; the same exact shape is cloned into `fusion_brainstorm` tool results so newer Pi hosts can calculate and replay footer/session statistics safely. These artifacts are local evidence only; they are not shown in `/jobs` or the background-task dock.
+Each run contains `manifest.json`, `canonical-input.json`, `context-omission-ledger.json`, `budget-plan.json`, candidate/evaluation/merge prompts, raw child JSONL events, stderr, responses, `blind-candidates.json`, `evaluation.json`, `merged.md`, and `error.json` for failed/cancelled runs. Persisted stage prompts are byte-identical to the exact bytes written to that child's stdin. `context-omission-ledger.json` carries the complete source-ordered omission ledger, and `budget-plan.json` records every configured route's capacity plus the pre-candidate feasibility decision, so a rejected run is as auditable as a successful one. Artifact files are written by private temp-file/fsync/rename, and v2 manifests persist cumulative child usage plus per-attempt observed usage/model data for successful, failed, and cancelled child attempts. Every usage record preserves the complete Pi cost breakdown; the same exact shape is cloned into `fusion_brainstorm` tool results so newer Pi hosts can calculate and replay footer/session statistics safely. These artifacts are local evidence only; they are not shown in `/jobs` or the background-task dock.
 
 For attested Pi tasks only, the task id is `b` plus 32 random hex characters (128 bits) and additional flat siblings are written in the same directory:
 

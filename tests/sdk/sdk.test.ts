@@ -7,7 +7,7 @@ import { dirname, join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { createServer } from 'node:http';
 import {
-  AuthStorage,
+  ModelRuntime,
   createAgentSession,
   createEventBus,
   DefaultResourceLoader,
@@ -70,19 +70,21 @@ async function harness(options: SdkHarnessOptions = {}) {
     ...(options.eventBus === undefined ? {} : { eventBus: options.eventBus }),
   });
   await loader.reload();
-  const authStorage = AuthStorage.create(join(agentDir, 'auth.json'));
-  const modelRegistry = ModelRegistry.inMemory(authStorage);
+  const modelRuntime = await ModelRuntime.create({
+    authPath: join(agentDir, 'auth.json'),
+    modelsPath: null,
+  });
+  const modelRegistry = new ModelRegistry(modelRuntime);
   const { session } = await createAgentSession({
     cwd,
     agentDir,
     resourceLoader: loader,
     sessionManager: SessionManager.inMemory(cwd),
     settingsManager,
-    authStorage,
-    modelRegistry,
+    modelRuntime,
     noTools: 'builtin',
   });
-  return { session, cwd };
+  return { session, cwd, modelRegistry, modelRuntime };
 }
 
 type JsonObject = Record<PropertyKey, unknown>;
@@ -779,11 +781,11 @@ void describe('sdk', () => {
   });
 
   void it('runs the structured bg_run_pi_attested tool and writes a complete flat attestation', async () => {
-    const { session, cwd } = await harness();
+    const { session, cwd, modelRegistry, modelRuntime } = await harness();
     const oldPath = process.env['PATH'];
     try {
       await initCleanGit(cwd);
-      session.modelRegistry.registerProvider('openai-codex', {
+      modelRegistry.registerProvider('openai-codex', {
         name: 'OpenAI Codex Test OAuth',
         baseUrl: 'https://example.invalid',
         apiKey: 'PI_BG_TEST_KEY',
@@ -800,9 +802,11 @@ void describe('sdk', () => {
           },
         ],
       });
-      const originalOAuth = session.modelRegistry.isUsingOAuth.bind(session.modelRegistry);
-      session.modelRegistry.isUsingOAuth = (model) =>
-        model.provider === 'openai-codex' && model.id === 'gpt-5.5' ? true : originalOAuth(model);
+      // Pi 0.83 builds its own ModelRegistry facade per session, so the OAuth
+      // observation must be stubbed on the shared ModelRuntime it delegates to.
+      const originalOAuth = modelRuntime.isUsingOAuth.bind(modelRuntime);
+      modelRuntime.isUsingOAuth = (providerId: string) =>
+        providerId === 'openai-codex' ? true : originalOAuth(providerId);
       const bin = join(cwd, 'bin');
       await mkdir(bin, { recursive: true });
       const fakePi = join(bin, 'pi');

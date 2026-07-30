@@ -129,7 +129,9 @@ function errorArtifactSuffix(error: unknown): string {
 function toolFailureMessage(error: unknown): string {
   const coordinates: string[] = [];
   if (error instanceof FusionError) {
-    if (error.stage !== undefined) coordinates.push(`stage=${error.stage}`);
+    const budget = error.budget;
+    if (budget !== undefined) coordinates.push(`stage=${budget.budget_stage}`);
+    else if (error.stage !== undefined) coordinates.push(`stage=${error.stage}`);
     if (error.slot !== undefined) coordinates.push(`slot=${String(error.slot)}`);
     if (error.attempt !== undefined) coordinates.push(`attempt=${String(error.attempt)}`);
   }
@@ -358,6 +360,7 @@ export function registerFusionExtension(pi: ExtensionAPI): void {
         sessionId,
         canonicalInput: built.input,
         canonicalInputSerialized: built.serialized,
+        contextLedger: built.ledger,
         config: loaded.config,
         models,
         signal: controller.signal,

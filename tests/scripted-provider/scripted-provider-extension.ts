@@ -362,7 +362,7 @@ export default function scriptedProviderExtension(pi: ExtensionAPI): void {
         reasoning: false,
         input: ['text'],
         cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-        contextWindow: 128_000,
+        contextWindow: 272_000,
         maxTokens: 4096,
       },
     ],

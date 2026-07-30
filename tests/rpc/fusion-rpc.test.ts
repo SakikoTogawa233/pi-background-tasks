@@ -252,7 +252,10 @@ void describe('fusion RPC integration', () => {
       const candidate = calls.find((call) => call.stage === 'candidate');
       assert.ok(candidate, 'candidate call should be logged');
       const input = parseJsonRecord(candidate.stdin);
-      assert.equal(input['request'], 'rpc prompt with separators \u2028 and \u2029 kept');
+      const request = input['request'];
+      assert.ok(isRecord(request), 'canonical request must be an object');
+      assert.equal(request['text'], 'rpc prompt with separators \u2028 and \u2029 kept');
+      assert.equal(request['authority'], 'directive_over_projected_conversation');
       for (const flag of [
         '--no-tools',
         '--no-extensions',

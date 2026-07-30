@@ -173,6 +173,7 @@ void describe('package', () => {
       'src/core/attested-pi-run.ts',
       'src/core/fusion/orchestrator.ts',
       'src/core/fusion/pi-child.ts',
+      'src/core/fusion/budget.ts',
       'src/fusion-extension.ts',
       'src/fusion-child-extension.ts',
       'extensions/background-tasks.ts',
@@ -210,6 +211,10 @@ void describe('package', () => {
       'fusion-result',
       'fusion-models.json',
       '.pi/fusion',
+      'context-omission-ledger.json',
+      'budget-plan.json',
+      'fusion-input.v2',
+      'prompt_budget_exceeded',
     ]) {
       assert.match(
         readme,
@@ -234,6 +239,7 @@ void describe('package', () => {
       'src/core/fusion/pi-child.ts',
       'src/core/fusion/artifacts.ts',
       'src/core/fusion/orchestrator.ts',
+      'src/core/fusion/budget.ts',
       'src/ui/fusion-model-selector.ts',
       'src/fusion-child-extension.ts',
       'extensions/background-tasks.ts',
@@ -288,6 +294,70 @@ void describe('package', () => {
     assert.match(extension, /usage: cloneFusionUsage\(result\.details\.usage\)/);
   });
 
+  void it('keeps the Fusion context/budget path free of silent truncation and fallback shapes', async () => {
+    const context = await text('src/core/fusion/context.ts');
+    const budget = await text('src/core/fusion/budget.ts');
+    const orchestratorText = await text('src/core/fusion/orchestrator.ts');
+    const orchestratorSource = () => orchestratorText;
+
+    // No clipping of retained conversational text. Scan code only: comments
+    // legitimately discuss truncation in order to forbid it.
+    const codeOnly = (source: string): string =>
+      source
+        .replace(/\/\*[\s\S]*?\*\//g, '')
+        .split('\n')
+        .filter((line) => !line.trim().startsWith('//'))
+        .join('\n');
+    for (const [label, source] of [
+      ['context', codeOnly(context)],
+      ['budget', codeOnly(budget)],
+    ] as const) {
+      assert.doesNotMatch(source, /\.slice\(/, `${label} must not clip retained content`);
+      assert.doesNotMatch(source, /\.substring\(/, `${label} must not clip retained content`);
+      assert.doesNotMatch(source, /\.trim\(\)\.slice/, `${label} must not clip retained content`);
+      assert.doesNotMatch(source, /catch\s*\{\s*\}/, `${label} must not swallow errors`);
+    }
+
+    // The projection must never carry a payload preview, however it is spelled.
+    assert.match(context, /tool_payload_preview_bytes: 0/);
+
+    // Budget rejection must be a loud typed error, never a clamp or a downgrade.
+    assert.match(budget, /prompt_budget_exceeded/);
+    assert.match(budget, /model_capacity_unknown/);
+    assert.doesNotMatch(budget, /Math\.min\([^)]*allowed/i, 'budget must not clamp to fit');
+
+    // Output contracts must be enforced, which is what makes the downstream
+    // reserve a guarantee rather than an assumption.
+    assert.match(budget, /assertChildOutputWithinContract/);
+    assert.match(budget, /child_output_cap/);
+    assert.match(orchestratorSource(), /assertChildOutputWithinContract\('candidate'/);
+
+    // The downstream reserve must be converted through the same byte-to-token
+    // function used to measure prompts, not reserved as output tokens directly.
+    assert.match(
+      budget,
+      /FUSION_DOWNSTREAM_RESERVE_TOKENS = Math\.ceil\(\s*FUSION_DOWNSTREAM_RESERVE_BYTES \/ FUSION_BYTES_PER_TOKEN_DIVISOR/,
+    );
+
+    // Safety must derive from the smallest route, so no max-style selection.
+    assert.doesNotMatch(budget, /Math\.max\([^)]*allowed_input_tokens/);
+    assert.match(budget, /smallest input budget|never the largest/);
+
+    // The conservative divisor must not drift to the 4-bytes-per-token assumption.
+    assert.match(budget, /FUSION_BYTES_PER_TOKEN_DIVISOR = 2/);
+
+    // Every budget stage must be guarded in the orchestrator before spawning.
+    const orchestrator = orchestratorSource();
+    for (const stage of ['candidate', 'evaluation', 'evaluation_repair', 'merge']) {
+      assert.match(
+        orchestrator,
+        new RegExp(`assertStagePrompt\\(\\s*'${stage}'`),
+        `orchestrator must preflight the ${stage} stage`,
+      );
+    }
+    assert.match(orchestrator, /assertBaseContext\(/);
+  });
+
   void it('packs exactly the runtime/docs payload and excludes tests/artifacts', () => {
     const envRoot = makeIsolatedEnvRoot('pi-bg-pack-env-');
     const r = spawnSync('npm', ['pack', '--dry-run', '--json'], {
@@ -320,6 +390,7 @@ void describe('package', () => {
       'src/core/fusion/pi-child.ts',
       'src/core/fusion/artifacts.ts',
       'src/core/fusion/orchestrator.ts',
+      'src/core/fusion/budget.ts',
       'src/testing/normalize.ts',
       'README.md',
       'TESTING.md',

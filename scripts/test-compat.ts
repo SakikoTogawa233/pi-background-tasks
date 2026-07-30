@@ -1,6 +1,6 @@
 import { spawn, spawnSync } from 'node:child_process';
-import { existsSync } from 'node:fs';
-import { mkdir, mkdtemp, readFile, rm } from 'node:fs/promises';
+import { existsSync, readFileSync } from 'node:fs';
+import { mkdir, mkdtemp, readFile, readdir, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { isDeepStrictEqual } from 'node:util';
@@ -8,8 +8,48 @@ import { parseJsonText } from '../src/core/common.js';
 import { isolatedTestEnv } from '../src/testing/normalize.js';
 import { installFusionFakePi, resolveRealPiCli } from '../tests/helpers/fusion-fake-pi.js';
 
-const requiredVersions = ['0.75.5', '0.81.1', '0.82.1'] as const;
+const requiredVersions = ['0.75.5', '0.81.1', '0.82.1', '0.83.0'] as const;
 const root = new URL('../', import.meta.url).pathname;
+
+/**
+ * TypeBox APIs removed in the 1.3.x line bundled by Pi 0.83.0. The package must
+ * not reference these in source or in the packed tarball bytes.
+ */
+const REMOVED_TYPEBOX_APIS = [
+  'Type.Base',
+  'Type.Awaited',
+  'Type.Promise',
+  'Type.AsyncIterator',
+  'Type.Iterator',
+  'Type.Options',
+  'Value.Mutate',
+] as const;
+
+/** Pi bundles typebox, so it must be a peer dependency with the documented "*" range. */
+function verifyTypeBoxPeerPosture(): void {
+  const manifest = parseJsonText(
+    readFileSync(join(root, 'package.json'), 'utf8'),
+  );
+  if (!isRecord(manifest)) throw new Error('package.json must be an object');
+  const peers = manifest['peerDependencies'];
+  if (!isRecord(peers)) throw new Error('package.json peerDependencies must be an object');
+  if (peers['typebox'] !== '*') {
+    throw new Error(
+      `typebox must be declared as a "*" peer dependency per Pi package rules, saw ${String(peers['typebox'])}`,
+    );
+  }
+  for (const key of ['@earendil-works/pi-coding-agent', '@earendil-works/pi-tui']) {
+    const range = peers[key];
+    if (typeof range !== 'string' || !range.includes('0.83'))
+      throw new Error(`${key} peer range must declare Pi 0.83 support, saw ${String(range)}`);
+  }
+  const deps = manifest['dependencies'];
+  if (isRecord(deps) && deps['typebox'] !== undefined)
+    throw new Error('typebox must not be a runtime dependency; Pi bundles it');
+  const bundled = manifest['bundledDependencies'];
+  if (Array.isArray(bundled) && bundled.includes('typebox'))
+    throw new Error('typebox must never be bundled');
+}
 
 interface PackFileEntry {
   filename: string;
@@ -268,8 +308,64 @@ function parsePack(text: string): PackFileEntry {
   return { filename: requireString(first['filename'], 'pack filename') };
 }
 
+/**
+ * Recursively scan installed package source for TypeBox APIs removed in 1.3.x.
+ * This runs against the *installed* (packed) bytes, not the working tree, so a
+ * removed API cannot reach users through the tarball.
+ */
+async function assertNoRemovedTypeBoxApis(packageDir: string, label: string): Promise<void> {
+  const stack = [packageDir];
+  let scanned = 0;
+  while (stack.length > 0) {
+    const dir = stack.pop();
+    if (dir === undefined) break;
+    for (const entry of await readdir(dir, { withFileTypes: true })) {
+      const path = join(dir, entry.name);
+      if (entry.isDirectory()) {
+        if (entry.name !== 'node_modules') stack.push(path);
+        continue;
+      }
+      if (!/\.(?:ts|js|mjs|cjs|json|md)$/.test(entry.name)) continue;
+      const text = await readFile(path, 'utf8');
+      scanned += 1;
+      for (const api of REMOVED_TYPEBOX_APIS) {
+        // Match real member access, not prose mentioning the identifier.
+        if (new RegExp(`\\b${api.replace('.', '\\.')}\\s*\\(`).test(text)) {
+          throw new Error(`${label}: packed file ${path} uses removed TypeBox API ${api}`);
+        }
+      }
+    }
+  }
+  if (scanned === 0) throw new Error(`${label}: scanned no packed files`);
+}
+
+function assertBundledTypeBox(temp: string, version: string, expectedRange: string): void {
+  // The package must resolve Pi's bundled typebox, never a private copy.
+  const nested = join(temp, 'node_modules', 'pi-background-tasks', 'node_modules', 'typebox');
+  if (existsSync(nested))
+    throw new Error(`Pi ${version}: package must not ship or install a private typebox at ${nested}`);
+  const hoisted = join(temp, 'node_modules', 'typebox', 'package.json');
+  if (!existsSync(hoisted)) throw new Error(`Pi ${version}: typebox peer was not installed`);
+  const parsed = parseJsonText(readFileSync(hoisted, 'utf8'));
+  if (!isRecord(parsed)) throw new Error('typebox package.json must be an object');
+  const installed = requireString(parsed['version'], 'typebox version');
+  if (!installed.startsWith(expectedRange))
+    throw new Error(
+      `Pi ${version}: expected typebox ${expectedRange}x, resolved ${installed}`,
+    );
+  console.log(`  Pi ${version}: typebox ${installed} (peer, not bundled)`);
+}
+
+/** Pi 0.83.0 bundles TypeBox 1.3.7; older supported Pi lines bundle the 1.1.x line. */
+function expectedTypeBoxLine(version: string): { spec: string; prefix: string } {
+  return version.startsWith('0.83')
+    ? { spec: 'typebox@1.3.7', prefix: '1.3.' }
+    : { spec: 'typebox@^1.1.38', prefix: '1.1.' };
+}
+
 async function smokeVersion(version: string, tarballPath: string): Promise<void> {
   const temp = await mkdtemp(join(tmpdir(), `pi-bg-compat-${version}-`));
+  const typebox = expectedTypeBoxLine(version);
   try {
     run('npm', ['init', '-y'], temp);
     run(
@@ -282,9 +378,14 @@ async function smokeVersion(version: string, tarballPath: string): Promise<void>
         tarballPath,
         `@earendil-works/pi-coding-agent@${version}`,
         `@earendil-works/pi-tui@${version}`,
-        'typebox@^1.1.38',
+        typebox.spec,
       ],
       temp,
+    );
+    assertBundledTypeBox(temp, version, typebox.prefix);
+    await assertNoRemovedTypeBoxApis(
+      join(temp, 'node_modules', 'pi-background-tasks'),
+      `Pi ${version}`,
     );
     const cli = join(temp, 'node_modules', '@earendil-works', 'pi-coding-agent', 'dist', 'cli.js');
     const extension = join(
@@ -492,6 +593,7 @@ async function verifyCurrentHostFusionUsage(): Promise<string> {
   }
 }
 
+verifyTypeBoxPeerPosture();
 const pack = parsePack(run('npm', ['pack', '--json'], root));
 const tarballPath = join(root, pack.filename);
 try {

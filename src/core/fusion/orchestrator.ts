@@ -1,5 +1,6 @@
 import { randomBytes as nodeRandomBytes } from 'node:crypto';
 import { parseJsonText } from '../common.js';
+import { FusionBudget, assertChildOutputWithinContract } from './budget.js';
 import {
   FusionArtifactStore,
   type CreateFusionArtifactStoreOptions,
@@ -29,8 +30,9 @@ import {
   FusionError,
   addFusionUsage,
   createEmptyFusionUsage,
-  type FusionCanonicalInputV1,
+  type FusionCanonicalInputV2,
   type FusionCandidateId,
+  type FusionContextOmissionLedgerV1,
   type FusionChildRunResult,
   type FusionErrorDetails,
   type FusionEvaluationV1,
@@ -54,8 +56,9 @@ export interface FusionWorkflowInput {
   source: FusionSource;
   cwd: string;
   sessionId?: string | undefined;
-  canonicalInput: FusionCanonicalInputV1;
+  canonicalInput: FusionCanonicalInputV2;
   canonicalInputSerialized: string;
+  contextLedger: FusionContextOmissionLedgerV1;
   config: FusionModelConfigV1;
   models: ResolvedFusionModels;
   signal?: AbortSignal | undefined;
@@ -101,6 +104,7 @@ function asFusionError(error: unknown, artifactDir: string, messageOverride?: st
     if (error.stage !== undefined) details.stage = error.stage;
     if (error.slot !== undefined) details.slot = error.slot;
     if (error.attempt !== undefined) details.attempt = error.attempt;
+    if (error.budget !== undefined) details.budget = error.budget;
     return new FusionError(messageOverride ?? error.message, details);
   }
   return new FusionError(messageOverride ?? errorText(error), {
@@ -332,9 +336,26 @@ export class FusionOrchestrator {
     const usage = createEmptyFusionUsage();
     try {
       await store.writeCanonicalInput(input.canonicalInputSerialized);
+      await store.writeContextLedger(input.contextLedger);
+      // Deterministic size accounting for the whole workflow, performed before
+      // a single child process exists. A rejection here launches zero children.
+      const budget = new FusionBudget(
+        input.models,
+        input.canonicalInput.conversation_projection.policy.id,
+      );
+      await store.writeBudgetPlan(
+        budget.plan(
+          input.canonicalInputSerialized,
+          Buffer.byteLength(FUSION_CANDIDATE_SYSTEM_PROMPT, 'utf8'),
+        ),
+      );
+      budget.assertBaseContext(
+        input.canonicalInputSerialized,
+        Buffer.byteLength(FUSION_CANDIDATE_SYSTEM_PROMPT, 'utf8'),
+      );
       await store.transition('candidates_running');
       input.onProgress?.({ type: 'state', state: 'candidates_running' });
-      const candidateResults = await this.runCandidates(input, store, usage);
+      const candidateResults = await this.runCandidates(input, store, usage, budget);
       await store.transition('candidates_complete');
       input.onProgress?.({ type: 'state', state: 'candidates_complete' });
 
@@ -345,7 +366,7 @@ export class FusionOrchestrator {
 
       await store.transition('evaluating');
       input.onProgress?.({ type: 'state', state: 'evaluating' });
-      const evaluation = await this.runEvaluation(input, store, usage, blindInput);
+      const evaluation = await this.runEvaluation(input, store, usage, blindInput, budget);
       await store.writeEvaluationJson(evaluation);
       await store.transition('evaluation_complete');
       input.onProgress?.({ type: 'state', state: 'evaluation_complete' });
@@ -354,6 +375,7 @@ export class FusionOrchestrator {
       input.onProgress?.({ type: 'state', state: 'merging' });
       const mergeInput = buildMergeInput(input.canonicalInput, shuffled.candidates, evaluation);
       const mergePrompt = buildMergePrompt(mergeInput);
+      budget.assertStagePrompt('merge', FUSION_MERGER_SYSTEM_PROMPT, mergePrompt);
       input.onProgress?.({ type: 'merge_started' });
       const merged = await this.runChildWithRetry(
         input,
@@ -369,6 +391,7 @@ export class FusionOrchestrator {
       );
       addFusionUsage(usage, merged.usage);
       await store.recordChildAttempt({ result: merged, prompt: mergePrompt, responseKind: 'md' });
+      assertChildOutputWithinContract('merge', merged.text);
       await store.writeMerged(merged.text);
       await store.setUsage(usage);
       await store.transition('completed');
@@ -422,12 +445,14 @@ export class FusionOrchestrator {
     input: FusionWorkflowInput,
     store: FusionArtifactStore,
     usage: FusionUsage,
+    budget: FusionBudget,
   ): Promise<readonly CandidateResult[]> {
     const controller = new AbortController();
     const abortListener = () => controller.abort();
     input.signal?.addEventListener('abort', abortListener, { once: true });
     if (input.signal?.aborted) controller.abort();
     const prompt = buildCandidatePrompt(input.canonicalInput);
+    budget.assertStagePrompt('candidate', FUSION_CANDIDATE_SYSTEM_PROMPT, prompt);
     let primaryError: unknown;
     let completed = 0;
     try {
@@ -453,6 +478,9 @@ export class FusionOrchestrator {
           'md',
         ).then(async (result) => {
           await store.recordChildAttempt({ result, prompt, responseKind: 'md' });
+          // The response is durable before the contract check, so an oversized
+          // answer is preserved as evidence rather than lost.
+          assertChildOutputWithinContract('candidate', result.text);
           completed += 1;
           addFusionUsage(usage, result.usage);
           await store.setUsage(usage);
@@ -485,8 +513,10 @@ export class FusionOrchestrator {
     store: FusionArtifactStore,
     usage: FusionUsage,
     blindInput: Parameters<typeof buildEvaluationPrompt>[0],
+    budget: FusionBudget,
   ): Promise<FusionEvaluationV1> {
     const firstPrompt = buildEvaluationPrompt(blindInput);
+    budget.assertStagePrompt('evaluation', FUSION_EVALUATOR_SYSTEM_PROMPT, firstPrompt);
     const first = await this.runEvaluationAttempt(input, store, usage, firstPrompt, 1, false);
     if (first.evaluation !== undefined) return first.evaluation;
     const errors = boundedEvaluationErrors(first.errors);
@@ -497,6 +527,11 @@ export class FusionOrchestrator {
       invalid_output: first.result.text,
       validation_errors: errors,
     });
+    budget.assertStagePrompt(
+      'evaluation_repair',
+      FUSION_EVALUATION_REPAIR_SYSTEM_PROMPT,
+      repairPrompt,
+    );
     const second = await this.runEvaluationAttempt(input, store, usage, repairPrompt, 2, true);
     if (second.evaluation !== undefined) return second.evaluation;
     throw new FusionError(
@@ -537,6 +572,8 @@ export class FusionOrchestrator {
     addFusionUsage(usage, result.usage);
     await store.recordChildAttempt({ result, prompt, responseKind: 'txt' });
     await store.setUsage(usage);
+    // Bound the evaluator output before it can be embedded in a repair prompt.
+    assertChildOutputWithinContract('evaluation', result.text);
     const parsed = parseEvaluationAttempt(result.text);
     return { result, evaluation: parsed.evaluation, errors: parsed.errors };
   }
