@@ -1207,12 +1207,27 @@ void describe('BackgroundTaskRegistry', () => {
       await writeFile(join(h.cwd, 'report.md'), 'unit report\n', 'utf8');
       assert.match(task.id, /^b[0-9a-f]{32}$/);
       const spawn = lastSpawn(h);
-      assert.equal(spawn.shell, 'pi');
+      // This harness inherits the host platform, so the launch shape is
+      // asserted per platform. On POSIX the resolved executable is the `pi`
+      // entry on PATH. On Windows npm installs `pi` as a `pi.cmd` shim that a
+      // shell-less spawn cannot resolve, so the Pi package bin is launched
+      // through the current Node executable instead. Both are correct
+      // production behaviour for their platform.
+      const piArgs = process.platform === 'win32' ? spawn.args.slice(1) : [...spawn.args];
+      if (process.platform === 'win32') {
+        assert.equal(spawn.shell, process.execPath);
+        assert.ok(
+          spawn.args[0]?.endsWith('cli.js'),
+          'Windows launches the resolved Pi bin as the first argument',
+        );
+      } else {
+        assert.equal(spawn.shell, 'pi');
+      }
       assert.equal(spawn.options.env?.['OPENAI_API_KEY'], undefined);
       assert.equal(spawn.options.env?.['OPENAI_BASE_URL'], undefined);
       assert.equal(spawn.options.env?.['ANTHROPIC_API_KEY'], undefined);
       assert.equal(spawn.options.env?.['OPENROUTER_API_KEY'], undefined);
-      assert.deepEqual(spawn.args, [
+      assert.deepEqual(piArgs, [
         '--mode',
         'json',
         '--provider',
@@ -1247,7 +1262,11 @@ void describe('BackgroundTaskRegistry', () => {
       assert.equal(invocation['model_id'], 'gpt-5.5');
       assert.equal(invocation['credential_kind'], 'oauth');
       assert.equal(invocation['direct_api_key'], false);
-      assert.deepEqual(invocation['argv'], ['pi', ...spawn.args]);
+      // The recorded evidence argv is the logical Pi invocation on every
+      // platform. It deliberately stays ['pi', ...] rather than echoing the
+      // Windows Node-plus-cli.js launch form, so attestation evidence keeps one
+      // stable meaning across platforms.
+      assert.deepEqual(invocation['argv'], ['pi', ...piArgs]);
       const sourceHashes = requiredJsonObject(attestation['source_hashes'], 'source hashes');
       const artifacts = requiredJsonObject(attestation['artifacts'], 'artifacts');
       assert.equal(

@@ -23,6 +23,7 @@ import {
   type BackgroundTaskContext,
   type BackgroundTaskSpawn,
 } from '../../src/core/registry.js';
+import type { TaskkillOutcome, WindowsKillPhase } from '../../src/core/windows-taskkill.js';
 import type { BgTaskSnapshot } from '../../src/core/common.js';
 
 class MemoryEventBus implements EventBus {
@@ -154,11 +155,44 @@ async function createProtocolHarness(
     options.onSpawn?.(child);
     return child;
   };
+  // This harness spawns a FakeChild rather than a real process, so its pid is
+  // fabricated. Both termination seams are therefore injected and routed back
+  // to the fake child.
+  //
+  // Without them the registry would resolve the live host platform: on Windows
+  // it took the taskkill branch and issued a real process-tree kill against a
+  // pid that never existed, so FakeChild.kill was never called, no 'close' was
+  // ever emitted, and the task never reached a terminal state.
+  //
+  // Pinning the platform keeps this protocol test deterministic on every host.
+  // Real Windows termination behaviour is proven on a real Windows host by
+  // tests/windows/windows-integration.test.ts (grandchild tree teardown) and
+  // by the injected killTree cases in tests/unit/registry.test.ts.
+  const killProcess = (pid: number, signal?: NodeJS.Signals | number): boolean => {
+    const target = children.find((child) => child.pid === Math.abs(pid));
+    if (!target) throw new Error(`no fake child for pid ${String(pid)}`);
+    target.kill(typeof signal === 'string' ? signal : 'SIGTERM');
+    return true;
+  };
+  const killTree = (pid: number, phase: WindowsKillPhase): Promise<TaskkillOutcome> => {
+    killProcess(pid, phase === 'force' ? 'SIGKILL' : 'SIGTERM');
+    return Promise.resolve({
+      exitCode: 0,
+      signal: null,
+      stdout: '',
+      stderr: '',
+      stdoutTruncated: false,
+      stderrTruncated: false,
+    });
+  };
   const registry = new BackgroundTaskRegistry({
     makeTaskId: () => `bproto${String(++idSeq).padStart(3, '0')}`,
     sendCompletionNotification: () => {},
     killGraceMs: 20,
     stopWaitMs: 500,
+    platform: 'linux',
+    killProcess,
+    killTree,
     spawn,
     publishTerminal: (task) => {
       if (!service) throw new Error('test EventBus service is not installed');
@@ -277,9 +311,11 @@ async function emitRequest(
   return pending;
 }
 
-// Windows process creation through cmd.exe is materially slower than a POSIX
-// fork/exec, so the default budget is raised there rather than globally.
-const TERMINAL_WAIT_TIMEOUT_MS = process.platform === 'win32' ? 15_000 : 1500;
+// This suite drives the EventBus terminal-publication protocol against an
+// injected fake child, so no real process is ever created and the budget does
+// not depend on host process-creation cost. A genuine hang must still fail
+// fast on every platform.
+const TERMINAL_WAIT_TIMEOUT_MS = 1500;
 
 async function waitForTerminal(
   terminals: readonly BackgroundTaskExtensionTerminal[],
@@ -428,9 +464,8 @@ void describe('background EventBus protocol', () => {
         order.push(`terminal:${terminal.task.id}:${terminal.task.status}`);
       });
       try {
-        // `printf` is POSIX-only; cmd.exe has no such command, so the child
-        // would fail before reaching a terminal state on Windows. `echo` is
-        // available in both dialects.
+        // The spawn seam returns a FakeChild, so this command string is never
+        // executed by a real shell. It is asserted verbatim on the task record.
         const echoCommand = `echo ${options.label}`;
         const payload: Record<string, unknown> = {
           name: `Case ${options.label}`,

@@ -309,7 +309,26 @@ void describe('fusion RPC integration', () => {
         assert.equal(response['success'], true);
         await rpc.wait(notifyWith(/Fusion failed:.*exited with code 42/s));
         const calls = await readInvocations(fakeLogPath);
-        assert.equal(calls.filter((call) => call.stage === 'candidate').length, 3);
+        // The candidate wave launches three children, but the first failure
+        // aborts its siblings. A sibling that is signalled while still blocked
+        // reading its prompt from stdin exits before it can append its
+        // invocation line, so the observed count is bounded rather than exact.
+        // Pinning it to exactly three encodes a timing assumption that
+        // cancellation deliberately breaks. The exact-count contract is proven
+        // deterministically, without real processes, by the
+        // 'cancels sibling candidates on first failure and never degrades to
+        // evaluation' case in tests/unit/fusion-orchestrator.test.ts.
+        const candidateCalls = calls.filter((call) => call.stage === 'candidate').length;
+        assert.ok(
+          candidateCalls >= 1,
+          `the candidate wave must launch at least one child, saw ${String(candidateCalls)}`,
+        );
+        assert.ok(
+          candidateCalls <= 3,
+          `the candidate wave must not exceed three children, saw ${String(candidateCalls)}`,
+        );
+        // The safety property: a failed candidate wave must never degrade into
+        // a later stage. This stays exact and must not be relaxed.
         assert.equal(
           calls.some((call) => call.stage === 'evaluation' || call.stage === 'merge'),
           false,
