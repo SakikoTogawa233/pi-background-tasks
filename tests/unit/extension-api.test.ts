@@ -424,9 +424,13 @@ void describe('background EventBus protocol', () => {
         order.push(`terminal:${terminal.task.id}:${terminal.task.status}`);
       });
       try {
+        // `printf` is POSIX-only; cmd.exe has no such command, so the child
+        // would fail before reaching a terminal state on Windows. `echo` is
+        // available in both dialects.
+        const echoCommand = `echo ${options.label}`;
         const payload: Record<string, unknown> = {
           name: `Case ${options.label}`,
-          command: `printf ${options.label}`,
+          command: echoCommand,
           isAgent: false,
           notifyOnCompletion: false,
           triggerOnCompletion: false,
@@ -441,7 +445,7 @@ void describe('background EventBus protocol', () => {
         });
         assert.equal(run.ok, true, run.ok ? 'ok' : run.error);
         const task = requireTask(run.ok ? run.result : undefined, `${options.label}.run.result`);
-        assert.equal(task.command, `printf ${options.label}`);
+        assert.equal(task.command, echoCommand);
         await options.afterRun?.(h, task, order);
         const terminal = await waitForTerminal(terminals, task.id, options.timeoutMs ?? 1500);
         assert.equal(terminal.task.id, task.id);

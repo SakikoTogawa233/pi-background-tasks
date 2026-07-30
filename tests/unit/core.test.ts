@@ -131,7 +131,16 @@ void describe('core', () => {
     assert.equal(formatCompactNumber(42_000), '42k');
     assert.equal(sanitizePathSegment('a/b c'), 'a-b-c');
     assert.equal(sanitizePathSegment('///'), 'session');
-    assert.equal(shellInvocation('echo ok').args.includes('echo ok'), true);
+    // Pin both dialects explicitly. The host default differs by platform:
+    // cmd.exe requires the paired outer-quoted form, POSIX passes the command
+    // through verbatim, so an unpinned assertion fails on Windows.
+    assert.equal(shellInvocation('echo ok', 'linux', {}).args.includes('echo ok'), true);
+    assert.deepEqual(shellInvocation('echo ok', 'win32', { ComSpec: 'cmd.exe' }).args, [
+      '/d',
+      '/s',
+      '/c',
+      '"echo ok"',
+    ]);
     assert.equal(normalizeMaxBytes(-1, 123), 1);
     assert.equal(normalizeMaxBytes(Number.NaN, 123), 123);
     assert.equal(normalizeMaxBytes(1.9, 123), 1);

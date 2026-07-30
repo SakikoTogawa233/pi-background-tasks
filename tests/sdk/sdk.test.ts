@@ -534,7 +534,7 @@ void describe('sdk', () => {
       const r = await exec(session, 'bg_run', {
         isAgent: false,
         name: 'SDK Echo',
-        command: 'printf sdk-ok',
+        command: 'echo sdk-ok',
         notifyOnCompletion: false,
         triggerOnCompletion: false,
       });
@@ -692,7 +692,7 @@ void describe('sdk', () => {
 
       const run = await emitEventRequest(eventBus, 'sdk-run', 'run', {
         name: 'EventBus Echo',
-        command: 'printf api-ok',
+        command: 'echo api-ok',
         isAgent: false,
         notifyOnCompletion: false,
         triggerOnCompletion: false,
@@ -754,7 +754,7 @@ void describe('sdk', () => {
 
       const malformed = await emitEventRequest(eventBus, 'sdk-malformed', 'run', {
         name: 'Bad EventBus Run',
-        command: 'printf nope',
+        command: 'echo nope',
         isAgent: false,
         timeoutSeconds: null,
         notifyOnCompletion: true,
@@ -900,14 +900,17 @@ console.error('sdk stderr');
       const first = await exec(session, 'bg_run', {
         isAgent: false,
         name: 'SDK First',
-        command: 'printf abcdef',
+        // The head/tail assertions below are byte-exact, so the command must
+        // emit exactly six bytes with no trailing newline. `printf` is
+        // POSIX-only and `echo` appends a newline, so use node directly.
+        command: `node -e ${JSON.stringify('process.stdout.write("abcdef")')}`,
         notifyOnCompletion: false,
         triggerOnCompletion: false,
       });
       const second = await exec(session, 'bg_run', {
         isAgent: false,
         name: 'SDK Second',
-        command: 'printf 123456',
+        command: `node -e ${JSON.stringify('process.stdout.write("123456")')}`,
         notifyOnCompletion: false,
         triggerOnCompletion: false,
       });
@@ -1010,7 +1013,7 @@ console.error('sdk stderr');
       const hidden = await exec(session, 'bg_run', {
         isAgent: false,
         name: 'No Notify SDK',
-        command: 'printf quiet',
+        command: 'echo quiet',
         notifyOnCompletion: false,
         triggerOnCompletion: false,
       });
@@ -1109,7 +1112,7 @@ console.error('sdk stderr');
       const noTelemetry = await exec(session, 'bg_run', {
         isAgent: false,
         name: 'No Context SDK',
-        command: 'printf no-context',
+        command: 'echo no-context',
         notifyOnCompletion: false,
         triggerOnCompletion: false,
       });
@@ -1301,7 +1304,7 @@ console.log(JSON.stringify({ type: "message_end", message: secondMessage }));
       const done = await exec(session, 'bg_run', {
         isAgent: false,
         name: 'Footer Done',
-        command: 'printf done',
+        command: 'echo done',
         notifyOnCompletion: false,
         triggerOnCompletion: false,
       });
@@ -1329,7 +1332,7 @@ console.log(JSON.stringify({ type: "message_end", message: secondMessage }));
       const secondDone = await exec(session, 'bg_run', {
         isAgent: false,
         name: 'Footer Done Two',
-        command: 'printf two',
+        command: 'echo two',
         notifyOnCompletion: false,
         triggerOnCompletion: false,
       });
@@ -1375,7 +1378,7 @@ console.log(JSON.stringify({ type: "message_end", message: secondMessage }));
       const done = await exec(session, 'bg_run', {
         isAgent: false,
         name: 'Footer Done Matrix',
-        command: 'printf done',
+        command: 'echo done',
         notifyOnCompletion: false,
         triggerOnCompletion: false,
       });
@@ -1434,7 +1437,7 @@ console.log(JSON.stringify({ type: "message_end", message: secondMessage }));
       assert.throws(() => tool.prepareArguments?.(null), /arguments must be an object/);
       const invalid = { name: 'Background task', command: '', isAgent: false };
       await assert.rejects(
-        () => exec(session, 'bg_run', { name: 'Missing Agent Flag', command: 'printf ok' }),
+        () => exec(session, 'bg_run', { name: 'Missing Agent Flag', command: 'echo ok' }),
         /requires isAgent boolean/,
       );
       await assert.rejects(() => exec(session, 'bg_run', invalid), /Background command is empty/);
@@ -1452,7 +1455,7 @@ console.log(JSON.stringify({ type: "message_end", message: secondMessage }));
       const r = await exec(session, 'bg_run', {
         isAgent: false,
         name: 'Bad Shell',
-        command: 'printf nope',
+        command: 'echo nope',
         notifyOnCompletion: false,
         triggerOnCompletion: false,
       });
