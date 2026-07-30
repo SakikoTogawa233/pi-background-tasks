@@ -278,14 +278,77 @@ async function replaceWithOperations(
     await removeTemporary(operations, temporaryPath, writeResult.cleanupFailures);
     throwDurable(writeResult.primaryFailure, writeResult.cleanupFailures, path, temporaryPath, false);
   }
-  try {
-    await operations.rename(temporaryPath, path);
-  } catch (error) {
+  const renameError = await renameWithWindowsContention(operations, temporaryPath, path);
+  if (renameError !== undefined) {
     const cleanupFailures: DurableFailure[] = [];
     await removeTemporary(operations, temporaryPath, cleanupFailures);
-    throwDurable(failure('rename_file', path, error), cleanupFailures, path, temporaryPath, false);
+    throwDurable(
+      failure('rename_file', path, renameError),
+      cleanupFailures,
+      path,
+      temporaryPath,
+      false,
+    );
   }
   await syncDirectoryAfterRename(operations, path, temporaryPath);
+}
+
+/**
+ * Windows sharing-violation codes for a replace-rename.
+ *
+ * POSIX `rename(2)` atomically replaces the target. Windows `MoveFileEx` fails
+ * with a sharing violation when another process momentarily holds the target
+ * open, including transient scanners, indexers, and concurrent writers. The
+ * operation is legitimate and simply needs to be reattempted.
+ */
+const WINDOWS_RENAME_CONTENTION_CODES: ReadonlySet<string> = new Set([
+  'EPERM',
+  'EACCES',
+  'EBUSY',
+]);
+
+const WINDOWS_RENAME_ATTEMPTS = 10;
+const WINDOWS_RENAME_RETRY_DELAY_MS = 20;
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
+}
+
+/**
+ * Rename the temporary file over the target, retrying only Windows sharing
+ * violations.
+ *
+ * This is a bounded retry of a transient OS condition, not a fallback: the
+ * final failure is still returned and raised loudly, no alternative write path
+ * is taken, and no other platform or error code is retried.
+ *
+ * Returns the failure cause, or undefined on success.
+ */
+async function renameWithWindowsContention(
+  operations: DurableFileOperations,
+  temporaryPath: string,
+  targetPath: string,
+): Promise<unknown> {
+  const attempts = operations.platform === 'win32' ? WINDOWS_RENAME_ATTEMPTS : 1;
+  let lastError: unknown;
+  for (let attempt = 1; attempt <= attempts; attempt++) {
+    try {
+      await operations.rename(temporaryPath, targetPath);
+      return undefined;
+    } catch (error) {
+      lastError = error;
+      const code = nativeCodeForCause(error);
+      const retryable =
+        operations.platform === 'win32' &&
+        code !== undefined &&
+        WINDOWS_RENAME_CONTENTION_CODES.has(code);
+      if (!retryable || attempt === attempts) return error;
+      await delay(WINDOWS_RENAME_RETRY_DELAY_MS * attempt);
+    }
+  }
+  return lastError;
 }
 
 function temporaryPathForTarget(target: string): string {
