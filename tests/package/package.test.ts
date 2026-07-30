@@ -3,10 +3,41 @@ import assert from 'node:assert/strict';
 import { existsSync, mkdirSync, mkdtempSync, rmSync } from 'node:fs';
 import { mkdtemp, readFile, readdir, rm } from 'node:fs/promises';
 import { spawnSync } from 'node:child_process';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { parseJsonText } from '../../src/core/common.js';
+
+// npm ships as npm.cmd on Windows, and spawnSync with shell:false does not
+// consult PATHEXT, so spawning the bare name yields status null with no child.
+// Resolving npm's own JavaScript entry and running it through the current Node
+// executable avoids the shim without introducing shell:true, mirroring how
+// production resolves the Pi bin.
+function resolveNpmCli(): string {
+  const nodeDir = dirname(process.execPath);
+  const candidates = [
+    join(nodeDir, '..', 'lib', 'node_modules', 'npm', 'bin', 'npm-cli.js'),
+    join(nodeDir, 'node_modules', 'npm', 'bin', 'npm-cli.js'),
+  ];
+  for (const candidate of candidates) {
+    if (existsSync(candidate)) return candidate;
+  }
+  throw new Error(`cannot resolve npm-cli.js near ${process.execPath}`);
+}
+
+const npmCli = resolveNpmCli();
+
+function runNpm(
+  args: readonly string[],
+  options: { cwd: string; env: NodeJS.ProcessEnv },
+): { status: number | null; stdout: string; stderr: string } {
+  const result = spawnSync(process.execPath, [npmCli, ...args], {
+    cwd: options.cwd,
+    encoding: 'utf8',
+    env: options.env,
+  });
+  return { status: result.status, stdout: result.stdout, stderr: result.stderr };
+}
 
 interface PackageJson {
   name: string;
@@ -489,7 +520,10 @@ void describe('package', () => {
     const violations: SourceViolation[] = [];
     for (const file of files) {
       const source = stripComments(await readFile(file, 'utf8'));
-      const label = file.startsWith(root.pathname) ? file.slice(root.pathname.length) : file;
+      // file is a native path from walkSourceTree, so the prefix must be native
+      // too. Comparing against a URL pathname silently never matches on Windows.
+      const rootPath = fileURLToPath(root);
+      const label = file.startsWith(rootPath) ? file.slice(rootPath.length) : file;
       addPatternViolations(
         violations,
         label,
@@ -533,7 +567,18 @@ void describe('package', () => {
           .split('\n')
           .filter((line) => !line.trim().startsWith('//'))
           .join('\n');
-        if (/new URL\([^)]*\)\s*\.pathname/.test(stripped)) offenders.push(file);
+        // Matches both the inline form new URL(...).pathname and the indirect
+        // form where the URL is bound to a variable and read later. The indirect
+        // form previously escaped this guard and reached Windows CI.
+        const inlinePathname = /new URL\([^)]*\)\s*\.pathname/.test(stripped);
+        const urlBindings = [...stripped.matchAll(/\b(\w+)\s*=\s*new URL\(/g)].map(
+          (match) => match[1],
+        );
+        const indirectPathname = urlBindings.some(
+          (binding) =>
+            binding !== undefined && new RegExp(`\\b${binding}\\s*\\.pathname\\b`).test(stripped),
+        );
+        if (inlinePathname || indirectPathname) offenders.push(file);
       }
     }
     assert.deepEqual(
@@ -592,9 +637,8 @@ void describe('package', () => {
 
   void it('packs exactly the runtime/docs payload and excludes tests/artifacts', () => {
     const envRoot = makeIsolatedEnvRoot('pi-bg-pack-env-');
-    const r = spawnSync('npm', ['pack', '--dry-run', '--json'], {
-      cwd: root,
-      encoding: 'utf8',
+    const r = runNpm(['pack', '--dry-run', '--json'], {
+      cwd: fileURLToPath(root),
       env: isolatedNpmEnv(envRoot),
     });
     removeIsolatedEnvRoot(envRoot);
@@ -645,24 +689,23 @@ void describe('package', () => {
     const packEnvRoot = makeIsolatedEnvRoot('pi-bg-pack-env-');
     const installEnvRoot = makeIsolatedEnvRoot('pi-bg-install-env-');
     try {
-      const pack = spawnSync('npm', ['pack', '--json'], {
-        cwd: root,
-        encoding: 'utf8',
+      const pack = runNpm(['pack', '--json'], {
+        cwd: fileURLToPath(root),
         env: isolatedNpmEnv(packEnvRoot),
       });
       assert.equal(pack.status, 0, pack.stderr);
       const firstEntry = parsePackEntries(pack.stdout)[0];
       assert.ok(firstEntry, 'npm pack must return one entry');
       tarball = new URL(firstEntry.filename, root);
-      const tarballPath = tarball.pathname;
-      const init = spawnSync('npm', ['init', '-y'], {
+      // fileURLToPath, never pathname: on Windows pathname yields a leading-slash
+      // form such as /D:/... which is not a usable native path.
+      const tarballPath = fileURLToPath(tarball);
+      const init = runNpm(['init', '-y'], {
         cwd: temp,
-        encoding: 'utf8',
         env: isolatedNpmEnv(installEnvRoot),
       });
       assert.equal(init.status, 0, init.stderr);
-      const install = spawnSync(
-        'npm',
+      const install = runNpm(
         [
           'install',
           '--legacy-peer-deps',
@@ -674,7 +717,6 @@ void describe('package', () => {
         ],
         {
           cwd: temp,
-          encoding: 'utf8',
           env: isolatedNpmEnv(installEnvRoot),
         },
       );
