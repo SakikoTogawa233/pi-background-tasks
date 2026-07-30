@@ -10,6 +10,12 @@ import type {
 } from './registry.js';
 import { isJsonObject, parseJsonText, type BgTaskSnapshot, type JsonObject } from './common.js';
 import { replaceFileDurable, writeFileDurable } from './durable-fs.js';
+import {
+  assertWindowsCommandLineWithinLimit,
+  piLaunchArgv,
+  resolvePiLaunch,
+  type PiLaunchSpec,
+} from './pi-launch.js';
 
 export const PI_TASK_ATTESTATION_SCHEMA_VERSION = 'phase2.pi_task_attestation.v1';
 export const ATTESTED_TASK_ID_PATTERN = /^b[0-9a-f]{32}$/;
@@ -454,12 +460,17 @@ export function spawnAndCapturePi(
   spawnImpl: BackgroundTaskSpawn,
   argv: string[],
   options: SpawnOptions,
+  platform: NodeJS.Platform = process.platform,
+  launchOverride?: PiLaunchSpec | undefined,
 ): { child: BackgroundTaskChildProcess; stdoutChunks: Buffer[]; stderrChunks: Buffer[] } {
   const stdoutChunks: Buffer[] = [];
   const stderrChunks: Buffer[] = [];
-  const executable = argv[0];
-  if (!executable) throw new Error('Attested Pi argv is empty');
-  const child = spawnImpl(executable, argv.slice(1), options);
+  const logicalExecutable = argv[0];
+  if (logicalExecutable !== 'pi') throw new Error('Attested Pi argv must start with pi');
+  const piArgs = argv.slice(1);
+  const launch = launchOverride ?? resolvePiLaunch({ platform });
+  assertWindowsCommandLineWithinLimit(launch, piArgs, platform, 'attested-pi-run');
+  const child = spawnImpl(launch.executable, piLaunchArgv(launch, piArgs), options);
   child.stdout?.on('data', (chunk: Buffer | string) => {
     stdoutChunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk, 'utf8'));
   });

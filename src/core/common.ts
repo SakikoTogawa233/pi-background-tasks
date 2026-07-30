@@ -1,5 +1,6 @@
 import { statSync, type WriteStream } from 'node:fs';
 import { open } from 'node:fs/promises';
+import { extname, isAbsolute, join, win32 } from 'node:path';
 import { DEFAULT_MAX_BYTES } from '@earendil-works/pi-coding-agent';
 import type { BackgroundTaskChildProcess } from './registry.js';
 
@@ -57,6 +58,7 @@ export interface BgTaskSnapshot {
   tokenUsage?: TaskTokenUsage | undefined;
   toolUsage?: TaskToolUsage | undefined;
   model?: string | undefined;
+  telemetryUnavailableReason?: string | undefined;
   attestationPath?: string | undefined;
 }
 
@@ -97,6 +99,7 @@ export interface BgTask extends Omit<BgTaskSnapshot, 'name'> {
   telemetryWrapped?: boolean | undefined;
   /** Partial trailing stdout line held between chunks while reconstructing wrapped-agent control lines. */
   agentStdoutBuffer?: string | undefined;
+  telemetryUnavailableReason?: string | undefined;
   attestationPath?: string | undefined;
   attestedPi?: AttestedPiTaskFiles | undefined;
   metadataWriteChain?: Promise<void> | undefined;
@@ -525,20 +528,131 @@ export function shellQuote(value: string): string {
   return `'${value.replace(/'/g, `'"'"'`)}'`;
 }
 
+export type ShellDialect = 'cmd' | 'posix';
+
+export interface ShellInvocation {
+  shell: string;
+  args: string[];
+  dialect: ShellDialect;
+  windowsVerbatimArguments: boolean;
+}
+
+export class ShellInvocationError extends Error {
+  readonly code = 'pi_bg_shell_invalid';
+
+  constructor(message: string) {
+    super(`pi_bg_shell_invalid: ${message}`);
+    this.name = 'ShellInvocationError';
+  }
+}
+
+type ShellCandidateResult =
+  | { readonly found: true }
+  | { readonly found: false; readonly diagnostic: string };
+
+function failShellInvocation(message: string): never {
+  throw new ShellInvocationError(message);
+}
+
+function shellErrorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+function isWindowsExecutablePath(path: string): boolean {
+  const extension = extname(path).toLowerCase();
+  return extension === '.exe' || extension === '.com';
+}
+
+function validateWindowsShellPath(path: string, label: string): string {
+  if (path.length === 0) failShellInvocation(`${label} is empty`);
+  if (!isAbsolute(path) && !win32.isAbsolute(path)) {
+    failShellInvocation(`${label} must be an absolute path`);
+  }
+  if (!isWindowsExecutablePath(path)) {
+    failShellInvocation(`${label} must point to a .exe or .com file`);
+  }
+  let stats: ReturnType<typeof statSync>;
+  try {
+    stats = statSync(path);
+  } catch (error) {
+    failShellInvocation(`${label} stat failed: ${shellErrorMessage(error)}`);
+  }
+  if (!stats.isFile()) failShellInvocation(`${label} must point to a regular file`);
+  return path;
+}
+
+function inspectWindowsShellCandidate(path: string): ShellCandidateResult {
+  if (!isWindowsExecutablePath(path)) {
+    return { found: false, diagnostic: `${path} is not a .exe or .com path` };
+  }
+  try {
+    const stats = statSync(path);
+    if (stats.isFile()) return { found: true };
+    return { found: false, diagnostic: `${path} is not a regular file` };
+  } catch (error) {
+    return { found: false, diagnostic: `${path}: ${shellErrorMessage(error)}` };
+  }
+}
+
+function windowsPathValue(env: NodeJS.ProcessEnv): string {
+  return env['PATH'] ?? env['Path'] ?? env['path'] ?? '';
+}
+
+function resolveWindowsBash(env: NodeJS.ProcessEnv): string {
+  const pathValue = windowsPathValue(env);
+  const diagnostics: string[] = [];
+  for (const dir of pathValue.split(';').filter((entry) => entry.length > 0)) {
+    for (const name of ['bash.exe', 'bash.com']) {
+      const candidate = join(dir, name);
+      const result = inspectWindowsShellCandidate(candidate);
+      if (result.found) return candidate;
+      diagnostics.push(result.diagnostic);
+    }
+  }
+  const suffix = diagnostics.length > 0 ? `: ${diagnostics.join('; ')}` : '';
+  failShellInvocation(`PI_BG_SHELL=bash could not resolve bash.exe or bash.com on PATH${suffix}`);
+}
+
+function cmdShellInvocation(command: string, shell: string): ShellInvocation {
+  return {
+    shell,
+    args: ['/d', '/s', '/c', `"${command}"`],
+    dialect: 'cmd',
+    windowsVerbatimArguments: true,
+  };
+}
+
+function posixShellInvocation(command: string, shell: string): ShellInvocation {
+  return { shell, args: ['-c', command], dialect: 'posix', windowsVerbatimArguments: false };
+}
+
 export function shellInvocation(
   command: string,
   platform: NodeJS.Platform = process.platform,
   env: NodeJS.ProcessEnv = process.env,
-): { shell: string; args: string[] } {
-  if (platform === 'win32') {
-    const comSpec = env['ComSpec'];
-    return {
-      shell: comSpec && comSpec.length > 0 ? comSpec : 'cmd.exe',
-      args: ['/d', '/s', '/c', command],
-    };
+): ShellInvocation {
+  if (platform !== 'win32') {
+    const shell = env['SHELL'];
+    return posixShellInvocation(command, shell && shell.length > 0 ? shell : '/bin/sh');
   }
-  const shell = env['SHELL'];
-  return { shell: shell && shell.length > 0 ? shell : '/bin/sh', args: ['-c', command] };
+
+  const requestedShell = env['PI_BG_SHELL'];
+  const requestedPath = env['PI_BG_SHELL_PATH'];
+  if (requestedShell === undefined) {
+    if (requestedPath !== undefined) failShellInvocation('PI_BG_SHELL_PATH requires PI_BG_SHELL');
+    const comSpec = env['ComSpec'];
+    return cmdShellInvocation(command, comSpec && comSpec.length > 0 ? comSpec : 'cmd.exe');
+  }
+  if (requestedShell !== 'cmd' && requestedShell !== 'bash') {
+    failShellInvocation('PI_BG_SHELL must be exactly cmd or bash');
+  }
+  const explicitPath =
+    requestedPath !== undefined ? validateWindowsShellPath(requestedPath, 'PI_BG_SHELL_PATH') : undefined;
+  if (requestedShell === 'cmd') {
+    const comSpec = env['ComSpec'];
+    return cmdShellInvocation(command, explicitPath ?? (comSpec && comSpec.length > 0 ? comSpec : 'cmd.exe'));
+  }
+  return posixShellInvocation(command, explicitPath ?? resolveWindowsBash(env));
 }
 
 export function normalizeMaxBytes(value: unknown, fallback = DEFAULT_LOG_BYTES): number {
@@ -571,6 +685,7 @@ export function snapshot(task: BgTask): BgTaskSnapshot {
     tokenUsage: task.tokenUsage,
     toolUsage: task.toolUsage,
     model: task.model,
+    telemetryUnavailableReason: task.telemetryUnavailableReason,
     attestationPath: task.attestationPath,
   };
 }

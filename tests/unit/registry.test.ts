@@ -3,12 +3,13 @@ import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
 import { existsSync, readFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
-import { join } from 'node:path';
+import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import { dirname, join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { parseJsonText } from '../../src/core/common.js';
 import {
   BackgroundTaskRegistry,
+  WIN32_CMD_PI_TELEMETRY_UNAVAILABLE_REASON,
   commandMayLaunchPiAgent,
   type BackgroundTaskContext,
   type BackgroundTaskSpawn,
@@ -17,6 +18,7 @@ import {
 } from '../../src/core/registry.js';
 import type { Api, Model } from '@earendil-works/pi-ai';
 import type { BgTask, BgTaskSnapshot } from '../../src/core/common.js';
+import type { TaskkillOutcome, WindowsKillPhase } from '../../src/core/windows-taskkill.js';
 
 type JsonObject = Record<PropertyKey, unknown>;
 
@@ -84,6 +86,11 @@ interface HarnessOptions {
   killGraceMs?: number;
   stopWaitMs?: number;
   killProcess?: (pid: number, signal?: NodeJS.Signals | number) => boolean;
+  killTree?: (
+    pid: number,
+    phase: WindowsKillPhase,
+    signal?: AbortSignal,
+  ) => Promise<TaskkillOutcome>;
   sendCompletionNotification?: (
     message: CompletionNotificationMessage,
     options: CompletionNotificationOptions,
@@ -141,6 +148,7 @@ async function createHarness(options: HarnessOptions = {}) {
   if (options.stopWaitMs !== undefined) registryOptions.stopWaitMs = options.stopWaitMs;
   if (options.now !== undefined) registryOptions.now = options.now;
   if (options.killProcess !== undefined) registryOptions.killProcess = options.killProcess;
+  if (options.killTree !== undefined) registryOptions.killTree = options.killTree;
   const registry = new BackgroundTaskRegistry(registryOptions);
   const ctx: BackgroundTaskContext = {
     cwd,
@@ -284,6 +292,51 @@ function lastSpawn(h: Awaited<ReturnType<typeof createHarness>>): SpawnRecord {
   return spawn;
 }
 
+function taskkillOutcome(exitCode: number | null, stderr = ''): TaskkillOutcome {
+  return {
+    exitCode,
+    signal: null,
+    stdout: '',
+    stderr,
+    stdoutTruncated: false,
+    stderrTruncated: false,
+  };
+}
+
+interface Deferred<T> {
+  promise: Promise<T>;
+  resolve(value: T): void;
+  reject(error: unknown): void;
+}
+
+function deferred<T>(): Deferred<T> {
+  let resolveFn: ((value: T) => void) | undefined;
+  let rejectFn: ((error: unknown) => void) | undefined;
+  const promise = new Promise<T>((resolve, reject) => {
+    resolveFn = resolve;
+    rejectFn = reject;
+  });
+  assert.ok(resolveFn, 'deferred resolve should initialize');
+  assert.ok(rejectFn, 'deferred reject should initialize');
+  return { promise, resolve: resolveFn, reject: rejectFn };
+}
+
+function isKillRequester(
+  value: unknown,
+): value is (task: BgTask, signal?: NodeJS.Signals) => void {
+  return typeof value === 'function';
+}
+
+function requestKillForTest(
+  registry: BackgroundTaskRegistry,
+  task: BgTask,
+  signal?: NodeJS.Signals,
+): void {
+  const method = Reflect.get(registry, 'requestKill');
+  assert.ok(isKillRequester(method), 'registry requestKill should be callable');
+  method.call(registry, task, signal);
+}
+
 async function startFakeTask(
   h: Awaited<ReturnType<typeof createHarness>>,
   name = 'Registry Task',
@@ -340,7 +393,16 @@ void describe('BackgroundTaskRegistry', () => {
         notifyOnCompletion: false,
       });
       assert.equal(agentPi.isAgent, true);
-      assert.match(lastSpawn(h).args.join('\n'), /pi\(\) \{ node .*pi-telemetry-wrapper\.cjs/);
+      const wrappedCommand = lastSpawn(h).args.join('\n');
+      assert.match(wrappedCommand, /pi\(\) \{ .*pi-telemetry-wrapper\.cjs/);
+      assert.ok(wrappedCommand.includes(process.execPath));
+      assert.doesNotMatch(wrappedCommand, /pi\(\) \{ node /);
+      const wrapperPath = join(dirname(agentPi.outputAbsPath), `${agentPi.id}.pi-telemetry-wrapper.cjs`);
+      const wrapperSource = await readFile(wrapperPath, 'utf8');
+      assert.match(wrapperSource, /const launch = /);
+      assert.match(wrapperSource, /spawn\(launch\.executable, childArgs, \{[^}]*shell: false/);
+      assert.doesNotMatch(wrapperSource, /spawn\("pi"/);
+      assert.doesNotThrow(() => new Function('require', 'process', wrapperSource.replace(/^#!.*\n/, '')));
 
       const pathQualifiedPi = await h.registry.startTask(h.ctx, '/usr/local/bin/pi -p hello', {
         name: 'Path Pi',
@@ -365,6 +427,58 @@ void describe('BackgroundTaskRegistry', () => {
       assert.doesNotMatch(lastSpawn(disabled).args.join('\n'), /pi-telemetry-wrapper/);
     } finally {
       await cleanup(disabled.root);
+    }
+  });
+
+  void it('leaves Pi agent commands unchanged under Windows cmd and records telemetry unavailability', async () => {
+    const h = await createHarness({
+      platform: 'win32',
+      env: { ComSpec: 'C:\\Windows\\System32\\cmd.exe' },
+    });
+    try {
+      const command = 'pi --mode json "hello & echo pwned"';
+      const task = await h.registry.startTask(h.ctx, command, {
+        name: 'Cmd Pi Agent',
+        isAgent: true,
+        notifyOnCompletion: false,
+      });
+      const spawn = lastSpawn(h);
+      assert.equal(task.command, command);
+      assert.equal(spawn.shell, 'C:\\Windows\\System32\\cmd.exe');
+      assert.deepEqual(spawn.args, ['/d', '/s', '/c', `"${command}"`]);
+      assert.equal(spawn.options.shell, undefined);
+      assert.equal(spawn.options.windowsVerbatimArguments, true);
+      assert.equal(task.telemetryWrapped, undefined);
+      assert.equal(task.telemetryUnavailableReason, WIN32_CMD_PI_TELEMETRY_UNAVAILABLE_REASON);
+      const files = await readdir(dirname(task.outputAbsPath));
+      assert.equal(files.some((file) => file.includes('pi-telemetry-wrapper')), false);
+      const metadata = parseJsonObject(
+        await readFile(task.metadataAbsPath, 'utf8'),
+        'metadata must be an object',
+      );
+      assert.equal(
+        metadata['telemetryUnavailableReason'],
+        WIN32_CMD_PI_TELEMETRY_UNAVAILABLE_REASON,
+      );
+      spawn.child.close(0, null);
+      await waitFor(() => task.status === 'completed', 'cmd telemetry task completion');
+      assert.equal(await readFile(task.outputAbsPath, 'utf8'), '');
+    } finally {
+      await cleanup(h.root);
+    }
+  });
+
+  void it('rejects unresolved Windows bash before creating a task', async () => {
+    const h = await createHarness({ platform: 'win32', env: { PI_BG_SHELL: 'bash', PATH: '' } });
+    try {
+      await assert.rejects(
+        h.registry.startTask(h.ctx, 'echo ok', { name: 'Bad Bash', notifyOnCompletion: false }),
+        /could not resolve bash/,
+      );
+      assert.equal(h.children.length, 0);
+      assert.equal(h.registry.allTasks().length, 0);
+    } finally {
+      await cleanup(h.root);
     }
   });
 
@@ -443,31 +557,255 @@ void describe('BackgroundTaskRegistry', () => {
     }
   });
 
-  void it('skips process-group kill on Windows and invokes child.kill directly', async () => {
+  void it('uses taskkill tree termination on Windows and never falls back to child.kill', async () => {
     let processKillCalled = false;
+    let childRef: FakeChild | undefined;
+    const killTreeCalls: Array<{ pid: number; phase: WindowsKillPhase }> = [];
     const h = await createHarness({
       platform: 'win32',
+      killGraceMs: 20,
+      stopWaitMs: 500,
       killProcess: () => {
         processKillCalled = true;
         return true;
       },
-      childFactory: (pid) =>
-        new FakeChild(pid, function (this: FakeChild, signal) {
+      killTree: (pid, phase) => {
+        killTreeCalls.push({ pid, phase });
+        if (phase === 'force') {
           queueMicrotask(() => {
-            this.close(null, signal ?? null);
+            childRef?.close(null, 'SIGKILL');
           });
-          return true;
-        }),
+        }
+        return Promise.resolve(taskkillOutcome(0));
+      },
+      childFactory: (pid) => {
+        childRef = new FakeChild(pid, () => {
+          throw new Error('root-only kill must not run');
+        });
+        return childRef;
+      },
     });
     try {
       const { task, child } = await startFakeTask(h, 'Windows Kill');
       await h.registry.stopTask(task, 'user');
       assert.equal(processKillCalled, false);
-      assert.deepEqual(child.killCalls, ['SIGTERM']);
+      assert.deepEqual(
+        killTreeCalls,
+        [
+          { pid: child.pid, phase: 'terminate' },
+          { pid: child.pid, phase: 'force' },
+        ],
+      );
+      assert.deepEqual(child.killCalls, []);
       const windowsSpawn = h.children[0];
       assert.ok(windowsSpawn, 'Windows shell spawn should be recorded');
       assert.equal(windowsSpawn.shell.toLowerCase(), 'cmd.exe');
       assert.deepEqual(windowsSpawn.args.slice(0, 3), ['/d', '/s', '/c']);
+    } finally {
+      await cleanup(h.root);
+    }
+  });
+
+  void it('shares duplicate Windows graceful stops and aborts soft taskkill when force starts', async () => {
+    let childRef: FakeChild | undefined;
+    let softAbortCount = 0;
+    let firstTimer: NodeJS.Timeout | undefined;
+    const phases: WindowsKillPhase[] = [];
+    const h = await createHarness({
+      platform: 'win32',
+      killGraceMs: 20,
+      stopWaitMs: 500,
+      killTree: (_pid, phase, signal) => {
+        phases.push(phase);
+        if (phase === 'terminate') {
+          if (signal !== undefined) {
+            signal.addEventListener(
+              'abort',
+              () => {
+                softAbortCount += 1;
+              },
+              { once: true },
+            );
+          }
+          return new Promise<TaskkillOutcome>(() => undefined);
+        }
+        assert.equal(signal, undefined, 'force taskkill must not reuse the soft abort signal');
+        assert.equal(softAbortCount, 1, 'soft attempt should be aborted before force starts');
+        queueMicrotask(() => {
+          childRef?.close(null, 'SIGKILL');
+        });
+        return Promise.resolve(taskkillOutcome(0));
+      },
+      childFactory: (pid) => {
+        childRef = new FakeChild(pid);
+        return childRef;
+      },
+    });
+    try {
+      const { task } = await startFakeTask(h, 'Windows Duplicate Stop');
+      const first = h.registry.stopTask(task, 'user');
+      firstTimer = task.killEscalationTimer;
+      assert.ok(firstTimer, 'first graceful stop should arm an escalation timer');
+      const second = h.registry.stopTask(task, 'user');
+      const third = h.registry.stopTask(task, 'user');
+      assert.equal(task.killEscalationTimer, firstTimer, 'duplicate stops must share one timer');
+      await Promise.all([first, second, third]);
+      assert.deepEqual(phases, ['terminate', 'force']);
+      assert.equal(task.killEscalationTimer, undefined);
+      assert.equal(softAbortCount, 1);
+    } finally {
+      await cleanup(h.root);
+    }
+  });
+
+  void it('treats explicit Windows force as terminal and does not arm escalation', async () => {
+    const phases: WindowsKillPhase[] = [];
+    const h = await createHarness({
+      platform: 'win32',
+      killGraceMs: 20,
+      killTree: (_pid, phase) => {
+        phases.push(phase);
+        return Promise.resolve(taskkillOutcome(0));
+      },
+    });
+    try {
+      const { task } = await startFakeTask(h, 'Windows Explicit Force');
+      requestKillForTest(h.registry, task, 'SIGKILL');
+      assert.equal(task.killEscalationTimer, undefined);
+      await new Promise((resolve) => setTimeout(resolve, 80));
+      assert.deepEqual(phases, ['force']);
+      assert.equal(task.killEscalationTimer, undefined);
+    } finally {
+      await cleanup(h.root);
+    }
+  });
+
+  void it('records Windows taskkill exit 128 as an already-exited race', async () => {
+    const h = await createHarness({
+      platform: 'win32',
+      killGraceMs: 500,
+      stopWaitMs: 1000,
+      killTree: () => Promise.resolve(taskkillOutcome(128, 'process not found')),
+    });
+    try {
+      const { task, child } = await startFakeTask(h, 'Windows Missing Process');
+      const stopped = h.registry.stopTask(task, 'user');
+      await waitFor(
+        () => readFileSync(task.outputAbsPath, 'utf8').includes('process not found'),
+        'exit 128 notice',
+      );
+      child.close(0, null);
+      await stopped;
+      assert.equal(task.status, 'killed');
+      assert.match(await readFile(task.outputAbsPath, 'utf8'), /already-exited race/);
+    } finally {
+      await cleanup(h.root);
+    }
+  });
+
+  void it('persists a Windows soft failure and still escalates to force after grace', async () => {
+    let childRef: FakeChild | undefined;
+    const phases: WindowsKillPhase[] = [];
+    const h = await createHarness({
+      platform: 'win32',
+      killGraceMs: 20,
+      stopWaitMs: 500,
+      killTree: (_pid, phase) => {
+        phases.push(phase);
+        if (phase === 'terminate') return Promise.resolve(taskkillOutcome(1, 'soft denied'));
+        queueMicrotask(() => {
+          childRef?.close(null, 'SIGKILL');
+        });
+        return Promise.resolve(taskkillOutcome(0));
+      },
+      childFactory: (pid) => {
+        childRef = new FakeChild(pid);
+        return childRef;
+      },
+    });
+    try {
+      const { task } = await startFakeTask(h, 'Windows Soft Failure');
+      await h.registry.stopTask(task, 'user');
+      assert.deepEqual(phases, ['terminate', 'force']);
+      assert.match(task.error ?? '', /soft denied/);
+      const metadata = parseJsonObject(await readFile(task.metadataAbsPath, 'utf8'), 'metadata');
+      assert.match(String(metadata['error']), /soft denied/);
+    } finally {
+      await cleanup(h.root);
+    }
+  });
+
+  void it('surfaces Windows force failure loudly without root-only fallback', async () => {
+    const h = await createHarness({
+      platform: 'win32',
+      killGraceMs: 20,
+      stopWaitMs: 500,
+      killTree: (_pid, phase) =>
+        Promise.resolve(phase === 'terminate' ? taskkillOutcome(1, 'soft denied') : taskkillOutcome(5, 'force denied')),
+      childFactory: (pid) =>
+        new FakeChild(pid, () => {
+          throw new Error('root-only kill must not run');
+        }),
+    });
+    try {
+      const { task, child } = await startFakeTask(h, 'Windows Force Failure');
+      await assert.rejects(
+        () => h.registry.stopTask(task, 'user'),
+        /Windows taskkill \/T \/F force termination failed[\s\S]*Descendant processes may have leaked/,
+      );
+      assert.equal(task.status, 'running');
+      assert.match(task.error ?? '', /force denied/);
+      assert.deepEqual(child.killCalls, []);
+    } finally {
+      await cleanup(h.root);
+    }
+  });
+
+  void it('keeps terminal metadata running until in-flight Windows force settles', async () => {
+    let childRef: FakeChild | undefined;
+    let forceStarted = false;
+    const force = deferred<TaskkillOutcome>();
+    const terminals: BgTaskSnapshot[] = [];
+    const h = await createHarness({
+      platform: 'win32',
+      killGraceMs: 20,
+      stopWaitMs: 1000,
+      publishTerminal: (task) => {
+        terminals.push(task);
+      },
+      killTree: (_pid, phase) => {
+        if (phase === 'terminate') return Promise.resolve(taskkillOutcome(0));
+        forceStarted = true;
+        queueMicrotask(() => {
+          childRef?.close(null, 'SIGKILL');
+        });
+        return force.promise;
+      },
+      childFactory: (pid) => {
+        childRef = new FakeChild(pid);
+        return childRef;
+      },
+    });
+    try {
+      const { task } = await startFakeTask(h, 'Windows Force Barrier');
+      const stopped = h.registry.stopTask(task, 'user');
+      await waitFor(() => forceStarted, 'force taskkill start');
+      await waitFor(() => task.finalized === true, 'child close reached finalization');
+      const runningMetadata = parseJsonObject(
+        await readFile(task.metadataAbsPath, 'utf8'),
+        'metadata before force settles',
+      );
+      assert.equal(runningMetadata['status'], 'running');
+      assert.equal(terminals.length, 0);
+      force.resolve(taskkillOutcome(0));
+      await stopped;
+      assert.equal(task.status, 'killed');
+      const terminalMetadata = parseJsonObject(
+        await readFile(task.metadataAbsPath, 'utf8'),
+        'metadata after force settles',
+      );
+      assert.equal(terminalMetadata['status'], 'killed');
+      assert.equal(terminals.length, 1);
     } finally {
       await cleanup(h.root);
     }
@@ -953,6 +1291,63 @@ void describe('BackgroundTaskRegistry', () => {
         /structured thinking field|duplicate Pi args/,
       );
       assert.equal(h.children.length, 0, 'duplicate thinking must fail before spawning pi');
+    } finally {
+      await cleanup(h.root);
+    }
+  });
+
+  void it('launches attested Pi on Windows through Node while preserving logical argv', async () => {
+    const h = await createHarness({ platform: 'win32', modelRegistry: oauthRegistry() });
+    try {
+      await initCleanGit(h.cwd);
+      const prompt = 'write report.md & echo pwned "%VAR%" C:\\tmp\\space path\\';
+      const task = await h.registry.startAttestedPiTask(h.ctx, {
+        name: 'Win Attested',
+        provider: 'openai-codex',
+        model: 'gpt-5.5',
+        prompt,
+        reportPath: 'report.md',
+        extraPiArgs: ['--no-extensions', 'quoted "value"'],
+      });
+      await writeFile(join(h.cwd, 'report.md'), 'unit report\n', 'utf8');
+      const spawn = lastSpawn(h);
+      assert.equal(spawn.shell, process.execPath);
+      assert.equal(spawn.options.shell, false);
+      assert.equal(spawn.options.detached, false);
+      assert.equal(spawn.args.at(-1), prompt);
+      assert.ok(spawn.args[0]?.endsWith('cli.js'));
+      assert.deepEqual(spawn.args.slice(1), [
+        '--mode',
+        'json',
+        '--provider',
+        'openai-codex',
+        '--model',
+        'gpt-5.5',
+        '--no-extensions',
+        'quoted "value"',
+        prompt,
+      ]);
+      spawn.child.writeStdout(piJsonEvents());
+      spawn.child.close(0, null);
+      await waitFor(() => task.status === 'completed', 'Windows attested completion');
+      assert.ok(task.attestationAbsPath);
+      const attestation = parseJsonObject(
+        await readFile(task.attestationAbsPath, 'utf8'),
+        'attestation sidecar must be an object',
+      );
+      const invocation = requiredJsonObject(attestation['invocation'], 'invocation');
+      assert.deepEqual(invocation['argv'], [
+        'pi',
+        '--mode',
+        'json',
+        '--provider',
+        'openai-codex',
+        '--model',
+        'gpt-5.5',
+        '--no-extensions',
+        'quoted "value"',
+        prompt,
+      ]);
     } finally {
       await cleanup(h.root);
     }

@@ -243,8 +243,20 @@ Failure handling is loud and typed. Every open, write, `fsync`, rename, close, a
 - stdout/stderr are captured to task output files.
 - Model-visible logs are bounded and point to full output files.
 - POSIX process groups are used for process-tree kill where possible, with child-process fallback.
+- On Windows, process-tree termination uses `%SystemRoot%\\System32\\taskkill.exe` directly (never `PATH`) with a two-stage `/T` then `/T /F` flow. Stage one is a logical Windows termination request, not SIGTERM and not a guaranteed graceful shutdown: console processes may ignore it, and re-parented descendants can escape the tree. Strong containment would require Windows Job Objects via a native component, which is out of scope.
 - Running tasks are cleaned up on Pi session shutdown/reload.
+- Child Pi processes are never launched through a shell. On Windows the npm `pi.cmd` shim is deliberately not executed, because a batch shim cannot preserve argument bytes safely; the package resolves the Pi package's own CLI entry and launches it with `process.execPath` instead. Batch, PowerShell, and extensionless launch targets are rejected loudly rather than executed, and a launch target resolving outside the Pi package root is rejected.
 - Cross-Pi-restart process reattachment and Ctrl+B backgrounding of already-running foreground tools are intentionally out of scope.
+
+### Windows shell and telemetry
+
+`cmd.exe` remains the default Windows shell, so existing commands written for `cmd` keep working unchanged. The generic `SHELL` variable is deliberately ignored on Windows, because honouring it would silently change the command language for `%VAR%`, `set`, `dir`, backslash paths, and quoting.
+
+A POSIX shell is available as an explicit opt-in via `PI_BG_SHELL=bash`, with an optional absolute `PI_BG_SHELL_PATH`. Invalid values fail loudly rather than falling back. Bash is invoked with `-c` and never `-lc`, because a login shell runs profile scripts whose banner output would be captured into task output.
+
+**Documented limitation:** `isAgent: true` Pi-agent telemetry wrapping works by installing a POSIX shell function that intercepts `pi`. That mechanism has no safe `cmd.exe` equivalent, so under the Windows `cmd` dialect the command is left byte-for-byte unchanged and telemetry is reported as unavailable with the reason `win32-cmd-cannot-safely-intercept-pi-argv`. Zero usage is never synthesized, and no warning text is injected into captured command output. Use `PI_BG_SHELL=bash` on Windows when agent telemetry is required.
+
+On Windows, argument lists are checked against the 32,767-code-unit command-line limit before a child is created, so an oversized invocation fails loudly with the measured length rather than producing a confusing native spawn error. Argument contents are never included in that error.
 
 ## Development and QA
 

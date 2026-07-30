@@ -20,6 +20,12 @@ import {
   type ResolvedFusionModel,
 } from './types.js';
 import { isJsonObject, parseJsonText } from '../common.js';
+import {
+  assertWindowsCommandLineWithinLimit,
+  piLaunchArgv,
+  resolvePiLaunch,
+  type PiLaunchDependencies,
+} from '../pi-launch.js';
 
 // The response cap now applies to one final full answer, not cumulative Pi JSON events.
 export const FUSION_CHILD_STDOUT_LIMIT_BYTES = 32 * 1024 * 1024;
@@ -93,6 +99,7 @@ export interface RunPiChildOptions {
   timeoutMs?: number | undefined;
   killGraceMs?: number | undefined;
   sigkillWaitMs?: number | undefined;
+  piLaunchDependencies?: PiLaunchDependencies | undefined;
 }
 
 interface CloseRecord {
@@ -704,7 +711,13 @@ export async function runPiChild(options: RunPiChildOptions): Promise<FusionChil
 
   let child: FusionChildProcess;
   try {
-    child = spawnImpl('pi', argv, {
+    const launchDeps =
+      options.piLaunchDependencies === undefined
+        ? { platform }
+        : { ...options.piLaunchDependencies, platform };
+    const launch = resolvePiLaunch(launchDeps);
+    assertWindowsCommandLineWithinLimit(launch, argv, platform, `fusion-${options.stage}`);
+    child = spawnImpl(launch.executable, piLaunchArgv(launch, argv), {
       cwd: options.cwd,
       detached: platform !== 'win32',
       shell: false,

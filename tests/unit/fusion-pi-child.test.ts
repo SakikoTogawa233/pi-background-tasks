@@ -309,6 +309,41 @@ void describe('fusion Pi child runner', () => {
     assert.doesNotMatch(result.events.toString('utf8'), /final héllo/);
   });
 
+  void it('launches Windows Pi through Node and preserves adversarial argv without a shell', async () => {
+    const child = new FakeChild(778);
+    const harness = makeSpawn(child);
+    const systemPrompt = 'system & echo pwned "%VAR%" C:\\tmp\\space path\\';
+    const run = runPiChild({
+      stage: 'candidate',
+      slot: 1,
+      attempt: 1,
+      cwd: '/tmp/project',
+      model: resolvedModel(),
+      systemPrompt,
+      userPrompt: 'user prompt',
+      spawn: harness.spawn,
+      platform: 'win32',
+      childExtensionPath: '/tmp/fusion-child.js',
+    });
+    await tick();
+    const record = harness.records[0];
+    assert.ok(record, 'spawn record exists');
+    assert.equal(record.command, process.execPath);
+    assert.equal(record.options.shell, false);
+    assert.equal(record.options.detached, false);
+    assert.ok(record.args[0]?.endsWith('cli.js'));
+    const systemPromptIndex = record.args.indexOf('--system-prompt');
+    assert.ok(systemPromptIndex >= 0);
+    assert.equal(record.args[systemPromptIndex + 1], systemPrompt);
+    assert.equal(Buffer.concat(child.stdin.chunks).toString('utf8'), 'user prompt');
+
+    child.stdout.emitData(Buffer.from('final héllo\n', 'utf8'));
+    child.stderr.emitData(compactMetadata());
+    child.close(0, null);
+    const result = await run;
+    assert.equal(result.text, 'final héllo');
+  });
+
   void it('rejects malformed compact metadata loudly', async () => {
     const child = new FakeChild(888);
     const harness = makeSpawn(child);
@@ -334,6 +369,57 @@ void describe('fusion Pi child runner', () => {
       assert.equal(error.code, 'child_event_invalid');
       return true;
     });
+  });
+
+  void it('fails before spawn when Windows Pi launch resolution fails', async () => {
+    const harness = makeSpawn();
+    await assert.rejects(
+      runPiChild({
+        stage: 'merge',
+        attempt: 1,
+        cwd: '/tmp/project',
+        model: resolvedModel(),
+        systemPrompt: 'system',
+        userPrompt: 'prompt',
+        spawn: harness.spawn,
+        platform: 'win32',
+        piLaunchDependencies: {
+          resolvePackageJson: () => {
+            throw new Error('missing package');
+          },
+        },
+      }),
+      (error: unknown) => {
+        assert.ok(error instanceof Error);
+        assert.match(error.message, /pi_executable_resolution_failed/);
+        assert.equal(Reflect.get(error, 'childCreated'), false);
+        return true;
+      },
+    );
+    assert.equal(harness.records.length, 0);
+  });
+
+  void it('fails before spawn when Windows Pi argv exceeds the command line limit', async () => {
+    const harness = makeSpawn();
+    await assert.rejects(
+      runPiChild({
+        stage: 'merge',
+        attempt: 1,
+        cwd: '/tmp/project',
+        model: resolvedModel(),
+        systemPrompt: 'x'.repeat(40000),
+        userPrompt: 'prompt',
+        spawn: harness.spawn,
+        platform: 'win32',
+      }),
+      (error: unknown) => {
+        assert.ok(error instanceof Error);
+        assert.match(error.message, /pi_command_line_too_long/);
+        assert.equal(Reflect.get(error, 'childCreated'), false);
+        return true;
+      },
+    );
+    assert.equal(harness.records.length, 0);
   });
 
   void it('fails before spawn when the abort signal is already set', async () => {

@@ -131,7 +131,7 @@ void describe('core', () => {
     assert.equal(formatCompactNumber(42_000), '42k');
     assert.equal(sanitizePathSegment('a/b c'), 'a-b-c');
     assert.equal(sanitizePathSegment('///'), 'session');
-    assert.ok(shellInvocation('echo ok').args.includes('echo ok'));
+    assert.equal(shellInvocation('echo ok').args.includes('echo ok'), true);
     assert.equal(normalizeMaxBytes(-1, 123), 1);
     assert.equal(normalizeMaxBytes(Number.NaN, 123), 123);
     assert.equal(normalizeMaxBytes(1.9, 123), 1);
@@ -247,6 +247,93 @@ void describe('core', () => {
     assert.equal(formatUpdateSegment(undefined, '0.3.0'), undefined);
     assert.equal(formatUpdateSegment('garbage', '0.3.0'), undefined);
     assert.equal(formatUpdateSegment('0.4.0', ''), undefined);
+  });
+
+  void it('applies the Windows shell dialect policy', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'pi-bg-shell-'));
+    try {
+      const bashPath = join(root, 'bash.exe');
+      const cmdPath = join(root, 'cmd.com');
+      await writeFile(bashPath, '', 'utf8');
+      await writeFile(cmdPath, '', 'utf8');
+
+      assert.deepEqual(
+        shellInvocation('echo %USERPROFILE%', 'win32', {
+          SHELL: bashPath,
+          ComSpec: 'C:\\Windows\\System32\\cmd.exe',
+        }),
+        {
+          shell: 'C:\\Windows\\System32\\cmd.exe',
+          args: ['/d', '/s', '/c', '"echo %USERPROFILE%"'],
+          dialect: 'cmd',
+          windowsVerbatimArguments: true,
+        },
+      );
+      assert.deepEqual(shellInvocation('dir C:\\work', 'win32', {}), {
+        shell: 'cmd.exe',
+        args: ['/d', '/s', '/c', '"dir C:\\work"'],
+        dialect: 'cmd',
+        windowsVerbatimArguments: true,
+      });
+      assert.deepEqual(
+        shellInvocation('printf ok', 'win32', {
+          PI_BG_SHELL: 'bash',
+          PI_BG_SHELL_PATH: bashPath,
+        }),
+        {
+          shell: bashPath,
+          args: ['-c', 'printf ok'],
+          dialect: 'posix',
+          windowsVerbatimArguments: false,
+        },
+      );
+      assert.notDeepEqual(
+        shellInvocation('printf ok', 'win32', {
+          PI_BG_SHELL: 'bash',
+          PI_BG_SHELL_PATH: bashPath,
+        }).args,
+        ['-lc', 'printf ok'],
+      );
+      assert.equal(
+        shellInvocation('printf ok', 'win32', { PI_BG_SHELL: 'bash', PATH: root }).shell,
+        bashPath,
+      );
+      assert.equal(
+        shellInvocation('set X=1', 'win32', { PI_BG_SHELL: 'cmd', PI_BG_SHELL_PATH: cmdPath })
+          .shell,
+        cmdPath,
+      );
+      for (const value of ['', ' bash', 'bash ', 'zsh']) {
+        assert.throws(() => shellInvocation('echo bad', 'win32', { PI_BG_SHELL: value }), /cmd or bash/);
+      }
+      assert.throws(
+        () => shellInvocation('echo bad', 'win32', { PI_BG_SHELL_PATH: bashPath }),
+        /requires PI_BG_SHELL/,
+      );
+      assert.throws(
+        () =>
+          shellInvocation('echo bad', 'win32', {
+            PI_BG_SHELL: 'bash',
+            PI_BG_SHELL_PATH: 'bash.exe',
+          }),
+        /absolute path/,
+      );
+      assert.deepEqual(
+        shellInvocation('echo $SHELL', 'linux', {
+          SHELL: '/bin/zsh',
+          PI_BG_SHELL: 'cmd',
+          PI_BG_SHELL_PATH: bashPath,
+        }),
+        {
+          shell: '/bin/zsh',
+          args: ['-c', 'echo $SHELL'],
+          dialect: 'posix',
+          windowsVerbatimArguments: false,
+        },
+      );
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
   });
 
   void it('parses and formats agent activity transcript lines', () => {

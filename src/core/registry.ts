@@ -50,12 +50,25 @@ import {
   writeFileFsynced,
   writeJsonAtomic,
 } from './attested-pi-run.js';
+import {
+  assertWindowsCommandLineWithinLimit,
+  resolvePiLaunch,
+  type PiLaunchSpec,
+} from './pi-launch.js';
+import {
+  runWindowsTaskkill,
+  type TaskkillOutcome,
+  type WindowsKillPhase,
+  type WindowsTaskkillOptions,
+} from './windows-taskkill.js';
 
 export const MAX_OUTPUT_BYTES = Number(process.env['PI_BG_MAX_OUTPUT_BYTES'] ?? 20 * 1024 * 1024);
 export const KILL_GRACE_MS = 3000;
 export const STOP_WAIT_MS = KILL_GRACE_MS + 1500;
 export const MAX_RECENT_TASKS = 100;
 const TELEMETRY_BUFFER_CHARS = 512 * 1024;
+export const WIN32_CMD_PI_TELEMETRY_UNAVAILABLE_REASON =
+  'win32-cmd-cannot-safely-intercept-pi-argv';
 
 export interface BackgroundTaskModelRegistry
   extends Pick<ExtensionContext['modelRegistry'], 'getAll'> {
@@ -93,6 +106,19 @@ export type BackgroundTaskSpawn = (
 ) => BackgroundTaskChildProcess;
 
 type KillProcessFn = (pid: number, signal?: NodeJS.Signals | number) => boolean;
+type KillTreeFn = (
+  pid: number,
+  phase: WindowsKillPhase,
+  signal?: AbortSignal,
+) => Promise<TaskkillOutcome>;
+
+interface WindowsKillState {
+  softController?: AbortController | undefined;
+  softPromise?: Promise<void> | undefined;
+  forcePromise?: Promise<void> | undefined;
+  forceFailure?: Error | undefined;
+  forceFailureListeners?: Array<(error: Error) => void> | undefined;
+}
 
 export interface CompletionNotificationMessage {
   customType: 'background-task-notification';
@@ -117,6 +143,7 @@ export interface BackgroundTaskRegistryOptions {
   publishTerminal?: (task: BgTaskSnapshot) => void;
   spawn?: BackgroundTaskSpawn;
   killProcess?: KillProcessFn;
+  killTree?: KillTreeFn;
   platform?: NodeJS.Platform;
   env?: NodeJS.ProcessEnv;
   makeTaskId?: () => string;
@@ -196,10 +223,15 @@ export function buildModelWindowIndex(
   };
 }
 
-export function createPiTelemetryWrapperSource(index: ModelWindowIndex): string {
+export function createPiTelemetryWrapperSource(
+  index: ModelWindowIndex,
+  launch: PiLaunchSpec = resolvePiLaunch(),
+): string {
   return `#!/usr/bin/env node
 const { spawn } = require("node:child_process");
 const index = ${JSON.stringify(index)};
+const launch = ${JSON.stringify(launch)};
+const WINDOWS_COMMAND_LINE_LIMIT = 32767;
 
 const tokenUsage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0 };
 let costTotal = 0;
@@ -268,6 +300,42 @@ function markToolFailed(id) {
 function currentToolUsage() {
   if (!toolUsage.total && !toolUsage.failed) return undefined;
   return { total: toolUsage.total, failed: toolUsage.failed, byName: { ...toolUsage.byName } };
+}
+
+function renderWindowsArgument(value) {
+  if (value.length > 0 && !/[ \\t\"]/.test(value)) return value;
+  let rendered = "\\\"";
+  let backslashes = 0;
+  for (const char of value) {
+    if (char === "\\\\") {
+      backslashes += 1;
+      continue;
+    }
+    if (char === "\\\"") {
+      rendered += "\\\\".repeat(backslashes * 2 + 1);
+      rendered += "\\\"";
+      backslashes = 0;
+      continue;
+    }
+    if (backslashes > 0) {
+      rendered += "\\\\".repeat(backslashes);
+      backslashes = 0;
+    }
+    rendered += char;
+  }
+  if (backslashes > 0) rendered += "\\\\".repeat(backslashes * 2);
+  rendered += "\\\"";
+  return rendered;
+}
+
+function assertWindowsLimit(stage, args) {
+  if (process.platform !== "win32") return;
+  const measured = [launch.executable, ...launch.argvPrefix, ...args].map(renderWindowsArgument).join(" ").length + 1;
+  if (measured > WINDOWS_COMMAND_LINE_LIMIT) {
+    const error = new Error("pi_command_line_too_long: " + stage + " measured UTF-16 command line length " + String(measured) + " exceeds limit " + String(WINDOWS_COMMAND_LINE_LIMIT));
+    error.code = "pi_command_line_too_long";
+    throw error;
+  }
 }
 
 function emitUnifiedTelemetry(payload) {
@@ -407,34 +475,45 @@ function emitToolTelemetry() {
 }
 
 const parsed = parseInvocation(process.argv.slice(2));
-const child = spawn("pi", parsed.args, { stdio: ["ignore", "pipe", "pipe"], env: process.env });
+let child;
 let buffer = "";
+try {
+  const childArgs = [...launch.argvPrefix, ...parsed.args];
+  assertWindowsLimit("telemetry-wrapper-pi", parsed.args);
+  child = spawn(launch.executable, childArgs, { stdio: ["ignore", "pipe", "pipe"], env: process.env, shell: false, windowsHide: true });
+} catch (error) {
+  const message = error && typeof error.message === "string" ? error.message : String(error);
+  process.stderr.write("[pi-bg telemetry wrapper error: " + message + "]\\n");
+  process.exitCode = 1;
+}
 
-if (!parsed.parseJson) {
-  child.stdout.pipe(process.stdout);
-} else {
-  child.stdout.on("data", (chunk) => {
-    buffer += chunk.toString();
-    const lines = buffer.split("\\n");
-    buffer = lines.pop() || "";
-    for (const line of lines) processLine(line);
+if (child) {
+  if (!parsed.parseJson) {
+    child.stdout.pipe(process.stdout);
+  } else {
+    child.stdout.on("data", (chunk) => {
+      buffer += chunk.toString();
+      const lines = buffer.split("\\n");
+      buffer = lines.pop() || "";
+      for (const line of lines) processLine(line);
+    });
+  }
+  child.stderr.on("data", (chunk) => process.stderr.write(chunk));
+  child.on("error", (error) => {
+    process.stderr.write("[pi-bg telemetry wrapper error: " + error.message + "]\\n");
+  });
+  child.on("close", (code, signal) => {
+    if (parsed.parseJson && buffer.trim()) processLine(buffer);
+    // Never call process.exit() here: the final message telemetry may still be
+    // buffered on wrapper stdout, and forced exit can publish a stale context
+    // snapshot from the preceding assistant turn. exitCode lets Node drain the
+    // pipe; signal termination is deferred through the same stdout barrier.
+    process.stdout.write("", () => {
+      if (signal) process.kill(process.pid, signal);
+      else process.exitCode = code ?? 0;
+    });
   });
 }
-child.stderr.on("data", (chunk) => process.stderr.write(chunk));
-child.on("error", (error) => {
-  process.stderr.write("[pi-bg telemetry wrapper error: " + error.message + "]\\n");
-});
-child.on("close", (code, signal) => {
-  if (parsed.parseJson && buffer.trim()) processLine(buffer);
-  // Never call process.exit() here: the final message telemetry may still be
-  // buffered on wrapper stdout, and forced exit can publish a stale context
-  // snapshot from the preceding assistant turn. exitCode lets Node drain the
-  // pipe; signal termination is deferred through the same stdout barrier.
-  process.stdout.write("", () => {
-    if (signal) process.kill(process.pid, signal);
-    else process.exitCode = code ?? 0;
-  });
-});
 
 function processLine(line) {
   if (!line.trim()) return;
@@ -605,6 +684,7 @@ export class BackgroundTaskRegistry {
   private shuttingDown = false;
   private readonly spawn: BackgroundTaskSpawn;
   private readonly killProcess: KillProcessFn;
+  private readonly killTree: KillTreeFn;
   private readonly platform: NodeJS.Platform;
   private readonly env: NodeJS.ProcessEnv;
   private readonly makeTaskIdFn: () => string;
@@ -617,6 +697,7 @@ export class BackgroundTaskRegistry {
   private readonly onChange: () => void;
   private readonly sendCompletionNotification: CompletionNotificationSender;
   private readonly publishTerminalSnapshot: (task: BgTaskSnapshot) => void;
+  private readonly windowsKillStates = new WeakMap<BgTask, WindowsKillState>();
 
   constructor(options: BackgroundTaskRegistryOptions) {
     this.spawn =
@@ -624,6 +705,11 @@ export class BackgroundTaskRegistry {
     this.killProcess = options.killProcess ?? process.kill.bind(process);
     this.platform = options.platform ?? process.platform;
     this.env = options.env ?? process.env;
+    this.killTree = options.killTree ?? ((pid, phase, signal) => {
+      const taskkillOptions: WindowsTaskkillOptions =
+        signal === undefined ? { env: this.env } : { env: this.env, signal };
+      return runWindowsTaskkill(pid, phase, taskkillOptions);
+    });
     this.makeTaskIdFn = options.makeTaskId ?? defaultTaskId;
     this.now = options.now ?? Date.now;
     this.maxOutputBytes = options.maxOutputBytes ?? MAX_OUTPUT_BYTES;
@@ -673,6 +759,14 @@ export class BackgroundTaskRegistry {
     if (this.shuttingDown)
       throw new Error('Cannot start a background task while Pi is shutting down');
 
+    const isAgent = options.isAgent ?? false;
+    const baseInvocation = shellInvocation(normalizedCommand, this.platform, this.env);
+    const piTelemetryRequested = isAgent && commandMayLaunchPiAgent(normalizedCommand, this.env);
+    const piTelemetryLaunch =
+      piTelemetryRequested && baseInvocation.dialect === 'posix'
+        ? resolvePiLaunch({ platform: this.platform })
+        : undefined;
+
     const dir = await this.ensureRuntimeDir(ctx);
     const id = this.makeTaskIdFn();
     const outputAbsPath = join(dir.abs, `${id}.output`);
@@ -688,7 +782,6 @@ export class BackgroundTaskRegistry {
       normalizeTaskName(options.name) ??
       normalizeTaskName(options.description) ??
       deriveTaskNameFromCommand(normalizedCommand);
-    const isAgent = options.isAgent ?? false;
     const trimmedDescription = options.description?.trim();
     const description =
       trimmedDescription && trimmedDescription.length > 0 ? trimmedDescription : undefined;
@@ -739,23 +832,32 @@ export class BackgroundTaskRegistry {
 
     try {
       let commandToSpawn = normalizedCommand;
-      if (isAgent && commandMayLaunchPiAgent(normalizedCommand, this.env)) {
-        const wrapperAbsPath = join(dir.abs, `${id}.pi-telemetry-wrapper.cjs`);
-        await writeFile(
-          wrapperAbsPath,
-          createPiTelemetryWrapperSource(buildModelWindowIndex(ctx)),
-          'utf8',
-        );
-        commandToSpawn = `pi() { node ${shellQuote(wrapperAbsPath)} "$@"; }\n${normalizedCommand}`;
-        task.telemetryWrapped = true;
+      if (piTelemetryRequested) {
+        if (baseInvocation.dialect === 'posix') {
+          if (piTelemetryLaunch === undefined) throw new Error('Pi telemetry launch spec was not resolved');
+          const wrapperAbsPath = join(dir.abs, `${id}.pi-telemetry-wrapper.cjs`);
+          await writeFile(
+            wrapperAbsPath,
+            createPiTelemetryWrapperSource(buildModelWindowIndex(ctx), piTelemetryLaunch),
+            'utf8',
+          );
+          commandToSpawn = `pi() { ${shellQuote(process.execPath)} ${shellQuote(wrapperAbsPath)} "$@"; }\n${normalizedCommand}`;
+          task.telemetryWrapped = true;
+        } else {
+          task.telemetryUnavailableReason = WIN32_CMD_PI_TELEMETRY_UNAVAILABLE_REASON;
+        }
       }
-      const invocation = shellInvocation(commandToSpawn, this.platform, this.env);
+      const invocation =
+        commandToSpawn === normalizedCommand
+          ? baseInvocation
+          : shellInvocation(commandToSpawn, this.platform, this.env);
       const child = this.spawn(invocation.shell, invocation.args, {
         cwd: ctx.cwd,
         detached: this.platform !== 'win32',
         stdio: ['ignore', 'pipe', 'pipe'],
         env: this.env,
         windowsHide: true,
+        windowsVerbatimArguments: invocation.windowsVerbatimArguments,
       });
 
       task.child = child;
@@ -832,12 +934,20 @@ export class BackgroundTaskRegistry {
     if (this.shuttingDown)
       throw new Error('Cannot start an attested Pi task while Pi is shutting down');
 
+    const argv = buildAttestedPiArgv(request);
+    const attestedPiLaunch = resolvePiLaunch({ platform: this.platform });
+    assertWindowsCommandLineWithinLimit(
+      attestedPiLaunch,
+      argv.slice(1),
+      this.platform,
+      'attested-pi-run',
+    );
+
     const dir = await this.ensureRuntimeDir(ctx);
     const id = makeAttestedTaskId();
     if (!ATTESTED_TASK_ID_PATTERN.test(id))
       throw new Error('Generated attested task id is invalid');
     const paths = makeAttestedTaskPaths(dir.abs, dir.display, id);
-    const argv = buildAttestedPiArgv(request);
     const promptBytes = Buffer.from(request.prompt, 'utf8');
     const reportAbsPath = await resolveReportPath(ctx.cwd, request.reportPath);
     const auth = observePiOAuth(ctx, request.provider, request.model);
@@ -895,13 +1005,20 @@ export class BackgroundTaskRegistry {
     );
     await this.writeMetadata(task);
 
-    const captured = spawnAndCapturePi(this.spawn, argv, {
-      cwd: ctx.cwd,
-      detached: this.platform !== 'win32',
-      stdio: ['ignore', 'pipe', 'pipe'],
-      env: attestedPiChildEnv(this.env),
-      windowsHide: true,
-    });
+    const captured = spawnAndCapturePi(
+      this.spawn,
+      argv,
+      {
+        cwd: ctx.cwd,
+        detached: this.platform !== 'win32',
+        shell: false,
+        stdio: ['ignore', 'pipe', 'pipe'],
+        env: attestedPiChildEnv(this.env),
+        windowsHide: true,
+      },
+      this.platform,
+      attestedPiLaunch,
+    );
     task.child = captured.child;
     task.pid = captured.child.pid;
     await this.writeMetadata(task);
@@ -1016,10 +1133,16 @@ export class BackgroundTaskRegistry {
       task.killEscalationTimer = undefined;
     }
     let finalStatus = status;
+    let finalError = error;
+    const forceFailure = await this.awaitWindowsForceBeforeTerminal(task);
+    if (forceFailure !== undefined) {
+      finalStatus = 'failed';
+      finalError = BackgroundTaskRegistry.appendTaskError(finalError, forceFailure.message);
+    }
     task.exitCode = exitCode;
     task.signal = signal;
     task.endTime = this.now();
-    if (error) task.error = error;
+    if (finalError) task.error = finalError;
 
     const rawEvents = Buffer.concat(stdoutChunks);
     const rawStderr = Buffer.concat(stderrChunks);
@@ -1123,7 +1246,12 @@ export class BackgroundTaskRegistry {
     task.killKind = kind;
     if (reason) task.error = reason;
     this.requestKill(task, 'SIGTERM');
-    const stopped = await this.waitForEnd(task, this.stopWaitMs);
+    const stopped =
+      this.platform === 'win32'
+        ? await this.waitForEndOrWindowsForceFailure(task, this.stopWaitMs)
+        : await this.waitForEnd(task, this.stopWaitMs);
+    const forceFailure = this.windowsKillStates.get(task)?.forceFailure;
+    if (forceFailure !== undefined) throw forceFailure;
     if (!stopped) {
       throw new Error(
         `Task ${task.id} did not exit within ${formatDuration(this.stopWaitMs)} after SIGTERM/SIGKILL`,
@@ -1405,6 +1533,260 @@ export class BackgroundTaskRegistry {
     this.writeNotice(task, `${line}\n`);
   }
 
+  private getWindowsKillState(task: BgTask): WindowsKillState {
+    let state = this.windowsKillStates.get(task);
+    if (state === undefined) {
+      state = {};
+      this.windowsKillStates.set(task, state);
+    }
+    return state;
+  }
+
+  private static errorMessage(error: unknown): string {
+    return error instanceof Error ? error.message : String(error);
+  }
+
+  private static appendTaskError(existing: string | undefined, next: string): string {
+    if (existing === undefined || existing.length === 0) return next;
+    if (existing.includes(next)) return existing;
+    return `${existing}; ${next}`;
+  }
+
+  private static describeTaskkillOutcome(outcome: TaskkillOutcome): string {
+    const exitCode = outcome.exitCode === null ? 'null' : String(outcome.exitCode);
+    const signal = outcome.signal === null ? 'null' : outcome.signal;
+    const stdout = outcome.stdout.length > 0 ? ` stdout=${JSON.stringify(outcome.stdout)}` : '';
+    const stderr = outcome.stderr.length > 0 ? ` stderr=${JSON.stringify(outcome.stderr)}` : '';
+    const stdoutTruncated = outcome.stdoutTruncated ? ' stdout_truncated=true' : '';
+    const stderrTruncated = outcome.stderrTruncated ? ' stderr_truncated=true' : '';
+    return `exit=${exitCode} signal=${signal}${stdout}${stderr}${stdoutTruncated}${stderrTruncated}`;
+  }
+
+  private isWindowsTaskkillTerminalRace(task: BgTask): boolean {
+    return task.status !== 'running' || task.finalized === true;
+  }
+
+  private clearKillEscalationTimer(task: BgTask): void {
+    if (task.killEscalationTimer !== undefined) {
+      clearTimeout(task.killEscalationTimer);
+      task.killEscalationTimer = undefined;
+    }
+  }
+
+  private recordWindowsTaskkillNotice(task: BgTask, message: string): void {
+    this.writeNotice(task, `\n[background task Windows termination: ${message}]\n`);
+  }
+
+  private recordWindowsSoftFailure(task: BgTask, pid: number, detail: string): void {
+    const message =
+      `Windows taskkill /T logical termination request failed for task ${task.id} pid ${String(pid)}: ` +
+      `${detail}; force escalation remains scheduled`;
+    task.error = BackgroundTaskRegistry.appendTaskError(task.error, message);
+    this.recordWindowsTaskkillNotice(task, message);
+    this.onChange();
+    void this.writeMetadata(task).catch((metadataError: unknown) => {
+      this.logger.error(
+        `[background-tasks] failed to write Windows taskkill soft-failure metadata for ${task.id}:`,
+        metadataError,
+      );
+    });
+  }
+
+  private makeWindowsForceFailure(task: BgTask, pid: number, detail: string): Error {
+    return new Error(
+      `Windows taskkill /T /F force termination failed for task ${task.id} pid ${String(pid)}: ${detail}. Descendant processes may have leaked.`,
+    );
+  }
+
+  private recordWindowsForceFailure(task: BgTask, error: Error): void {
+    const state = this.getWindowsKillState(task);
+    state.forceFailure = error;
+    task.error = BackgroundTaskRegistry.appendTaskError(task.error, error.message);
+    this.recordWindowsTaskkillNotice(task, error.message);
+    this.onChange();
+    void this.writeMetadata(task).catch((metadataError: unknown) => {
+      this.logger.error(
+        `[background-tasks] failed to write Windows taskkill force-failure metadata for ${task.id}:`,
+        metadataError,
+      );
+    });
+    const listeners = state.forceFailureListeners;
+    if (listeners !== undefined) {
+      delete state.forceFailureListeners;
+      for (const listener of listeners) listener(error);
+    }
+  }
+
+  private evaluateWindowsTaskkillOutcome(
+    task: BgTask,
+    pid: number,
+    phase: WindowsKillPhase,
+    outcome: TaskkillOutcome,
+  ): Error | undefined {
+    if (outcome.exitCode === 0) return undefined;
+    const detail = BackgroundTaskRegistry.describeTaskkillOutcome(outcome);
+    if (outcome.exitCode === 128) {
+      this.recordWindowsTaskkillNotice(
+        task,
+        `taskkill ${phase} reported process not found for pid ${String(pid)} (${detail}); treating as an already-exited race`,
+      );
+      return undefined;
+    }
+    if (this.isWindowsTaskkillTerminalRace(task)) {
+      this.recordWindowsTaskkillNotice(
+        task,
+        `taskkill ${phase} finished after the task became terminal for pid ${String(pid)} (${detail}); treating as a terminal race`,
+      );
+      return undefined;
+    }
+    if (phase === 'terminate') {
+      this.recordWindowsSoftFailure(task, pid, detail);
+      return undefined;
+    }
+    return this.makeWindowsForceFailure(task, pid, detail);
+  }
+
+  private handleWindowsSoftException(
+    task: BgTask,
+    pid: number,
+    error: unknown,
+    state: WindowsKillState,
+  ): void {
+    const message = BackgroundTaskRegistry.errorMessage(error);
+    if (state.forcePromise !== undefined || this.isWindowsTaskkillTerminalRace(task)) return;
+    this.recordWindowsSoftFailure(task, pid, message);
+  }
+
+  private startWindowsSoftKill(task: BgTask, pid: number): Promise<void> {
+    const state = this.getWindowsKillState(task);
+    if (state.softPromise !== undefined) return state.softPromise;
+    const controller = new AbortController();
+    state.softController = controller;
+
+    let launched: Promise<TaskkillOutcome>;
+    try {
+      launched = this.killTree(pid, 'terminate', controller.signal);
+    } catch (error) {
+      delete state.softController;
+      throw new Error(
+        `Could not kill task ${task.id}: Windows taskkill /T failed to start: ${BackgroundTaskRegistry.errorMessage(error)}`,
+      );
+    }
+
+    const promise = launched
+      .then((outcome) => {
+        if (state.forcePromise !== undefined || this.isWindowsTaskkillTerminalRace(task)) return;
+        const failure = this.evaluateWindowsTaskkillOutcome(task, pid, 'terminate', outcome);
+        if (failure !== undefined) throw failure;
+      })
+      .catch((error: unknown) => {
+        this.handleWindowsSoftException(task, pid, error, state);
+      })
+      .finally(() => {
+        if (state.softController === controller) delete state.softController;
+      });
+    state.softPromise = promise;
+    return promise;
+  }
+
+  private startWindowsForceKill(task: BgTask, pid: number): Promise<void> {
+    const state = this.getWindowsKillState(task);
+    if (state.forcePromise !== undefined) return state.forcePromise;
+
+    let resolveForce: (() => void) | undefined;
+    let rejectForce: ((error: unknown) => void) | undefined;
+    const forcePromise = new Promise<void>((resolve, reject) => {
+      resolveForce = resolve;
+      rejectForce = reject;
+    });
+    if (resolveForce === undefined || rejectForce === undefined) {
+      throw new Error('Windows force termination promise could not be initialized');
+    }
+    const resolveForceReady = resolveForce;
+    const rejectForceReady = rejectForce;
+    state.forcePromise = forcePromise;
+    void forcePromise.catch((error: unknown) => {
+      this.logger.error(`[background-tasks] Windows force tree termination failed for ${task.id}:`, error);
+    });
+
+    this.clearKillEscalationTimer(task);
+    if (state.softController !== undefined && !state.softController.signal.aborted) {
+      state.softController.abort();
+    }
+
+    let launched: Promise<TaskkillOutcome>;
+    try {
+      launched = this.killTree(pid, 'force');
+    } catch (error) {
+      const failure = this.makeWindowsForceFailure(
+        task,
+        pid,
+        `helper failed to start: ${BackgroundTaskRegistry.errorMessage(error)}`,
+      );
+      delete state.forcePromise;
+      this.recordWindowsForceFailure(task, failure);
+      rejectForceReady(failure);
+      throw failure;
+    }
+
+    launched.then(
+      (outcome) => {
+        const failure = this.evaluateWindowsTaskkillOutcome(task, pid, 'force', outcome);
+        if (failure !== undefined) {
+          this.recordWindowsForceFailure(task, failure);
+          rejectForceReady(failure);
+          return;
+        }
+        resolveForceReady();
+      },
+      (error: unknown) => {
+        if (this.isWindowsTaskkillTerminalRace(task)) {
+          this.recordWindowsTaskkillNotice(
+            task,
+            `taskkill force rejected after the task became terminal for pid ${String(pid)} (${BackgroundTaskRegistry.errorMessage(error)}); treating as a terminal race`,
+          );
+          resolveForceReady();
+          return;
+        }
+        const failure = this.makeWindowsForceFailure(task, pid, BackgroundTaskRegistry.errorMessage(error));
+        this.recordWindowsForceFailure(task, failure);
+        rejectForceReady(failure);
+      },
+    );
+
+    return forcePromise;
+  }
+
+  private requestWindowsKill(task: BgTask, pid: number, signal: NodeJS.Signals): void {
+    if (signal === 'SIGKILL') {
+      this.startWindowsForceKill(task, pid);
+      task.killSignalSent = true;
+      return;
+    }
+
+    this.startWindowsSoftKill(task, pid);
+    task.killSignalSent = true;
+    if (task.killEscalationTimer !== undefined) return;
+    task.killEscalationTimer = setTimeout(() => {
+      task.killEscalationTimer = undefined;
+      if (task.status !== 'running') return;
+      try {
+        this.requestKill(task, 'SIGKILL');
+      } catch (error) {
+        task.error = BackgroundTaskRegistry.appendTaskError(
+          task.error,
+          `SIGKILL failed: ${error instanceof Error ? error.message : String(error)}`,
+        );
+        void this.writeMetadata(task).catch((metadataError: unknown) => {
+          this.logger.error(
+            `[background-tasks] failed to write metadata for ${task.id}:`,
+            metadataError,
+          );
+        });
+      }
+    }, this.killGraceMs).unref();
+  }
+
   private requestKill(task: BgTask, signal: NodeJS.Signals = 'SIGTERM'): void {
     if (task.status !== 'running') {
       throw new Error(`Task ${task.id} is ${task.status}, not running`);
@@ -1417,18 +1799,21 @@ export class BackgroundTaskRegistry {
     }
     if (task.killSignalSent && signal === 'SIGTERM') return;
 
+    if (this.platform === 'win32') {
+      this.requestWindowsKill(task, task.pid, signal);
+      return;
+    }
+
     const errors: string[] = [];
     let killed = false;
 
-    if (this.platform !== 'win32') {
-      try {
-        this.killProcess(-task.pid, signal);
-        killed = true;
-      } catch (error) {
-        errors.push(
-          `process group kill failed: ${error instanceof Error ? error.message : String(error)}`,
-        );
-      }
+    try {
+      this.killProcess(-task.pid, signal);
+      killed = true;
+    } catch (error) {
+      errors.push(
+        `process group kill failed: ${error instanceof Error ? error.message : String(error)}`,
+      );
     }
 
     if (!killed) {
@@ -1481,6 +1866,53 @@ export class BackgroundTaskRegistry {
       };
       task.waiters.push(done);
     });
+  }
+
+  private waitForEndOrWindowsForceFailure(task: BgTask, timeoutMs: number): Promise<boolean> {
+    const state = this.getWindowsKillState(task);
+    if (state.forceFailure !== undefined) return Promise.reject(state.forceFailure);
+    if (task.status !== 'running') return Promise.resolve(true);
+    return new Promise((resolve, reject) => {
+      const cleanup = () => {
+        clearTimeout(timeout);
+        const waiterIndex = task.waiters.indexOf(done);
+        if (waiterIndex >= 0) task.waiters.splice(waiterIndex, 1);
+        const listeners = state.forceFailureListeners;
+        if (listeners !== undefined) {
+          const listenerIndex = listeners.indexOf(failed);
+          if (listenerIndex >= 0) listeners.splice(listenerIndex, 1);
+          if (listeners.length === 0) delete state.forceFailureListeners;
+        }
+      };
+      const timeout = setTimeout(() => {
+        cleanup();
+        resolve(false);
+      }, timeoutMs);
+      const done = () => {
+        cleanup();
+        resolve(true);
+      };
+      const failed = (error: Error) => {
+        cleanup();
+        reject(error);
+      };
+      task.waiters.push(done);
+      if (state.forceFailureListeners === undefined) state.forceFailureListeners = [];
+      state.forceFailureListeners.push(failed);
+    });
+  }
+
+  private async awaitWindowsForceBeforeTerminal(task: BgTask): Promise<Error | undefined> {
+    const state = this.windowsKillStates.get(task);
+    if (state === undefined) return undefined;
+    const forcePromise = state.forcePromise;
+    if (forcePromise === undefined) return state.forceFailure;
+    try {
+      await forcePromise;
+    } catch (error) {
+      return error instanceof Error ? error : new Error(String(error));
+    }
+    return state.forceFailure;
   }
 
   private publishTerminal(task: BgTask): void {
@@ -1588,6 +2020,11 @@ export class BackgroundTaskRegistry {
     }
     let finalStatus = status;
     let finalError = error;
+    const forceFailure = await this.awaitWindowsForceBeforeTerminal(task);
+    if (forceFailure !== undefined) {
+      finalStatus = 'failed';
+      finalError = BackgroundTaskRegistry.appendTaskError(finalError, forceFailure.message);
+    }
     task.exitCode = exitCode;
     task.signal = signal ?? null;
 
