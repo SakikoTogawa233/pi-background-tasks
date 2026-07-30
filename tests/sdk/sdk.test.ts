@@ -1,9 +1,9 @@
-import { describe, it, afterEach } from 'node:test';
+import { describe, it, afterEach, type TestContext } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
-import { dirname, join, resolve } from 'node:path';
+import { delimiter, dirname, join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { createServer } from 'node:http';
 import {
@@ -35,6 +35,20 @@ import { parsePackageInfo } from '../../src/core/update-check.js';
 const extensionPath = resolve('extensions/background-tasks.ts');
 const scriptedProviderPath = resolve('tests/scripted-provider/scripted-provider-extension.ts');
 const roots: string[] = [];
+
+function skipWin32PiPathFixture(t: TestContext, target: string): boolean {
+  if (process.platform !== 'win32') return false;
+  t.skip(
+    `${target} fake Pi PATH interception is not applicable on win32 because production resolves the Pi package instead of PATH by design`,
+  );
+  return true;
+}
+
+function skipWin32PosixPiTelemetry(t: TestContext): boolean {
+  if (process.platform !== 'win32') return false;
+  t.skip('POSIX-shell Pi telemetry wrapping is not applicable on win32 cmd tasks by design');
+  return true;
+}
 
 function shellQuote(value: string): string {
   return `'${value.replace(/'/g, `'"'"'`)}'`;
@@ -308,6 +322,13 @@ function requireTerminal(value: unknown): BackgroundTaskExtensionTerminal {
   return { schema_version: BG_TERMINAL_SCHEMA, task: requiredTask(value['task'], 'terminal task') };
 }
 
+// The EventBus kill response is only emitted after stopTask resolves. On Windows
+// the two-stage taskkill flow issues a logical terminate request first and waits
+// the full KILL_GRACE_MS window (3000 ms) before forcing, so a kill response
+// cannot arrive inside the POSIX budget. POSIX keeps the tight budget so a
+// genuine hang still fails fast there.
+const EVENT_RESPONSE_TIMEOUT_MS = process.platform === 'win32' ? 10_000 : 1500;
+
 function waitForEventResponse(
   eventBus: EventBus,
   requestId: string,
@@ -316,7 +337,7 @@ function waitForEventResponse(
     const timeout = setTimeout(() => {
       unsubscribe();
       reject(new Error(`timed out waiting for EventBus response ${requestId}`));
-    }, 1500);
+    }, EVENT_RESPONSE_TIMEOUT_MS);
     const unsubscribe = eventBus.on(BG_RESPONSE_CHANNEL, (data) => {
       const response = requireEventResponse(data);
       if (response.request_id !== requestId) return;
@@ -343,14 +364,19 @@ async function emitEventRequest(
   return pending;
 }
 
+// Matches EVENT_RESPONSE_TIMEOUT_MS: a killed task only reaches a terminal state
+// after the Windows grace window elapses, so the same platform budget applies.
+const TERMINAL_SNAPSHOT_POLL_MS = 25;
+const TERMINAL_SNAPSHOT_ATTEMPTS = EVENT_RESPONSE_TIMEOUT_MS / TERMINAL_SNAPSHOT_POLL_MS;
+
 async function waitForTerminalSnapshot(
   terminals: readonly BgTaskSnapshot[],
   taskId: string,
 ): Promise<BgTaskSnapshot> {
-  for (let attempt = 0; attempt < 60; attempt++) {
+  for (let attempt = 0; attempt < TERMINAL_SNAPSHOT_ATTEMPTS; attempt++) {
     const terminal = terminals.find((task) => task.id === taskId);
     if (terminal) return terminal;
-    await new Promise((resolve) => setTimeout(resolve, 25));
+    await new Promise((resolve) => setTimeout(resolve, TERMINAL_SNAPSHOT_POLL_MS));
   }
   throw new Error(`timed out waiting for terminal ${taskId}`);
 }
@@ -781,7 +807,8 @@ void describe('sdk', () => {
     }
   });
 
-  void it('runs the structured bg_run_pi_attested tool and writes a complete flat attestation', async () => {
+  void it('runs the structured bg_run_pi_attested tool and writes a complete flat attestation', async (t) => {
+    if (skipWin32PiPathFixture(t, 'attested')) return;
     const { session, cwd, modelRegistry, modelRuntime } = await harness();
     const oldPath = process.env['PATH'];
     try {
@@ -832,7 +859,7 @@ console.error('sdk stderr');
         'utf8',
       );
       await chmod(fakePi, 0o755);
-      process.env['PATH'] = `${bin}:${oldPath ?? ''}`;
+      process.env['PATH'] = `${bin}${delimiter}${oldPath ?? ''}`;
 
       const result = await exec(session, 'bg_run_pi_attested', {
         name: 'SDK Attested',
@@ -959,7 +986,7 @@ console.error('sdk stderr');
       const r = await exec(session, 'bg_run', {
         isAgent: false,
         name: 'SDK Sleep',
-        command: 'sleep 10',
+        command: `node -e ${JSON.stringify('setTimeout(() => {}, 10000)')}`,
         notifyOnCompletion: false,
         triggerOnCompletion: false,
       });
@@ -985,7 +1012,7 @@ console.error('sdk stderr');
       const r = await exec(session, 'bg_run', {
         isAgent: false,
         name: 'SDK Timeout',
-        command: 'sleep 5',
+        command: `node -e ${JSON.stringify('setTimeout(() => {}, 5000)')}`,
         timeoutSeconds: 1,
         notifyOnCompletion: false,
         triggerOnCompletion: false,
@@ -1007,7 +1034,7 @@ console.error('sdk stderr');
       const notified = await exec(session, 'bg_run', {
         isAgent: false,
         name: 'Notify SDK',
-        command: "printf '<ok>&done'",
+        command: `node -e ${JSON.stringify('process.stdout.write("<ok>&done")')}`,
         notifyOnCompletion: true,
         triggerOnCompletion: false,
       });
@@ -1128,7 +1155,8 @@ console.error('sdk stderr');
     }
   });
 
-  void it('wraps explicitly marked background Pi agents and captures context telemetry', async () => {
+  void it('wraps explicitly marked background Pi agents and captures context telemetry', async (t) => {
+    if (skipWin32PosixPiTelemetry(t)) return;
     const { session, cwd } = await harness();
     const oldPath = process.env['PATH'];
     try {
@@ -1173,7 +1201,7 @@ console.log(JSON.stringify({ type: "message_end", message: secondMessage }));
         'utf8',
       );
       await chmod(fakePi, 0o755);
-      process.env['PATH'] = `${bin}:${oldPath ?? ''}`;
+      process.env['PATH'] = `${bin}${delimiter}${oldPath ?? ''}`;
 
       const r = await exec(session, 'bg_run', {
         isAgent: true,
@@ -1254,7 +1282,7 @@ console.log(JSON.stringify({ type: "message_end", message: secondMessage }));
           PI_SKIP_VERSION_CHECK: '1',
           PI_TELEMETRY: '0',
           CI: '1',
-          PATH: `${dirname(piCli)}:${process.env['PATH'] ?? ''}`,
+          PATH: `${dirname(piCli)}${delimiter}${process.env['PATH'] ?? ''}`,
         })
           .map(([key, value]) => `${key}=${shellQuote(value)}`)
           .join(' ');
@@ -1326,7 +1354,7 @@ console.log(JSON.stringify({ type: "message_end", message: secondMessage }));
       const running = await exec(session, 'bg_run', {
         isAgent: false,
         name: 'Footer Running',
-        command: 'sleep 10',
+        command: `node -e ${JSON.stringify('setTimeout(() => {}, 10000)')}`,
         notifyOnCompletion: false,
         triggerOnCompletion: false,
       });
@@ -1369,7 +1397,7 @@ console.log(JSON.stringify({ type: "message_end", message: secondMessage }));
       const stopped = await exec(session, 'bg_run', {
         isAgent: false,
         name: 'Footer Stopped',
-        command: 'sleep 10',
+        command: `node -e ${JSON.stringify('setTimeout(() => {}, 10000)')}`,
         notifyOnCompletion: false,
         triggerOnCompletion: false,
       });
@@ -1390,7 +1418,7 @@ console.log(JSON.stringify({ type: "message_end", message: secondMessage }));
       const running = await exec(session, 'bg_run', {
         isAgent: false,
         name: 'Footer Focused',
-        command: 'sleep 10',
+        command: `node -e ${JSON.stringify('setTimeout(() => {}, 10000)')}`,
         notifyOnCompletion: false,
         triggerOnCompletion: false,
       });
@@ -1450,7 +1478,12 @@ console.log(JSON.stringify({ type: "message_end", message: secondMessage }));
 
   void it('fails spawn errors loudly and writes failure metadata', async () => {
     const previousShell = process.env['SHELL'];
-    process.env['SHELL'] = '/definitely/missing/pi-bg-shell';
+    const previousComSpec = process.env['ComSpec'];
+    if (process.platform === 'win32') {
+      process.env['ComSpec'] = 'C:\\definitely\\missing\\pi-bg-shell.exe';
+    } else {
+      process.env['SHELL'] = '/definitely/missing/pi-bg-shell';
+    }
     const { session, cwd } = await harness();
     try {
       const r = await exec(session, 'bg_run', {
@@ -1468,6 +1501,7 @@ console.log(JSON.stringify({ type: "message_end", message: secondMessage }));
       assert.equal(metadata['status'], 'failed');
     } finally {
       restoreEnvValue('SHELL', previousShell);
+      restoreEnvValue('ComSpec', previousComSpec);
       await session.extensionRunner.emit({ type: 'session_shutdown', reason: 'quit' });
       session.dispose();
     }
@@ -1478,14 +1512,14 @@ console.log(JSON.stringify({ type: "message_end", message: secondMessage }));
     const one = await exec(session, 'bg_run', {
       isAgent: false,
       name: 'SDK Shutdown One',
-      command: 'sleep 10',
+      command: `node -e ${JSON.stringify('setTimeout(() => {}, 10000)')}`,
       notifyOnCompletion: false,
       triggerOnCompletion: false,
     });
     const two = await exec(session, 'bg_run', {
       isAgent: false,
       name: 'SDK Shutdown Two',
-      command: 'sleep 10',
+      command: `node -e ${JSON.stringify('setTimeout(() => {}, 10000)')}`,
       notifyOnCompletion: false,
       triggerOnCompletion: false,
     });
@@ -1534,7 +1568,7 @@ console.log(JSON.stringify({ type: "message_end", message: secondMessage }));
       const running = await exec(session, 'bg_run', {
         isAgent: false,
         name: 'Update Footer Running',
-        command: 'sleep 10',
+        command: `node -e ${JSON.stringify('setTimeout(() => {}, 10000)')}`,
         notifyOnCompletion: false,
         triggerOnCompletion: false,
       });

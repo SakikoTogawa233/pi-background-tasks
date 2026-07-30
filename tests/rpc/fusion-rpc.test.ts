@@ -1,9 +1,9 @@
-import { describe, it } from 'node:test';
+import { describe, it, type TestContext } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn, spawnSync, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
-import { join, resolve } from 'node:path';
+import { delimiter, join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { parseJsonText } from '../../src/core/common.js';
 import { installFusionFakePi, resolveRealPiCli } from '../helpers/fusion-fake-pi.js';
@@ -24,6 +24,14 @@ interface FusionFakeInvocation {
   stage: string;
   stdin: string;
   args: string[];
+}
+
+function skipWin32FusionRpcPiPathFixture(t: TestContext): boolean {
+  if (process.platform !== 'win32') return false;
+  t.skip(
+    'RPC fake Pi PATH interception is not applicable on win32 because production resolves fusion children through the Pi package instead of PATH by design',
+  );
+  return true;
 }
 
 function isRecord(value: unknown): value is JsonRecord {
@@ -198,7 +206,7 @@ async function withRpc(
   const env: NodeJS.ProcessEnv = {
     ...process.env,
     ...isolatedTestEnv,
-    PATH: `${fake.binDir}:${process.env['PATH'] ?? ''}`,
+    PATH: `${fake.binDir}${delimiter}${process.env['PATH'] ?? ''}`,
     PI_CODING_AGENT_DIR: agentDir,
     PI_BG_SCRIPTED_API_KEY: 'scripted-api-key',
     PI_BG_SCRIPTED_SCENARIO: 'display-only-bg',
@@ -231,7 +239,8 @@ function notifyWith(text: RegExp): (event: JsonRecord) => boolean {
 }
 
 void describe('fusion RPC integration', () => {
-  void it('discovers commands and runs /fusion through deterministic child Pi without parent rewrite', async () => {
+  void it('discovers commands and runs /fusion through deterministic child Pi without parent rewrite', async (t) => {
+    if (skipWin32FusionRpcPiPathFixture(t)) return;
     await withRpc(async (rpc, fakeLogPath) => {
       const commands = await rpc.send({ type: 'get_commands' });
       assert.equal(commands['success'], true);
@@ -269,7 +278,8 @@ void describe('fusion RPC integration', () => {
     });
   });
 
-  void it('uses the RPC multiline editor for no-argument /fusion and rejects /fusion-models outside TUI mode', async () => {
+  void it('uses the RPC multiline editor for no-argument /fusion and rejects /fusion-models outside TUI mode', async (t) => {
+    if (skipWin32FusionRpcPiPathFixture(t)) return;
     await withRpc(async (rpc, fakeLogPath) => {
       const pendingPrompt = rpc.send({ type: 'prompt', message: '/fusion' });
       const editor = await rpc.wait(
@@ -288,7 +298,8 @@ void describe('fusion RPC integration', () => {
     });
   });
 
-  void it('reports malformed config before child spawn and child failures without fallback output', async () => {
+  void it('reports malformed config before child spawn and child failures without fallback output', async (t) => {
+    if (skipWin32FusionRpcPiPathFixture(t)) return;
     await withRpc(
       async (rpc, fakeLogPath) => {
         const response = await rpc.send({ type: 'prompt', message: '/fusion blocked by config' });

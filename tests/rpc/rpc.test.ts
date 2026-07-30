@@ -15,6 +15,18 @@ interface Pending {
   timer: NodeJS.Timeout;
 }
 
+// `printf` and `sleep` are POSIX-only builtins that cmd.exe does not provide, so
+// commands executed through /bg must be dialect-portable. `node -e` with
+// JSON.stringify quoting is valid in both dialects, and process.stdout.write is
+// byte-exact where the surrounding assertions depend on exact output length.
+function writeExactly(text: string): string {
+  return `node -e ${JSON.stringify(`process.stdout.write(${JSON.stringify(text)})`)}`;
+}
+
+function sleepFor(ms: number): string {
+  return `node -e ${JSON.stringify(`setTimeout(() => {}, ${String(ms)})`)}`;
+}
+
 function isObject(value: unknown): value is object {
   return typeof value === 'object' && value !== null;
 }
@@ -195,7 +207,7 @@ void describe('rpc', () => {
         'bg-update',
       ])
         assert.ok(names.includes(name), name);
-      await rpc.prompt('/bg --name "RPC Echo" printf rpc-ok');
+      await rpc.prompt(`/bg --name "RPC Echo" ${writeExactly('rpc-ok')}`);
       const started = await rpc.wait(notifyWith(/Started RPC Echo/));
       const id = extractTaskId(started);
       await new Promise((resolve) => setTimeout(resolve, 250));
@@ -209,7 +221,7 @@ void describe('rpc', () => {
 
   void it('covers /jobs and /kill slash flow', async () => {
     await withRpc(async (rpc) => {
-      await rpc.prompt('/bg --name "RPC Sleep" sleep 10');
+      await rpc.prompt(`/bg --name "RPC Sleep" ${sleepFor(10000)}`);
       const started = await rpc.wait(notifyWith(/Started RPC Sleep/));
       const id = extractTaskId(started);
       await rpc.prompt('/jobs');
@@ -236,10 +248,10 @@ void describe('rpc', () => {
 
   void it('handles completed kill errors, logs byte normalization, and ambiguous prefixes', async () => {
     await withRpc(async (rpc) => {
-      await rpc.prompt('/bg --name "RPC One" printf abcdef');
+      await rpc.prompt(`/bg --name "RPC One" ${writeExactly('abcdef')}`);
       const one = await rpc.wait(notifyWith(/Started RPC One/));
       const idOne = extractTaskId(one);
-      await rpc.prompt('/bg --name "RPC Two" printf 123456');
+      await rpc.prompt(`/bg --name "RPC Two" ${writeExactly('123456')}`);
       await rpc.wait(notifyWith(/Started RPC Two/));
       await new Promise((resolve) => setTimeout(resolve, 350));
       await rpc.prompt(`/kill ${idOne}`);

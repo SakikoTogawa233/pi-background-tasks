@@ -1,7 +1,7 @@
-import { afterEach, describe, it } from 'node:test';
+import { afterEach, describe, it, type TestContext } from 'node:test';
 import assert from 'node:assert/strict';
 import { existsSync } from 'node:fs';
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import type { AssistantMessage, UserMessage } from '@earendil-works/pi-ai';
@@ -19,6 +19,7 @@ import {
 } from '@earendil-works/pi-coding-agent';
 import type { Component, TUI } from '@earendil-works/pi-tui';
 import { parseJsonText } from '../../src/core/common.js';
+import { resolvePiLaunch } from '../../src/core/pi-launch.js';
 import { CURRENT_MODEL_SELECTION, FUSION_MODEL_CONFIG_FILE } from '../../src/core/fusion/config.js';
 import {
   FUSION_INPUT_SCHEMA_VERSION,
@@ -67,6 +68,14 @@ interface Harness {
 interface HarnessOptions {
   fakeDelayMs?: number | undefined;
   fakeFailStage?: 'candidate' | 'evaluation' | 'evaluation-repair' | 'merge' | undefined;
+}
+
+function skipWin32FusionChildPathFixture(t: TestContext): boolean {
+  if (process.platform !== 'win32') return false;
+  t.skip(
+    'PATH-based fake Pi child interception is not applicable on win32 because production resolves the Pi package instead of PATH by design',
+  );
+  return true;
 }
 
 function rememberEnv(): void {
@@ -358,7 +367,24 @@ afterEach(async () => {
 });
 
 void describe('fusion SDK integration', { concurrency: false }, () => {
-  void it('registers real public surfaces and /fusion appends direct custom messages without a parent rewrite', async () => {
+  void it('builds a fake Pi package accepted by the win32 launch resolver', async () => {
+    rememberEnv();
+    const root = await mkdtemp(join(tmpdir(), 'pi-bg-fusion-launch-'));
+    roots.push(root);
+    const fake = await installFusionFakePi(root);
+    const launch = resolvePiLaunch({
+      platform: 'win32',
+      resolvePackageJson: fake.resolvePackageJson,
+      execPath: process.execPath,
+    });
+    assert.equal(launch.executable, process.execPath);
+    assert.deepEqual(launch.argvPrefix, [await realpath(fake.packageCliPath)]);
+    assert.equal(launch.kind, 'package-node-cli');
+    assert.equal((await readFile(fake.packageCliPath, 'utf8')).startsWith('#!'), false);
+  });
+
+  void it('registers real public surfaces and /fusion appends direct custom messages without a parent rewrite', async (t) => {
+    if (skipWin32FusionChildPathFixture(t)) return;
     const h = await harness();
     try {
       assert.ok(h.session.getActiveToolNames().includes('fusion_brainstorm'));
@@ -462,7 +488,8 @@ void describe('fusion SDK integration', { concurrency: false }, () => {
     }
   });
 
-  void it('BUG-182 returns exact merged text with host-valid usage and excludes the active tool-call leaf', async () => {
+  void it('BUG-182 returns exact merged text with host-valid usage and excludes the active tool-call leaf', async (t) => {
+    if (skipWin32FusionChildPathFixture(t)) return;
     const h = await harness();
     try {
       const user: UserMessage = {
@@ -565,7 +592,8 @@ void describe('fusion SDK integration', { concurrency: false }, () => {
     }
   });
 
-  void it('reports tool failure stage, slot, attempt, and durable artifact directory', async () => {
+  void it('reports tool failure stage, slot, attempt, and durable artifact directory', async (t) => {
+    if (skipWin32FusionChildPathFixture(t)) return;
     const h = await harness({ fakeFailStage: 'candidate' });
     try {
       const tool = h.session.getToolDefinition('fusion_brainstorm');
@@ -586,7 +614,8 @@ void describe('fusion SDK integration', { concurrency: false }, () => {
     }
   });
 
-  void it('cancels live fusion children on session shutdown', async () => {
+  void it('cancels live fusion children on session shutdown', async (t) => {
+    if (skipWin32FusionChildPathFixture(t)) return;
     const h = await harness({ fakeDelayMs: 10000 });
     let disposed = false;
     try {
@@ -638,7 +667,8 @@ void describe('fusion SDK integration', { concurrency: false }, () => {
     }
   });
 
-  void it('supports no-argument editor flow, editor cancellation, selector save, and invalid config without child calls', async () => {
+  void it('supports no-argument editor flow, editor cancellation, selector save, and invalid config without child calls', async (t) => {
+    if (skipWin32FusionChildPathFixture(t)) return;
     const h = await harness();
     try {
       const originalUi = baseUi(h.session);

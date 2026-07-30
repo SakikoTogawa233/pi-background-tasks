@@ -1,6 +1,6 @@
 import { spawnSync } from 'node:child_process';
 import { chmod, mkdir, writeFile } from 'node:fs/promises';
-import { join } from 'node:path';
+import { delimiter, join } from 'node:path';
 
 export interface FusionFakePiInstallOptions {
   delegatePi?: string | undefined;
@@ -13,23 +13,29 @@ export interface FusionFakePiInstallOptions {
 export interface FusionFakePiInstallResult {
   binDir: string;
   executable: string;
+  packageRoot: string;
+  packageJsonPath: string;
+  packageCliPath: string;
+  resolvePackageJson: (specifier: string) => string;
   logPath: string;
   env: NodeJS.ProcessEnv;
 }
+
+const PI_PACKAGE_NAME = '@earendil-works/pi-coding-agent';
+const PI_PACKAGE_MANIFEST = `${PI_PACKAGE_NAME}/package.json`;
 
 export function resolveRealPiCli(): string | undefined {
   const result = spawnSync('bash', ['-lc', 'command -v pi'], { encoding: 'utf8' });
   return result.status === 0 ? result.stdout.trim() || undefined : undefined;
 }
 
-function script(options: FusionFakePiInstallOptions, logPath: string): string {
+function scriptBody(options: FusionFakePiInstallOptions, logPath: string): string {
   const delegate = options.delegatePi ?? '';
   const merged = options.mergedText ?? 'Fused fake answer.';
   const delayMs = options.delayMs ?? 0;
   const invalidFirstEvaluation = options.invalidFirstEvaluation ?? false;
   const failStage = options.failStage ?? '';
-  return `#!/usr/bin/env node
-const { appendFileSync, readFileSync } = require('node:fs');
+  return `const { appendFileSync, readFileSync } = require('node:fs');
 const { spawnSync } = require('node:child_process');
 const { createHash } = require('node:crypto');
 const args = process.argv.slice(2);
@@ -63,7 +69,13 @@ const provider = argValue('--provider') || 'fake-provider';
 const model = argValue('--model') || 'fake-model';
 const systemPrompt = argValue('--system-prompt') || '';
 let stdin = '';
-try { stdin = readFileSync(0, 'utf8'); } catch (error) { stdin = ''; }
+try {
+  stdin = readFileSync(0, 'utf8');
+} catch (error) {
+  const message = error instanceof Error ? error.message : String(error);
+  console.error('fusion fake pi failed to read stdin: ' + message);
+  process.exit(96);
+}
 let stage = 'candidate';
 if (systemPrompt.includes('invalid blind-evaluation JSON response')) stage = 'evaluation-repair';
 else if (systemPrompt.includes('strict blind evaluator')) stage = 'evaluation';
@@ -112,23 +124,53 @@ else emit();
 `;
 }
 
+function executableScript(options: FusionFakePiInstallOptions, logPath: string): string {
+  return `#!/usr/bin/env node\n${scriptBody(options, logPath)}`;
+}
+
 export async function installFusionFakePi(
   root: string,
   options: FusionFakePiInstallOptions = {},
 ): Promise<FusionFakePiInstallResult> {
   const binDir = join(root, 'bin');
+  const packageRoot = join(root, 'fake-pi-pkg');
+  const packageDist = join(packageRoot, 'dist');
   await mkdir(binDir, { recursive: true });
+  await mkdir(packageDist, { recursive: true });
   const executable = join(binDir, 'pi');
+  const packageJsonPath = join(packageRoot, 'package.json');
+  const packageCliPath = join(packageDist, 'cli.cjs');
   const logPath = join(root, 'fusion-fake-pi.jsonl');
-  await writeFile(executable, script(options, logPath), 'utf8');
+  const body = scriptBody(options, logPath);
+  await writeFile(executable, executableScript(options, logPath), 'utf8');
   await chmod(executable, 0o755);
+  await writeFile(
+    packageJsonPath,
+    `${JSON.stringify(
+      { name: PI_PACKAGE_NAME, version: '0.0.0-test', bin: { pi: 'dist/cli.cjs' } },
+      null,
+      2,
+    )}\n`,
+    'utf8',
+  );
+  await writeFile(packageCliPath, body, 'utf8');
+  await chmod(packageCliPath, 0o755);
   return {
     binDir,
     executable,
+    packageRoot,
+    packageJsonPath,
+    packageCliPath,
+    resolvePackageJson: (specifier: string) => {
+      if (specifier !== PI_PACKAGE_MANIFEST) {
+        throw new Error(`unexpected package manifest specifier: ${specifier}`);
+      }
+      return packageJsonPath;
+    },
     logPath,
     env: {
       ...process.env,
-      PATH: `${binDir}:${process.env['PATH'] ?? ''}`,
+      PATH: `${binDir}${delimiter}${process.env['PATH'] ?? ''}`,
     },
   };
 }
