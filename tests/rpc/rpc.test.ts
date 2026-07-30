@@ -5,7 +5,14 @@ import { mkdir, mkdtemp, rm } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { parseJsonText } from '../../src/core/common.js';
+import { piLaunchArgv, resolvePiLaunch } from '../../src/core/pi-launch.js';
 import { isolatedTestEnv } from '../../src/testing/normalize.js';
+
+// npm installs `pi` as a pi.cmd shim on Windows, and a shell-less spawn does not
+// consult PATHEXT, so spawning the bare name fails with ENOENT. Production solves
+// this by resolving the Pi package bin and launching it through Node; reusing that
+// resolver keeps the harness aligned with real launch behaviour on every platform.
+const piLaunch = resolvePiLaunch();
 
 const extensionPath = resolve('extensions/background-tasks.ts');
 
@@ -63,8 +70,8 @@ class RPC {
     env: Record<string, string> = {},
   ) {
     this.proc = spawn(
-      'pi',
-      [
+      piLaunch.executable,
+      piLaunchArgv(piLaunch, [
         '--mode',
         'rpc',
         '--no-session',
@@ -76,10 +83,15 @@ class RPC {
         '--no-prompt-templates',
         '--no-context-files',
         '--no-tools',
-      ],
+      ]),
       {
         cwd,
-        env: { ...process.env, ...isolatedTestEnv, NPM_CONFIG_CACHE: '/tmp/pi-npm-cache', ...env },
+        env: {
+          ...process.env,
+          ...isolatedTestEnv,
+          NPM_CONFIG_CACHE: join(tmpdir(), 'pi-npm-cache'),
+          ...env,
+        },
         stdio: ['pipe', 'pipe', 'pipe'],
       },
     );

@@ -7,6 +7,13 @@ import { delimiter, join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { parseJsonText } from '../../src/core/common.js';
 import { installFusionFakePi, resolveRealPiCli } from '../helpers/fusion-fake-pi.js';
+import { piLaunchArgv, resolvePiLaunch } from '../../src/core/pi-launch.js';
+
+// npm installs `pi` as a pi.cmd shim on Windows, and a shell-less spawn does not
+// consult PATHEXT, so spawning the bare name fails with ENOENT. Production resolves
+// the Pi package bin and launches it through Node; reusing that resolver keeps this
+// harness aligned with real launch behaviour on every platform.
+const piLaunch = resolvePiLaunch();
 import { isolatedTestEnv } from '../../src/testing/normalize.js';
 
 const backgroundTasksExtensionPath = resolve('extensions/background-tasks.ts');
@@ -91,8 +98,8 @@ class FusionRpc {
 
   constructor(cwd: string, env: NodeJS.ProcessEnv) {
     this.proc = spawn(
-      'pi',
-      [
+      piLaunch.executable,
+      piLaunchArgv(piLaunch, [
         '--mode',
         'rpc',
         '--no-session',
@@ -108,7 +115,7 @@ class FusionRpc {
         '--no-tools',
         '--model',
         'pi-bg-scripted/scripted-model',
-      ],
+      ]),
       { cwd, env, stdio: ['pipe', 'pipe', 'pipe'] },
     );
     this.proc.stdout.on('data', (chunk: Buffer) => {
