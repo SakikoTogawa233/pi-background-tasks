@@ -516,6 +516,53 @@ void describe('package', () => {
     assert.equal(violations.length, 0, formatSourceViolations(violations));
   });
 
+  void it('typechecks standalone with the full monorepo strictness vendored locally', async () => {
+    // The package is published both from this monorepo and as a standalone git
+    // repo. A parent `../../tsconfig.base.json` does not exist in the standalone
+    // checkout, so `extends` must point at a locally vendored copy. CI proved
+    // that a missing base silently drops `skipLibCheck` and makes `tsc` walk
+    // node_modules type definitions.
+    const tsconfig = parseJsonValue(await text('tsconfig.json'));
+    assert.ok(isObject(tsconfig));
+    assert.equal(
+      field(tsconfig, 'extends'),
+      './tsconfig.base.json',
+      'tsconfig must extend a locally vendored base so standalone checkouts typecheck',
+    );
+
+    const localBase = parseJsonValue(await text('tsconfig.base.json'));
+    assert.ok(isObject(localBase));
+    const localOptions = field(localBase, 'compilerOptions');
+    assert.ok(isObject(localOptions));
+
+    // Every strictness flag from the monorepo base must be present and equal.
+    // Weakening the standalone config to make a build pass is not acceptable.
+    const required: Record<string, boolean> = {
+      strict: true,
+      exactOptionalPropertyTypes: true,
+      noUncheckedIndexedAccess: true,
+      noImplicitOverride: true,
+      noImplicitReturns: true,
+      noPropertyAccessFromIndexSignature: true,
+      noFallthroughCasesInSwitch: true,
+      noUnusedLocals: true,
+      noUnusedParameters: true,
+      useUnknownInCatchVariables: true,
+      verbatimModuleSyntax: true,
+      isolatedModules: true,
+      allowUnreachableCode: false,
+      allowUnusedLabels: false,
+      skipLibCheck: true,
+    };
+    for (const [flag, expected] of Object.entries(required)) {
+      assert.equal(
+        field(localOptions, flag),
+        expected,
+        `vendored tsconfig.base.json must keep ${flag}=${String(expected)}`,
+      );
+    }
+  });
+
   void it('packs exactly the runtime/docs payload and excludes tests/artifacts', () => {
     const envRoot = makeIsolatedEnvRoot('pi-bg-pack-env-');
     const r = spawnSync('npm', ['pack', '--dry-run', '--json'], {
