@@ -1034,7 +1034,13 @@ console.error('sdk stderr');
       const notified = await exec(session, 'bg_run', {
         isAgent: false,
         name: 'Notify SDK',
-        command: `node -e ${JSON.stringify('process.stdout.write("<ok>&done")')}`,
+        // The payload deliberately contains <, > and & to exercise escaping of
+        // task output. Those are cmd.exe redirection and separator
+        // metacharacters, so the literal must not appear in the command line;
+        // it is rebuilt from character codes inside the child instead.
+        command: `node -e ${JSON.stringify(
+          'process.stdout.write(String.fromCharCode(60)+"ok"+String.fromCharCode(62,38)+"done")',
+        )}`,
         notifyOnCompletion: true,
         triggerOnCompletion: false,
       });

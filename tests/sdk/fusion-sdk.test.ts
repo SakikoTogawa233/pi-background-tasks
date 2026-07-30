@@ -1,7 +1,7 @@
 import { afterEach, describe, it, type TestContext } from 'node:test';
 import assert from 'node:assert/strict';
-import { existsSync } from 'node:fs';
-import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
+import { existsSync, realpathSync } from 'node:fs';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import type { AssistantMessage, UserMessage } from '@earendil-works/pi-ai';
@@ -378,7 +378,11 @@ void describe('fusion SDK integration', { concurrency: false }, () => {
       execPath: process.execPath,
     });
     assert.equal(launch.executable, process.execPath);
-    assert.deepEqual(launch.argvPrefix, [await realpath(fake.packageCliPath)]);
+    // The expected value must be resolved with the same function the resolver
+    // uses. On Windows the synchronous and promise-based realpath implementations
+    // disagree about 8.3 short names: one preserves a component such as RUNNER~1
+    // while the other expands it to its long form.
+    assert.deepEqual(launch.argvPrefix, [realpathSync(fake.packageCliPath)]);
     assert.equal(launch.kind, 'package-node-cli');
     assert.equal((await readFile(fake.packageCliPath, 'utf8')).startsWith('#!'), false);
   });
