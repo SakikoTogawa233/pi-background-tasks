@@ -84,6 +84,7 @@ export interface BgTask extends Omit<BgTaskSnapshot, 'name'> {
   timeoutHandle?: NodeJS.Timeout | undefined;
   killKind?: KillKind | undefined;
   killSignalSent?: boolean | undefined;
+  killEscalationTimer?: NodeJS.Timeout | undefined;
   capExceeded?: boolean | undefined;
   finalized?: boolean | undefined;
   terminalPublished?: boolean | undefined;

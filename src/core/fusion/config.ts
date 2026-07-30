@@ -1,10 +1,10 @@
-import { createHash, randomBytes } from 'node:crypto';
-import { closeSync, fsyncSync, openSync, renameSync } from 'node:fs';
-import { chmod, mkdir, open, readFile, rm, writeFile } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
+import { chmod, mkdir, open, readFile, rm } from 'node:fs/promises';
 import { basename, dirname, join } from 'node:path';
 import { getAgentDir } from '@earendil-works/pi-coding-agent';
 import type { Api, Model } from '@earendil-works/pi-ai';
 import { isJsonObject, parseJsonText, type JsonObject } from '../common.js';
+import { replaceFileDurable } from '../durable-fs.js';
 import {
   FUSION_MODEL_CONFIG_SCHEMA_VERSION,
   FusionError,
@@ -260,25 +260,6 @@ export function resolveFusionModels(input: ResolveFusionModelsInput): ResolvedFu
   };
 }
 
-async function fsyncFile(path: string): Promise<void> {
-  const handle = await open(path, 'r');
-  try {
-    await handle.sync();
-  } finally {
-    await handle.close();
-  }
-}
-
-async function fsyncDirectory(path: string): Promise<void> {
-  if (process.platform === 'win32') return;
-  const fd = openSync(path, 'r');
-  try {
-    fsyncSync(fd);
-  } finally {
-    closeSync(fd);
-  }
-}
-
 async function delay(ms: number): Promise<void> {
   await new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -348,20 +329,7 @@ export async function saveFusionModelConfig(
         childCreated: false,
       });
     }
-    const tmp = join(
-      dir,
-      `.${basename(path)}.${String(process.pid)}.${randomBytes(6).toString('hex')}.tmp`,
-    );
-    const text = prettyConfig(config);
-    try {
-      await writeFile(tmp, text, { encoding: 'utf8', mode: 0o600 });
-      await fsyncFile(tmp);
-      renameSync(tmp, path);
-      await fsyncDirectory(dir);
-    } catch (error) {
-      await rm(tmp, { force: true });
-      throw error;
-    }
+    await replaceFileDurable(path, prettyConfig(config));
     return revisionForPath(path);
   });
 }

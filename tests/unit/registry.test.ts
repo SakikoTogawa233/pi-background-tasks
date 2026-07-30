@@ -501,6 +501,41 @@ void describe('BackgroundTaskRegistry', () => {
       await Promise.all([first, second]);
       assert.deepEqual(killCalls, ['SIGTERM', 'SIGKILL']);
       assert.equal(task.status, 'killed');
+      assert.equal(task.killEscalationTimer, undefined, 'escalation timer must be cleared');
+    } finally {
+      await cleanup(h.root);
+    }
+  });
+
+  void it('schedules exactly one SIGKILL escalation for concurrent stop requests', async () => {
+    // Regression: SIGTERM de-duplication guarded the signal but not the timer,
+    // so each concurrent stopTask scheduled its own escalation. When the child
+    // outlived the grace window that produced duplicate SIGKILLs.
+    const killCalls: Array<NodeJS.Signals | number | undefined> = [];
+    const h = await createHarness({
+      platform: 'linux',
+      killGraceMs: 20,
+      stopWaitMs: 120,
+      // Never close the child, so every scheduled escalation timer can fire.
+      killProcess: (_pid, signal) => {
+        killCalls.push(signal);
+        return true;
+      },
+      childFactory: (pid) => new FakeChild(pid),
+    });
+    try {
+      const { task } = await startFakeTask(h, 'Escalate Once');
+      await Promise.all([
+        h.registry.stopTask(task, 'user').catch(() => undefined),
+        h.registry.stopTask(task, 'user').catch(() => undefined),
+        h.registry.stopTask(task, 'user').catch(() => undefined),
+      ]);
+      await new Promise((resolve) => setTimeout(resolve, 120));
+      assert.deepEqual(
+        killCalls,
+        ['SIGTERM', 'SIGKILL'],
+        'concurrent stop requests must escalate to SIGKILL exactly once',
+      );
     } finally {
       await cleanup(h.root);
     }

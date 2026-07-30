@@ -218,6 +218,23 @@ For attested Pi tasks only, the task id is `b` plus 32 random hex characters (12
 
 The attestation sidecar uses `schema_version: "phase2.pi_task_attestation.v1"` and is written last, after metadata/output/events/stderr/wrapper/report bytes are closed and hashed. An attested task does not become externally visible as `completed` until final metadata and the sidecar are durable. These are local runtime artifacts and should remain gitignored.
 
+## Durability model
+
+All task metadata, task output/events/stderr, attestation sidecars, Fusion artifacts, and the global `fusion-models.json` are written through one shared primitive in `src/core/durable-fs.ts`.
+
+The invariant is: **open the file once with write intent, write and `fsync` through that same writable handle, then close.** A pathname is never reopened merely to flush it. This is required for Windows correctness — `FlushFileBuffers` needs a handle with write access, so flushing through a reopened read-only handle fails with `EPERM: operation not permitted, fsync` and previously broke every background task on Windows.
+
+Two write modes are provided:
+
+| Mode | Flags | Used for |
+|---|---|---|
+| Direct durable write | `w`, inherited mode | task output, events, stderr |
+| Atomic replacement | private `0o600` temp with `wx`, then rename | task metadata, attestations, Fusion artifacts/manifests, model config |
+
+Failure handling is loud and typed. Every open, write, `fsync`, rename, close, and temp-cleanup failure raises `DurableFileError` carrying the failing operation, path, native error code, and original cause. **A failed `fsync` is never tolerated or downgraded**, so the package cannot report durable state it did not actually achieve. A close or cleanup failure is attached as a secondary `cleanupFailures` entry and never replaces the primary error, and a temporary file is only removed when that same call created it.
+
+**Platform limitation.** After the rename, the parent directory is itself `fsync`ed on POSIX so the new directory entry is crash-durable. Node exposes no portable equivalent on Windows, so that step is skipped there: file contents are still explicitly flushed before the rename and rename failures remain fatal, but the package cannot offer the same crash-durability guarantee for the directory entry on Windows. When a failure occurs after a successful rename, `DurableFileError.renameCompleted` is `true`, meaning the replacement may already be visible even though the operation reported an error.
+
 ## Safety model
 
 - Commands are spawned and tracked with `child_process.spawn`; the package does not rely on shell `&`.

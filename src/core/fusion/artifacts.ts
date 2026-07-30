@@ -1,9 +1,9 @@
 import { randomBytes } from 'node:crypto';
-import { closeSync, fsyncSync, openSync, renameSync } from 'node:fs';
-import { chmod, mkdir, open, rm } from 'node:fs/promises';
-import { basename, dirname, isAbsolute, join, relative, sep } from 'node:path';
+import { chmod, mkdir } from 'node:fs/promises';
+import { basename, isAbsolute, join, relative, sep } from 'node:path';
 import { canonicalJson, sha256Buffer } from '../attested-pi-run.js';
 import { sanitizePathSegment } from '../common.js';
+import { replaceFileDurable } from '../durable-fs.js';
 import {
   EMPTY_FUSION_USAGE,
   FUSION_MANIFEST_SCHEMA_VERSION,
@@ -120,16 +120,6 @@ function canTransition(from: FusionState, to: FusionState): boolean {
   return NEXT_STATES[from].includes(to);
 }
 
-function fsyncDirectory(path: string): void {
-  if (process.platform === 'win32') return;
-  const fd = openSync(path, 'r');
-  try {
-    fsyncSync(fd);
-  } finally {
-    closeSync(fd);
-  }
-}
-
 function pathInside(parent: string, child: string): boolean {
   const rel = relative(parent, child);
   return (
@@ -141,34 +131,12 @@ function errorForArtifact(message: string): FusionError {
   return new FusionError(message, { code: 'artifact_error', childCreated: false });
 }
 
-async function writeTempFile(absPath: string, data: Buffer | string): Promise<void> {
-  const handle = await open(absPath, 'wx', 0o600);
-  try {
-    await handle.writeFile(data);
-    await handle.sync();
-  } finally {
-    await handle.close();
-  }
-}
-
 async function writePrivateFile(
   absPath: string,
   data: Buffer | string,
 ): Promise<FusionArtifactRef> {
-  const dir = dirname(absPath);
-  const tmp = join(
-    dir,
-    `.${basename(absPath)}.${String(process.pid)}.${randomBytes(6).toString('hex')}.tmp`,
-  );
   const bytes = Buffer.isBuffer(data) ? data : Buffer.from(data, 'utf8');
-  try {
-    await writeTempFile(tmp, data);
-    renameSync(tmp, absPath);
-    fsyncDirectory(dir);
-  } catch (error) {
-    await rm(tmp, { force: true });
-    throw error;
-  }
+  await replaceFileDurable(absPath, data);
   return { path: basename(absPath), byte_length: bytes.length, sha256: sha256Buffer(bytes) };
 }
 

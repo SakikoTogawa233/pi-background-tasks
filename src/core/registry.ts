@@ -1011,6 +1011,10 @@ export class BackgroundTaskRegistry {
     if (task.finalized) return;
     task.finalized = true;
     if (task.timeoutHandle) clearTimeout(task.timeoutHandle);
+    if (task.killEscalationTimer !== undefined) {
+      clearTimeout(task.killEscalationTimer);
+      task.killEscalationTimer = undefined;
+    }
     let finalStatus = status;
     task.exitCode = exitCode;
     task.signal = signal;
@@ -1441,7 +1445,13 @@ export class BackgroundTaskRegistry {
     }
 
     task.killSignalSent = true;
-    setTimeout(() => {
+    // SIGKILL is the terminal escalation; it must never schedule a further one.
+    if (signal === 'SIGKILL') return;
+    // Only one escalation timer may be outstanding. Concurrent stop requests
+    // previously each scheduled their own, producing duplicate SIGKILLs.
+    if (task.killEscalationTimer !== undefined) return;
+    task.killEscalationTimer = setTimeout(() => {
+      task.killEscalationTimer = undefined;
       if (task.status !== 'running') return;
       try {
         this.requestKill(task, 'SIGKILL');
@@ -1572,6 +1582,10 @@ export class BackgroundTaskRegistry {
     if (task.finalized) return;
     task.finalized = true;
     if (task.timeoutHandle) clearTimeout(task.timeoutHandle);
+    if (task.killEscalationTimer !== undefined) {
+      clearTimeout(task.killEscalationTimer);
+      task.killEscalationTimer = undefined;
+    }
     let finalStatus = status;
     let finalError = error;
     task.exitCode = exitCode;

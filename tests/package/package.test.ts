@@ -1,7 +1,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { existsSync, mkdirSync, mkdtempSync, rmSync } from 'node:fs';
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, readdir, rm } from 'node:fs/promises';
 import { spawnSync } from 'node:child_process';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -24,6 +24,12 @@ interface NpmPackFile {
 interface NpmPackEntry {
   filename: string;
   files: NpmPackFile[];
+}
+
+interface SourceViolation {
+  file: string;
+  rule: string;
+  excerpt: string;
 }
 
 const root = new URL('../../', import.meta.url);
@@ -90,6 +96,124 @@ async function pkg(): Promise<PackageJson> {
 
 async function text(file: string): Promise<string> {
   return readFile(new URL(file, root), 'utf8');
+}
+
+async function walkSourceTree(dir: string): Promise<string[]> {
+  const entries = await readdir(dir, { withFileTypes: true });
+  const files: string[] = [];
+  for (const entry of entries) {
+    const path = join(dir, entry.name);
+    if (entry.isDirectory()) files.push(...(await walkSourceTree(path)));
+    else if (/\.ts$/.test(entry.name)) files.push(path);
+  }
+  return files;
+}
+
+function stripComments(source: string): string {
+  return source.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:])\/\/.*$/gm, '$1');
+}
+
+function compactExcerpt(source: string): string {
+  return source.replace(/\s+/g, ' ').trim().slice(0, 180);
+}
+
+function isPathLikeParameter(name: string): boolean {
+  const lower = name.toLowerCase();
+  return lower === 'path' || lower === 'file' || lower.endsWith('path');
+}
+
+function isPathSyncHelperName(name: string): boolean {
+  const lower = name.toLowerCase();
+  if (lower.startsWith('write') || lower.startsWith('replace')) return false;
+  if (
+    lower === 'fsync' ||
+    lower === 'sync' ||
+    lower === 'fsyncfile' ||
+    lower === 'fsyncpath' ||
+    lower === 'syncfile' ||
+    lower === 'syncpath'
+  )
+    return true;
+  if (lower.includes('fsync') && (lower.includes('file') || lower.includes('path'))) return true;
+  return lower.startsWith('sync') && (lower.includes('file') || lower.includes('path'));
+}
+
+function addPatternViolations(
+  violations: SourceViolation[],
+  file: string,
+  rule: string,
+  source: string,
+  pattern: RegExp,
+): void {
+  for (const match of source.matchAll(pattern)) {
+    violations.push({ file, rule, excerpt: compactExcerpt(match[0] ?? '') });
+  }
+}
+
+function addExportedPathSyncViolations(
+  violations: SourceViolation[],
+  file: string,
+  source: string,
+): void {
+  const exportedFunction = /\bexport\s+(?:async\s+)?function\s+([A-Za-z_$][\w$]*)\s*\(\s*([A-Za-z_$][\w$]*)\b/g;
+  for (const match of source.matchAll(exportedFunction)) {
+    const name = match[1];
+    const parameter = match[2];
+    if (
+      name !== undefined &&
+      parameter !== undefined &&
+      isPathSyncHelperName(name) &&
+      isPathLikeParameter(parameter)
+    ) {
+      violations.push({ file, rule: 'exported path sync helper', excerpt: compactExcerpt(match[0]) });
+    }
+  }
+
+  const exportedConst = /\bexport\s+const\s+([A-Za-z_$][\w$]*)\s*=\s*(?:async\s*)?\(?\s*([A-Za-z_$][\w$]*)\b/g;
+  for (const match of source.matchAll(exportedConst)) {
+    const name = match[1];
+    const parameter = match[2];
+    if (
+      name !== undefined &&
+      parameter !== undefined &&
+      isPathSyncHelperName(name) &&
+      isPathLikeParameter(parameter)
+    ) {
+      violations.push({ file, rule: 'exported path sync helper', excerpt: compactExcerpt(match[0]) });
+    }
+  }
+
+  const exportedList = /\bexport\s*\{([^}]*)\}/g;
+  for (const match of source.matchAll(exportedList)) {
+    const names = match[1];
+    if (names !== undefined && names.split(',').some((name) => isPathSyncHelperName(name.trim()))) {
+      violations.push({ file, rule: 'exported path sync helper', excerpt: compactExcerpt(match[0]) });
+    }
+  }
+}
+
+function addSwallowedSyncViolations(
+  violations: SourceViolation[],
+  file: string,
+  source: string,
+): void {
+  const syncTryCatch = /try\s*\{(?:(?!\}\s*catch)[\s\S])*?\.sync\s*\([^)]*\)[\s\S]*?\}\s*catch\s*(?:\([^)]*\))?\s*\{([\s\S]*?)\}/g;
+  for (const match of source.matchAll(syncTryCatch)) {
+    const body = match[1] ?? '';
+    const trimmed = body.trim();
+    const recordsFailure = /failure\(\s*['"]sync_(?:file|directory)['"]/.test(body) ||
+      /throwDurable\b/.test(body);
+    const throwsImmediately = /^throw\b/.test(trimmed);
+    if (trimmed.length === 0 || /\breturn\b/.test(body) || (!recordsFailure && !throwsImmediately)) {
+      violations.push({ file, rule: 'silent sync catch', excerpt: compactExcerpt(match[0] ?? '') });
+    }
+  }
+}
+
+function formatSourceViolations(violations: readonly SourceViolation[]): string {
+  return violations
+    .map((violation) => `${violation.file} ${violation.rule}: ${violation.excerpt}`)
+    .join('\n');
 }
 
 function makeIsolatedEnvRoot(prefix: string): string {
@@ -356,6 +480,39 @@ void describe('package', () => {
       );
     }
     assert.match(orchestrator, /assertBaseContext\(/);
+  });
+
+  void it('keeps production durable syncing handle-scoped and loud', async () => {
+    const files = await walkSourceTree(new URL('src/', root).pathname);
+    const violations: SourceViolation[] = [];
+    for (const file of files) {
+      const source = stripComments(await readFile(file, 'utf8'));
+      const label = file.startsWith(root.pathname) ? file.slice(root.pathname.length) : file;
+      addPatternViolations(
+        violations,
+        label,
+        'read-open sync',
+        source,
+        /\b(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*(?:await\s+)?(?:nodeOpen|open|fs(?:Promises)?\.open|[A-Za-z_$][\w$]*\.openWritable)\s*\([^;]*,\s*(['"])r\+?\2[^;]*\)\s*;?[\s\S]*?\b\1\s*\.\s*sync\s*\(/g,
+      );
+      addPatternViolations(
+        violations,
+        label,
+        'read-open sync',
+        source,
+        /\b([A-Za-z_$][\w$]*)\s*=\s*(?:await\s+)?(?:nodeOpen|open|fs(?:Promises)?\.open|[A-Za-z_$][\w$]*\.openWritable)\s*\([^;]*,\s*(['"])r\+?\2[^;]*\)\s*;?[\s\S]*?\b\1\s*\.\s*sync\s*\(/g,
+      );
+      addPatternViolations(
+        violations,
+        label,
+        'fsyncFile function',
+        source,
+        /\b(?:async\s+)?function\s+fsyncFile\b|\b(?:const|let|var)\s+fsyncFile\s*=/g,
+      );
+      addExportedPathSyncViolations(violations, label, source);
+      addSwallowedSyncViolations(violations, label, source);
+    }
+    assert.equal(violations.length, 0, formatSourceViolations(violations));
   });
 
   void it('packs exactly the runtime/docs payload and excludes tests/artifacts', () => {

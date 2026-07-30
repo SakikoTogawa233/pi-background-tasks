@@ -1,8 +1,7 @@
 import { spawn as nodeSpawn, type SpawnOptions } from 'node:child_process';
 import { createHash, randomBytes } from 'node:crypto';
-import { closeSync, fsyncSync, openSync, renameSync, writeFileSync } from 'node:fs';
-import { mkdir, open, readFile, realpath, stat, writeFile } from 'node:fs/promises';
-import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
+import { mkdir, readFile, realpath, stat } from 'node:fs/promises';
+import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import type { Api, Model } from '@earendil-works/pi-ai';
 import type {
   BackgroundTaskChildProcess,
@@ -10,6 +9,7 @@ import type {
   BackgroundTaskSpawn,
 } from './registry.js';
 import { isJsonObject, parseJsonText, type BgTaskSnapshot, type JsonObject } from './common.js';
+import { replaceFileDurable, writeFileDurable } from './durable-fs.js';
 
 export const PI_TASK_ATTESTATION_SCHEMA_VERSION = 'phase2.pi_task_attestation.v1';
 export const ATTESTED_TASK_ID_PATTERN = /^b[0-9a-f]{32}$/;
@@ -414,40 +414,13 @@ function sortJson(value: unknown): unknown {
   );
 }
 
-async function fsyncFile(path: string): Promise<void> {
-  const handle = await open(path, 'r');
-  try {
-    await handle.sync();
-  } finally {
-    await handle.close();
-  }
-}
-
-async function fsyncDirectory(path: string): Promise<void> {
-  if (process.platform === 'win32') return;
-  const fd = openSync(path, 'r');
-  try {
-    fsyncSync(fd);
-  } finally {
-    closeSync(fd);
-  }
-}
-
 export async function writeFileFsynced(path: string, data: Buffer | string): Promise<void> {
   await mkdir(dirname(path), { recursive: true });
-  await writeFile(path, data);
-  await fsyncFile(path);
+  await writeFileDurable(path, data);
 }
 
 export async function writeJsonAtomic(path: string, value: unknown): Promise<void> {
-  const tmp = join(
-    dirname(path),
-    `.${basename(path)}.${process.pid}.${randomBytes(6).toString('hex')}.tmp`,
-  );
-  writeFileSync(tmp, `${JSON.stringify(value, null, 2)}\n`, { encoding: 'utf8', mode: 0o600 });
-  await fsyncFile(tmp);
-  renameSync(tmp, path);
-  await fsyncDirectory(dirname(path));
+  await replaceFileDurable(path, `${JSON.stringify(value, null, 2)}\n`);
 }
 
 export async function closeAndFsyncOutputStream(
