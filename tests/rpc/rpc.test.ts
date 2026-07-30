@@ -23,15 +23,27 @@ interface Pending {
 }
 
 // `printf` and `sleep` are POSIX-only builtins that cmd.exe does not provide, so
-// commands executed through /bg must be dialect-portable. `node -e` with
-// JSON.stringify quoting is valid in both dialects, and process.stdout.write is
-// byte-exact where the surrounding assertions depend on exact output length.
+// commands executed through /bg must be dialect-portable.
+//
+// These commands must also quote identically in both dialects. A POSIX shell
+// and cmd.exe disagree about backslash-escaped quotes: sh unescapes \" to a
+// plain quote while cmd.exe does not, so a JSON-quoted payload reaches the child
+// with different bytes on each platform. Parentheses additionally must stay
+// quoted, because an unquoted parenthesis is a syntax error in a POSIX shell.
+//
+// The portable form is therefore one pair of double quotes containing no inner
+// quote and no backslash. Payload text is emitted through String.fromCharCode so
+// no literal quote is ever required, and process.stdout.write stays byte-exact
+// for the surrounding output-length assertions.
 function writeExactly(text: string): string {
-  return `node -e ${JSON.stringify(`process.stdout.write(${JSON.stringify(text)})`)}`;
+  const codes = Array.from(text)
+    .map((character) => character.charCodeAt(0))
+    .join(',');
+  return `node -e "process.stdout.write(String.fromCharCode(${codes}))"`;
 }
 
 function sleepFor(ms: number): string {
-  return `node -e ${JSON.stringify(`setTimeout(() => {}, ${String(ms)})`)}`;
+  return `node -e "setTimeout(Boolean,${String(ms)})"`;
 }
 
 function isObject(value: unknown): value is object {
@@ -164,6 +176,26 @@ class RPC {
   }
 }
 
+// A killed child releases its handles asynchronously on Windows, so a directory
+// removal issued immediately after stop can still observe the open handle and
+// fail with EBUSY, ENOTEMPTY, or EPERM. This is a bounded retry of a transient
+// condition, not a fallback: the final attempt still throws, and no other error
+// is retried.
+const REMOVABLE_AFTER_RETRY = /EBUSY|ENOTEMPTY|EPERM/;
+
+async function removeRootWhenReleased(root: string): Promise<void> {
+  for (let attempt = 0; attempt < 10; attempt++) {
+    try {
+      await rm(root, { recursive: true, force: true });
+      return;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (!REMOVABLE_AFTER_RETRY.test(message) || attempt === 9) throw error;
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+  }
+}
+
 async function withRpc(
   fn: (rpc: RPC, cwd: string) => Promise<void>,
   env: Record<string, string> = {},
@@ -176,7 +208,7 @@ async function withRpc(
     await fn(rpc, cwd);
   } finally {
     await rpc.stop();
-    await rm(root, { recursive: true, force: true });
+    await removeRootWhenReleased(root);
   }
 }
 
