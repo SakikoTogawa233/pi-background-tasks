@@ -1,4 +1,4 @@
-import { afterEach, describe, it } from 'node:test';
+import { afterEach, describe, it, type TestContext } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdir, mkdtemp, readFile, rm } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
@@ -166,7 +166,7 @@ async function harness(): Promise<Harness> {
     PI_BG_SCRIPTED_SCENARIO: 'fusion-brainstorm',
     PI_BG_SCRIPTED_EVENTS: eventsPath,
     PI_BG_SCRIPTED_API_KEY: 'scripted-api-key',
-    NPM_CONFIG_CACHE: '/tmp/pi-npm-cache',
+    NPM_CONFIG_CACHE: join(tmpdir(), 'pi-npm-cache'),
   });
   const settingsManager = SettingsManager.inMemory({
     defaultProvider: 'pi-bg-scripted',
@@ -222,7 +222,20 @@ void describe('scripted provider fusion_brainstorm integration', { concurrency: 
   void it(
     'lets the parent model call fusion_brainstorm and consume the exact merged tool result',
     { timeout: 15_000 },
-    async () => {
+    async (t: TestContext) => {
+      // This case intercepts the Pi child by placing a fake `pi` on PATH. That
+      // cannot work on win32, where production deliberately resolves the Pi
+      // package and launches it through Node rather than consulting PATH, and
+      // the extension layer exposes no launch seam to redirect it. The same
+      // constraint host-gates the equivalent cases in tests/sdk/fusion-sdk.test.ts.
+      // Fusion orchestration itself stays covered on Windows by the injected
+      // childRunner cases in tests/unit/fusion-orchestrator.test.ts.
+      if (process.platform === 'win32') {
+        t.skip(
+          'fake Pi PATH interception is not applicable on win32 because production resolves the Pi package instead of PATH by design',
+        );
+        return;
+      }
       const h = await harness();
       try {
         await h.session.prompt('Use fusion for this scripted task.');

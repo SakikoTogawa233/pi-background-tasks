@@ -42,7 +42,7 @@ async function harness(scenario: Scenario) {
     PI_BG_SCRIPTED_SCENARIO: scenario,
     PI_BG_SCRIPTED_EVENTS: eventsPath,
     PI_BG_SCRIPTED_API_KEY: 'scripted-api-key',
-    NPM_CONFIG_CACHE: '/tmp/pi-npm-cache',
+    NPM_CONFIG_CACHE: join(tmpdir(), 'pi-npm-cache'),
   });
   const settingsManager = SettingsManager.inMemory({
     defaultProvider: 'pi-bg-scripted',
