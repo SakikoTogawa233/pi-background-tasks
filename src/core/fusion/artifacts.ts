@@ -14,7 +14,7 @@ import {
   type FusionAttemptArtifactRecord,
   type FusionBudgetPlanV1,
   type FusionCandidateId,
-  type FusionContextOmissionLedgerV1,
+  type FusionContextOmissionLedgerV2,
   type FusionChildRunResult,
   type FusionModelConfigV1,
   type FusionSource,
@@ -288,7 +288,7 @@ export class FusionArtifactStore {
    * a separate artifact so canonical input carries only compact run receipts
    * while the full omission accounting stays locally auditable.
    */
-  async writeContextLedger(ledger: FusionContextOmissionLedgerV1): Promise<void> {
+  async writeContextLedger(ledger: FusionContextOmissionLedgerV2): Promise<void> {
     await this.writeArtifact('context-omission-ledger.json', canonicalJson(ledger));
   }
 

@@ -3,12 +3,12 @@ import type { Usage } from '@earendil-works/pi-ai';
 export type FusionThinkingLevel = 'off' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max';
 
 export const FUSION_MODEL_CONFIG_SCHEMA_VERSION = 'pi-background-tasks.fusion-models.v1';
-export const FUSION_INPUT_SCHEMA_VERSION = 'pi-background-tasks.fusion-input.v2';
+export const FUSION_INPUT_SCHEMA_VERSION = 'pi-background-tasks.fusion-input.v3';
 export const FUSION_EVALUATION_SCHEMA_VERSION = 'pi-background-tasks.fusion-evaluation.v1';
 export const FUSION_RESULT_SCHEMA_VERSION = 'pi-background-tasks.fusion-result.v2';
 export const FUSION_MANIFEST_SCHEMA_VERSION = 'pi-background-tasks.fusion-manifest.v2';
-export const FUSION_CONTEXT_LEDGER_SCHEMA_VERSION = 'pi-background-tasks.fusion-context-ledger.v1';
-export const FUSION_BUDGET_PLAN_SCHEMA_VERSION = 'pi-background-tasks.fusion-budget-plan.v1';
+export const FUSION_CONTEXT_LEDGER_SCHEMA_VERSION = 'pi-background-tasks.fusion-context-ledger.v2';
+export const FUSION_BUDGET_PLAN_SCHEMA_VERSION = 'pi-background-tasks.fusion-budget-plan.v2';
 
 /**
  * Conversation-projection transform shared by every Fusion entry point.
@@ -18,12 +18,12 @@ export const FUSION_BUDGET_PLAN_SCHEMA_VERSION = 'pi-background-tasks.fusion-bud
  * hash-accounted omission receipts. It never truncates retained text and never
  * forwards raw image bytes.
  */
-export const FUSION_CONTEXT_TRANSFORM_ID = 'visible-conversation-ledger-v1';
+export const FUSION_CONTEXT_TRANSFORM_ID = 'visible-conversation-ledger-v2';
 export const FUSION_BRANCH_FILTER_ID = 'exclude-active-fusion-subtree-v1';
 
 /** Entry-point specific context policies. Both use the same payload-exclusion transform. */
-export const FUSION_TOOL_CONTEXT_POLICY_ID = 'fusion-tool-explicit-v1';
-export const FUSION_COMMAND_CONTEXT_POLICY_ID = 'fusion-command-conversation-v1';
+export const FUSION_TOOL_CONTEXT_POLICY_ID = 'fusion-tool-explicit-v2';
+export const FUSION_COMMAND_CONTEXT_POLICY_ID = 'fusion-command-conversation-v2';
 
 export const FUSION_IMAGE_OMISSION_PREFIX = '[Image omitted from fusion text transcript: ';
 
@@ -112,7 +112,7 @@ export interface ResolvedFusionModels {
 
 export type FusionRequestAuthority = 'explicit_text' | 'directive_over_projected_conversation';
 
-export interface FusionCanonicalRequestV2 {
+export interface FusionCanonicalRequestV3 {
   /** Entry point that produced this request. */
   source: FusionSource;
   /** How children must weigh `text` against the projected conversation. */
@@ -144,11 +144,29 @@ export interface FusionOmittedEventRecord {
   mime_type?: string;
 }
 
-export interface FusionContextOmissionLedgerV1 {
+export interface FusionOmittedActivityProjectionMapEntry {
+  canonical_entry_index: number;
+  entry_kind: 'omitted_activity';
+  ledger_index_first: number;
+  ledger_index_last: number;
+}
+
+export interface FusionLedgerOnlyImageProjectionMapEntry {
+  entry_kind: 'ledger_only_tool_result_image';
+  ledger_index_first: number;
+  ledger_index_last: number;
+}
+
+export type FusionContextProjectionMapEntry =
+  | FusionOmittedActivityProjectionMapEntry
+  | FusionLedgerOnlyImageProjectionMapEntry;
+
+export interface FusionContextOmissionLedgerV2 {
   schema_version: typeof FUSION_CONTEXT_LEDGER_SCHEMA_VERSION;
   policy_id: string;
   transform: typeof FUSION_CONTEXT_TRANSFORM_ID;
   entries: readonly FusionOmittedEventRecord[];
+  projection_map: readonly FusionContextProjectionMapEntry[];
   root_sha256: string;
 }
 
@@ -169,26 +187,13 @@ export interface FusionOmittedRunCounts {
   assistant_thinking?: number;
   tool_calls?: number;
   tool_result_texts?: number;
-  tool_result_images?: number;
-}
-
-/** Byte totals for one omitted run, using the same omit-when-zero rule. */
-export interface FusionOmittedRunBytes {
-  assistant_thinking?: number;
-  tool_call_arguments?: number;
-  tool_result_text?: number;
-  tool_result_image?: number;
 }
 
 export interface FusionProjectionOmissionEntry {
   kind: 'omitted_activity';
-  source_ordinal_first: number;
-  source_ordinal_last: number;
-  ledger_index_first: number;
-  ledger_index_last: number;
+  at: readonly [number, number];
+  bytes: number;
   counts: FusionOmittedRunCounts;
-  payload_bytes: FusionOmittedRunBytes;
-  ledger_run_sha256: string;
 }
 
 export type FusionProjectionEntry = FusionProjectionTextEntry | FusionProjectionOmissionEntry;
@@ -196,7 +201,8 @@ export type FusionProjectionEntry = FusionProjectionTextEntry | FusionProjection
 export interface FusionContextPolicyDescriptor {
   id: string;
   transform: typeof FUSION_CONTEXT_TRANSFORM_ID;
-  version: 1;
+  version: 2;
+  receipt_format: 'omitted_activity.v2';
   user_text: 'verbatim';
   assistant_text: 'verbatim';
   assistant_thinking: 'ledger_only';
@@ -238,21 +244,22 @@ export interface FusionProjectionAccounting {
   tool_call_names: readonly FusionToolCallNameCount[];
   ledger_entry_count: number;
   ledger_root_sha256: string;
+  omission_receipt_utf8_bytes: number;
 }
 
-export interface FusionConversationProjectionV2 {
+export interface FusionConversationProjectionV3 {
   policy: FusionContextPolicyDescriptor;
   branch_filter: FusionBranchFilterDescriptor;
   entries: readonly FusionProjectionEntry[];
   accounting: FusionProjectionAccounting;
 }
 
-export interface FusionCanonicalInputV2 {
+export interface FusionCanonicalInputV3 {
   schema_version: typeof FUSION_INPUT_SCHEMA_VERSION;
   cwd: string;
   system_prompt: string;
-  request: FusionCanonicalRequestV2;
-  conversation_projection: FusionConversationProjectionV2;
+  request: FusionCanonicalRequestV3;
+  conversation_projection: FusionConversationProjectionV3;
 }
 
 export interface CandidateAssessment {
@@ -370,6 +377,7 @@ export type FusionProgressEvent =
   | { type: 'candidate_completed'; slot: 1 | 2 | 3; completed: number; total: 3 }
   | { type: 'evaluation_started'; attempt: 1 | 2; repair: boolean }
   | { type: 'evaluation_retry'; errors: readonly string[] }
+  | { type: 'budget_warning'; warnings: readonly FusionBudgetWarning[]; error: string }
   | { type: 'merge_started' }
   | { type: 'completed'; runId: string; artifactDir: string }
   | { type: 'failed'; runId: string; artifactDir: string; error: string }
@@ -395,14 +403,11 @@ export type FusionErrorCode =
   | 'state_transition_invalid'
   | 'orchestration_failed';
 
-/**
- * Structured detail attached to a `prompt_budget_exceeded` failure so the caller
- * can see exactly which stage, which measured size, which allowed size, and
- * which configured model was the limiting participant.
- */
+/** Structured detail attached to a `prompt_budget_exceeded` failure. */
 export interface FusionBudgetErrorDetail {
   budget_stage: FusionBudgetStage;
-  measurement_kind: 'worst_case_envelope' | 'rendered_prompt';
+  slot?: 1 | 2 | 3;
+  measurement_kind: 'stage_forecast' | 'rendered_prompt';
   measured_utf8_bytes: number;
   measured_input_tokens_upper_bound: number;
   allowed_input_tokens: number;
@@ -414,6 +419,8 @@ export interface FusionBudgetErrorDetail {
   };
   context_policy_id: string;
   remediation: readonly string[];
+  blockers: readonly FusionBudgetBlocker[];
+  artifact_dir: string;
 }
 
 export interface FusionErrorDetails {
@@ -535,48 +542,67 @@ export interface FusionRouteCapacity {
   allowed_input_tokens: number;
 }
 
+export interface FusionBudgetStageComposition {
+  visible_text_bytes: number;
+  omission_receipt_bytes: number;
+  projection_metadata_bytes: number;
+  request_bytes: number;
+  static_stage_framing_bytes: number;
+  upstream_output_contract_bytes: number;
+}
+
 export interface FusionStageBudgetPlanEntry {
   budget_stage: FusionBudgetStage;
-  measurement_kind: 'worst_case_envelope';
-  measured_utf8_bytes: number;
-  measured_input_tokens_upper_bound: number;
+  slot?: 1 | 2 | 3;
+  route: FusionRouteCapacity;
+  conditional: boolean;
+  forecast_utf8_bytes: number;
+  forecast_input_tokens_upper_bound: number;
   allowed_input_tokens: number;
-  limiting_qualified_id: string;
-  slack_tokens: number;
+  signed_headroom_tokens: number;
+  utilization: number;
+  fits: boolean;
+}
+
+export interface FusionBudgetBlocker extends FusionStageBudgetPlanEntry {
+  overage_tokens: number;
+}
+
+export interface FusionBudgetWarning extends FusionStageBudgetPlanEntry {
+  threshold: 0.8;
+}
+
+export interface FusionBudgetEmptyRequestVerdict {
+  request_utf8_bytes: number;
+  still_fails_with_empty_request: boolean;
+  shortening_request_can_help: boolean;
+  minimum_request_byte_reduction: number;
+  maximum_safe_request_utf8_bytes: number;
+  blockers_with_empty_request: readonly FusionBudgetBlocker[];
 }
 
 export interface FusionBudgetPlanV1 {
   schema_version: typeof FUSION_BUDGET_PLAN_SCHEMA_VERSION;
   policy: FusionBudgetPolicyDescriptor;
   routes: readonly FusionRouteCapacity[];
-  limiting_qualified_id: string;
-  /** Base-context feasibility check performed before the first candidate spawns. */
-  base_context: FusionStageBudgetPlanEntry;
+  stages: readonly FusionStageBudgetPlanEntry[];
+  blockers: readonly FusionBudgetBlocker[];
+  primary_blocker?: FusionBudgetBlocker;
+  primary_blocker_composition?: FusionBudgetStageComposition;
+  empty_request: FusionBudgetEmptyRequestVerdict;
+  warnings: readonly FusionBudgetWarning[];
 }
 
-/**
- * Documented, versioned budget policy.
- *
- * `bytes_per_token_divisor` is a conservative lower bound on UTF-8 bytes per
- * token: token upper bound = ceil(utf8Bytes / divisor). It is deliberately far
- * below the smallest ratio measured across real Fusion prompts so dense
- * non-ASCII input cannot silently exceed a route's window.
- *
- * `downstream_reserve_bytes` is withheld from the canonical input so the
- * evaluator, evaluation-repair, and merger prompts provably have room for the
- * child outputs they embed. It is derived from the enforced per-stage output
- * byte contracts, so it is a guarantee rather than an estimate: a response over
- * its contract fails loudly instead of being embedded. `downstream_reserve_tokens`
- * converts it with the same `bytes_per_token_divisor` used to measure prompts,
- * because reserving output tokens directly would understate the cost of
- * re-embedding those bytes. Neither value is adjusted to fit a particular input.
- */
+/** Documented, versioned budget policy. */
 export interface FusionBudgetPolicyDescriptor {
-  id: 'fusion-budget-policy-v1';
+  id: 'fusion-budget-policy-v2';
   bytes_per_token_divisor: number;
   reserved_output_tokens: number;
   framing_reserve_tokens: number;
   safety_reserve_tokens: number;
-  downstream_reserve_bytes: number;
-  downstream_reserve_tokens: number;
+  candidate_output_contract_bytes: number;
+  evaluation_output_contract_bytes: number;
+  merge_output_contract_bytes: number;
+  diagnostics_contract_bytes: number;
+  utilization_warning_threshold: 0.8;
 }

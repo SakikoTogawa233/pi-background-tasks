@@ -88,7 +88,7 @@ void describe('fusion context projection and prompts', () => {
     );
   });
 
-  void it('builds deterministic v2 canonical command input with an authoritative request', () => {
+  void it('builds deterministic v3 canonical command input with an authoritative request', () => {
     const built = buildFrom([userMessage('hello')], { source: 'command', request: 'answer' });
     assert.equal(built.input.schema_version, FUSION_INPUT_SCHEMA_VERSION);
     assert.equal(built.input.cwd, '/tmp/project');
@@ -254,14 +254,29 @@ void describe('fusion context projection and prompts', () => {
     assert.equal(runs.length, 1);
     const run = runs[0];
     assert.ok(run);
-    assert.equal(run.counts.tool_calls, 2);
-    assert.equal(run.counts.tool_result_texts, 2);
-    assert.equal(run.ledger_index_first, 0);
-    assert.equal(run.ledger_index_last, 3);
-    assert.equal(run.source_ordinal_first, 1);
-    assert.equal(run.source_ordinal_last, 3);
+    assert.deepEqual(run, {
+      at: [1, 3],
+      bytes: 8,
+      counts: { tool_calls: 2, tool_result_texts: 2 },
+      kind: 'omitted_activity',
+    });
+    assert.equal(
+      built.input.conversation_projection.accounting.omission_receipt_utf8_bytes,
+      Buffer.byteLength(
+        '{"at":[1,3],"bytes":8,"counts":{"tool_calls":2,"tool_result_texts":2},"kind":"omitted_activity"}',
+        'utf8',
+      ),
+    );
     assert.equal(built.input.conversation_projection.accounting.omitted_event_count, 4);
     assert.equal(built.ledger.entries.length, 4);
+    assert.deepEqual(built.ledger.projection_map, [
+      {
+        canonical_entry_index: 1,
+        entry_kind: 'omitted_activity',
+        ledger_index_first: 0,
+        ledger_index_last: 3,
+      },
+    ]);
     // Ledger indices are dense and in source order.
     assert.deepEqual(
       built.ledger.entries.map((entry) => entry.index),
@@ -311,6 +326,27 @@ void describe('fusion context projection and prompts', () => {
     const imageRow = built.ledger.entries.find((entry) => entry.kind === 'tool_result_image');
     assert.ok(imageRow);
     assert.equal(imageRow.mime_type, 'image/jpeg');
+    const imageRuns = omissionEntries(built.input);
+    assert.equal(imageRuns.length, 1);
+    assert.deepEqual(imageRuns[0], {
+      at: [1, 1],
+      bytes: 'tool text before image '.length,
+      counts: { tool_result_texts: 1 },
+      kind: 'omitted_activity',
+    });
+    assert.deepEqual(built.ledger.projection_map, [
+      {
+        canonical_entry_index: 3,
+        entry_kind: 'omitted_activity',
+        ledger_index_first: 0,
+        ledger_index_last: 0,
+      },
+      {
+        entry_kind: 'ledger_only_tool_result_image',
+        ledger_index_first: 1,
+        ledger_index_last: 1,
+      },
+    ]);
     assert.equal(built.input.conversation_projection.accounting.included_image_marker_count, 1);
   });
 

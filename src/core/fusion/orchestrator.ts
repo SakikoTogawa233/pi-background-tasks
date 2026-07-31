@@ -30,9 +30,9 @@ import {
   FusionError,
   addFusionUsage,
   createEmptyFusionUsage,
-  type FusionCanonicalInputV2,
+  type FusionCanonicalInputV3,
   type FusionCandidateId,
-  type FusionContextOmissionLedgerV1,
+  type FusionContextOmissionLedgerV2,
   type FusionChildRunResult,
   type FusionErrorDetails,
   type FusionEvaluationV1,
@@ -56,9 +56,9 @@ export interface FusionWorkflowInput {
   source: FusionSource;
   cwd: string;
   sessionId?: string | undefined;
-  canonicalInput: FusionCanonicalInputV2;
+  canonicalInput: FusionCanonicalInputV3;
   canonicalInputSerialized: string;
-  contextLedger: FusionContextOmissionLedgerV1;
+  contextLedger: FusionContextOmissionLedgerV2;
   config: FusionModelConfigV1;
   models: ResolvedFusionModels;
   signal?: AbortSignal | undefined;
@@ -343,16 +343,16 @@ export class FusionOrchestrator {
         input.models,
         input.canonicalInput.conversation_projection.policy.id,
       );
-      await store.writeBudgetPlan(
-        budget.plan(
-          input.canonicalInputSerialized,
-          Buffer.byteLength(FUSION_CANDIDATE_SYSTEM_PROMPT, 'utf8'),
-        ),
-      );
-      budget.assertBaseContext(
-        input.canonicalInputSerialized,
-        Buffer.byteLength(FUSION_CANDIDATE_SYSTEM_PROMPT, 'utf8'),
-      );
+      const budgetPlan = budget.plan(input.canonicalInput);
+      await store.writeBudgetPlan(budgetPlan);
+      budget.assertPlanFits(budgetPlan, store.artifactDir);
+      if (budgetPlan.warnings.length > 0) {
+        input.onProgress?.({
+          type: 'budget_warning',
+          warnings: budgetPlan.warnings,
+          error: 'fusion budget utilization warning',
+        });
+      }
       await store.transition('candidates_running');
       input.onProgress?.({ type: 'state', state: 'candidates_running' });
       const candidateResults = await this.runCandidates(input, store, usage, budget);
@@ -452,7 +452,9 @@ export class FusionOrchestrator {
     input.signal?.addEventListener('abort', abortListener, { once: true });
     if (input.signal?.aborted) controller.abort();
     const prompt = buildCandidatePrompt(input.canonicalInput);
-    budget.assertStagePrompt('candidate', FUSION_CANDIDATE_SYSTEM_PROMPT, prompt);
+    for (const slot of [1, 2, 3] as const) {
+      budget.assertStagePrompt('candidate', FUSION_CANDIDATE_SYSTEM_PROMPT, prompt, slot);
+    }
     let primaryError: unknown;
     let completed = 0;
     try {

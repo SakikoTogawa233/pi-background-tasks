@@ -9,19 +9,19 @@ This package adds named, tracked background shell jobs with durable output files
 From npm after publish:
 
 ```bash
-pi install npm:pi-background-tasks@0.7.4
+pi install npm:pi-background-tasks@0.7.5
 ```
 
 From git after pushing this package to its standalone repository and tagging:
 
 ```bash
-pi install git:github.com/ismailsaleekh/pi-background-tasks@v0.7.4
+pi install git:github.com/ismailsaleekh/pi-background-tasks@v0.7.5
 ```
 
 For project-local install:
 
 ```bash
-pi install -l npm:pi-background-tasks@0.7.4
+pi install -l npm:pi-background-tasks@0.7.5
 ```
 
 ## Commands
@@ -122,7 +122,7 @@ Progress is surfaced through `fusion` status updates, TUI cancellable loader UI 
 
 ### Conversation context policy
 
-Fusion children receive a **versioned conversation projection**, not a raw execution transcript. The canonical input schema is `pi-background-tasks.fusion-input.v2` and every run states exactly what was included and what was omitted.
+Fusion children receive a **versioned conversation projection**, not a raw execution transcript. The canonical input schema is `pi-background-tasks.fusion-input.v3` and every run states exactly what was included and what was omitted.
 
 The projection transform (`visible-conversation-ledger-v1`) is shared by both entry points:
 
@@ -137,7 +137,13 @@ The projection transform (`visible-conversation-ledger-v1`) is shared by both en
 | Tool-result images | excluded; recorded as an omission receipt (never raw bytes) |
 | Active `fusion_brainstorm` call and its sibling calls | scope-excluded from the branch |
 
-Omissions are **explicit, deterministic, and auditable** — never silent. Each omitted event produces a ledger row with its kind, exact byte count, and SHA-256 of the omitted bytes; contiguous omissions collapse into source-ordered `omitted_activity` receipts carrying counts, byte totals, and a run hash. The complete ledger is persisted as `context-omission-ledger.json`. **No head, tail, or preview of an omitted payload is ever forwarded** (`tool_payload_preview_bytes` is `0`), because an arbitrary prefix is usually irrelevant and can leak secrets or carry tool-output prompt injection. Repeated construction is byte-identical, so hashes are stable.
+Omissions are **explicit, deterministic, and auditable** — never silent. Each omitted event produces a ledger row with its kind, exact byte count, and SHA-256 of the omitted bytes. Contiguous omissions collapse into source-ordered `omitted_activity` receipts. Each receipt is deliberately compact, carrying only what a reading model can act on:
+
+```json
+{"at":[1,9],"bytes":29019,"counts":{"tool_calls":5,"tool_result_texts":5},"kind":"omitted_activity"}
+```
+
+`at` is the inclusive source-ordinal span, `bytes` is the total omitted non-image payload for that run, and a zero-valued count is absent rather than serialized. Per-event hashes, ledger indices, and the per-kind byte map live in `context-omission-ledger.json`, not in the prompt: a child cannot verify a hash of payload it does not hold, so forwarding one only consumed context. That ledger also carries a `projection_map` proving every ledger row is represented by exactly one receipt or image marker, and `accounting.omission_receipt_utf8_bytes` records the exact receipt cost. The complete ledger is persisted as `context-omission-ledger.json`. **No head, tail, or preview of an omitted payload is ever forwarded** (`tool_payload_preview_bytes` is `0`), because an arbitrary prefix is usually irrelevant and can leak secrets or carry tool-output prompt injection. Repeated construction is byte-identical, so hashes are stable.
 
 Two entry points share the transform but differ in request authority:
 
@@ -150,16 +156,30 @@ Two entry points share the transform but differ in request authority:
 
 ### Stage budgets
 
-Every prompt-expansion stage — candidate, evaluator, evaluation repair, and merger — is size-checked **before any child process is created**. Safety is based on the **smallest** configured model's context window, never the largest, so adding one small-context slot cannot be masked by large-context siblings.
+Every prompt-expansion stage — candidate, evaluator, evaluation repair, and merger — is size-checked **before any child process is created**, and each stage is checked against **its own configured route**, so a large-context slot cannot hide a small-context sibling and a small slot cannot veto stages it never serves.
 
 The input token bound is `ceil(utf8Bytes / 2)`. This is a ceiling, not an estimate: across 159 real large Fusion prompts the densest observed ratio was 3.552 bytes per input token, so the divisor keeps roughly a 1.7x margin and also bounds dense non-ASCII input.
 
-Downstream growth is guaranteed by two cooperating layers rather than by an assumption:
+Each stage is forecast with its **real prompt builder**, rendered with empty embedded-output slots, plus the enforced output contracts for whatever that stage will embed:
 
-1. **Enforced output contracts.** Each stage has a maximum response size measured in *JSON-rendered transfer bytes* — the bytes the response actually costs once a later stage embeds it, escaping included (candidate 48 KiB, evaluator 64 KiB, merger 64 KiB, repair diagnostics 8 KiB). Measuring the rendered form removes any escaping guess: quotes, backslashes, and newlines expand 2x and control characters up to 6x, so a raw-byte contract would not bound the embedded size. A response over its contract is a loud `child_output_cap` failure; it is preserved in the run artifacts and is never sliced, truncated, or forwarded.
-2. **An exact reserve.** The canonical input must leave room for the widest stage — the evaluation repair, which embeds three candidate answers, the invalid evaluator output, and diagnostics — plus fixed wrapper overhead. Because the contracts above are already rendered-byte bounds, this is an exact sum, not a raw size inflated by an estimated factor. The reserve is converted to tokens with the *same* `ceil(bytes / 2)` function used to measure prompts; reserving output *tokens* directly would understate the cost of re-embedding those bytes.
+| Stage | Embeds | Mandatory |
+|---|---|---|
+| `candidate` | canonical input only | yes, once per slot |
+| `evaluation` | + 3 candidate answers | yes |
+| `evaluation_repair` | + 3 candidates, invalid evaluator output, diagnostics | conditional, still budgeted |
+| `merge` | + 3 candidates, validated evaluation | yes |
 
-Each route additionally reserves its output contract, 4,096 framing, and 4,096 safety tokens. Because every step is uniformly conservative, the policy requires roughly a **168,000-token context window per configured slot**. Smaller routes are rejected at configuration time with an actionable error naming the requirement, rather than being accepted and failing later at the provider. Route capacities and the pre-candidate feasibility decision are persisted as `budget-plan.json`.
+`evaluation_repair` only runs when the evaluator returns schema-invalid JSON, but it is budgeted unconditionally: "uncommon" is not a reliability contract.
+
+Output sizes are guaranteed by **enforced contracts**, not assumptions. Each stage has a maximum response size measured in *JSON-rendered transfer bytes* — the bytes the response actually costs once a later stage embeds it, escaping included (candidate 48 KiB, evaluator 64 KiB, merger 64 KiB, repair diagnostics 8 KiB). Measuring the rendered form removes any escaping guess: quotes, backslashes, and newlines expand 2x and control characters up to 6x. A response over its contract is a loud `child_output_cap` failure; it is preserved in the run artifacts and is never sliced, truncated, or forwarded.
+
+When a workflow cannot fit, the error names the **first failing mandatory stage** in deterministic order (candidate slots, then evaluation, then merge), lists every other blocking stage, and labels conditional ones. It never blames a stage that would have succeeded.
+
+Remediation is derived, not guessed: Fusion re-plans the entire workflow **with the request removed**. If it still fails, the error says plainly that shortening the request cannot help and points at starting a fresh conversation or raising the route's context window. If it then fits, the request is what determines feasibility, and the error states the exact minimum byte reduction and the maximum safe request size.
+
+Runs that do fit still emit an advisory utilization warning for any stage at or above 80% of its allowance, recorded in `budget-plan.json` and as a progress event, so a session approaching the ceiling is visible before it hard-fails. The warning never alters behaviour.
+
+Every configured route must also satisfy a documented minimum capacity; smaller routes are rejected at configuration time with an actionable error naming the requirement, rather than being accepted and failing later at the provider. All route capacities, per-stage forecasts, headroom, utilization, the byte composition of the blocking stage, and the blockers list are persisted as `budget-plan.json`.
 
 If an input still exceeds the safe budget, Fusion fails with a typed `prompt_budget_exceeded` error naming the stage, measured bytes, measured token upper bound, allowed tokens, the limiting configured model and its context window, and concrete remediation. **Zero children are launched** when preflight rejects. Provider context-window failures remain loud child failures; there is no hidden local truncation and no silent fallback anywhere in this path.
 

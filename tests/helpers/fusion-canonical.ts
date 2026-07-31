@@ -6,8 +6,8 @@ import {
   type BuiltFusionCanonicalInput,
 } from '../../src/core/fusion/context.js';
 import type {
-  FusionCanonicalInputV2,
-  FusionContextOmissionLedgerV1,
+  FusionCanonicalInputV3,
+  FusionContextOmissionLedgerV2,
   FusionProjectionEntry,
   FusionProjectionOmissionEntry,
   FusionProjectionTextEntry,
@@ -81,7 +81,7 @@ export function buildFrom(
 }
 
 export function textEntries(
-  input: FusionCanonicalInputV2,
+  input: FusionCanonicalInputV3,
 ): readonly FusionProjectionTextEntry[] {
   return input.conversation_projection.entries.filter(
     (entry): entry is FusionProjectionTextEntry => entry.kind === 'text',
@@ -89,30 +89,31 @@ export function textEntries(
 }
 
 export function omissionEntries(
-  input: FusionCanonicalInputV2,
+  input: FusionCanonicalInputV3,
 ): readonly FusionProjectionOmissionEntry[] {
   return input.conversation_projection.entries.filter(
     (entry): entry is FusionProjectionOmissionEntry => entry.kind === 'omitted_activity',
   );
 }
 
-export function projectedText(input: FusionCanonicalInputV2): string {
+export function projectedText(input: FusionCanonicalInputV3): string {
   return textEntries(input)
     .map((entry) => entry.text)
     .join('\n');
 }
 
-export function entryKinds(input: FusionCanonicalInputV2): readonly FusionProjectionEntry['kind'][] {
+export function entryKinds(input: FusionCanonicalInputV3): readonly FusionProjectionEntry['kind'][] {
   return input.conversation_projection.entries.map((entry) => entry.kind);
 }
 
 /** Minimal ledger for orchestrator tests that supply a hand-built canonical input. */
-export function emptyLedger(policyId: string): FusionContextOmissionLedgerV1 {
+export function emptyLedger(policyId: string): FusionContextOmissionLedgerV2 {
   return {
-    schema_version: 'pi-background-tasks.fusion-context-ledger.v1',
+    schema_version: 'pi-background-tasks.fusion-context-ledger.v2',
     policy_id: policyId,
-    transform: 'visible-conversation-ledger-v1',
+    transform: 'visible-conversation-ledger-v2',
     entries: [],
+    projection_map: [],
     root_sha256: 'a'.repeat(64),
   };
 }

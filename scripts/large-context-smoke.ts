@@ -236,7 +236,7 @@ async function main(): Promise<void> {
     console.log(
       `  context window ${String(smallest.context_window_tokens)} tok, allowed input ${String(smallest.allowed_input_tokens)} tok`,
     );
-    console.log(`  canonical-input share:   ${String(budget.allowedCanonicalInputTokens)} tok`);
+    const plan = budget.plan(built.input);
     console.log(`  minimum viable window:   ${String(FUSION_MIN_CONTEXT_WINDOW_TOKENS)} tok`);
 
     console.log('\n=== PRE-FIX (full transcript forwarding) ===');
@@ -250,7 +250,7 @@ async function main(): Promise<void> {
       `candidate token upper bound: ${String(legacyTokens)} vs allowed ${String(budget.allowedInputTokens)}  => ${legacyTokens > budget.allowedInputTokens ? 'REJECTED (reproduces failure)' : 'fits'}`,
     );
 
-    console.log('\n=== POST-FIX (visible-conversation-ledger-v1) ===');
+    console.log('\n=== POST-FIX (visible-conversation-ledger-v2) ===');
     const accounting = built.input.conversation_projection.accounting;
     console.log(`canonical input:         ${fmt(Buffer.byteLength(built.serialized, 'utf8'))}`);
     console.log(`  included user text:    ${fmt(accounting.included_user_text_bytes)}`);
@@ -270,15 +270,11 @@ async function main(): Promise<void> {
       `  byte-identical rebuild: ${rebuilt.serialized === built.serialized ? 'yes' : 'NO'}`,
     );
 
-    // Verify the entire four-stage envelope, using worst-case stage growth.
-    console.log('\n=== Stage preflight (smallest configured route) ===');
-    budget.assertBaseContext(
-      built.serialized,
-      Buffer.byteLength(FUSION_CANDIDATE_SYSTEM_PROMPT, 'utf8'),
-    );
+    // Verify the entire four-stage envelope with per-stage forecasts.
+    console.log('\n=== Stage preflight (configured routes) ===');
+    budget.assertPlanFits(plan, 'large-context-smoke');
     const candidatePrompt = buildCandidatePrompt(built.input);
-    // Use the enforced contract maxima, not merely the largest observed answer,
-    // so the printed envelope is the true worst case for these stages.
+    // Use the enforced contract maxima, not merely the largest observed answer.
     const answer = 'A'.repeat(FUSION_CANDIDATE_MAX_OUTPUT_BYTES);
     const anonymous = [
       { candidate_id: 'A' as const, response: answer },
@@ -313,9 +309,14 @@ async function main(): Promise<void> {
     console.log(
       `\nbytes-per-token divisor in use: ${String(FUSION_BYTES_PER_TOKEN_DIVISOR)} (conservative ceiling)`,
     );
-    console.log(
-      '\nAll four expansion stages fit the smallest configured route at contract maxima.',
-    );
+    console.log('\nPer-stage forecast:');
+    for (const entry of plan.stages) {
+      const slot = entry.slot === undefined ? '' : `-${String(entry.slot)}`;
+      console.log(
+        `  ${entry.budget_stage}${slot}: ${String(entry.forecast_input_tokens_upper_bound)} tok / ${String(entry.allowed_input_tokens)} allowed on ${entry.route.qualified_id} (${entry.fits ? 'fits' : 'over'})`,
+      );
+    }
+    console.log('\nAll four expansion stages fit their configured routes at contract maxima.');
 
     const evidence = join(root, 'canonical-input.json');
     await writeFile(evidence, built.serialized, 'utf8');

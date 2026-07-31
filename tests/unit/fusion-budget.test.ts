@@ -11,12 +11,10 @@ import {
   FUSION_MIN_CONTEXT_WINDOW_TOKENS,
   FUSION_DIAGNOSTICS_MAX_BYTES,
   FUSION_EVALUATION_MAX_OUTPUT_BYTES,
-  FUSION_DOWNSTREAM_RESERVE_BYTES,
-  FUSION_DOWNSTREAM_RESERVE_TOKENS,
   FUSION_FRAMING_RESERVE_TOKENS,
   FUSION_RESERVED_OUTPUT_TOKENS,
   FUSION_SAFETY_RESERVE_TOKENS,
-  FUSION_WRAPPER_OVERHEAD_BYTES,
+  FUSION_UTILIZATION_WARNING_THRESHOLD,
   FusionBudget,
   assertChildOutputWithinContract,
   fusionLimitingRoute,
@@ -26,15 +24,18 @@ import {
 import { FusionOrchestrator, type FusionChildRunner } from '../../src/core/fusion/orchestrator.js';
 import { defaultFusionModelConfig } from '../../src/core/fusion/config.js';
 import { buildFusionCanonicalInput } from '../../src/core/fusion/context.js';
+import { buildCandidatePrompt } from '../../src/core/fusion/prompts.js';
 import {
   FUSION_COMMAND_CONTEXT_POLICY_ID,
   FUSION_CONTEXT_TRANSFORM_ID,
   FUSION_EVALUATION_SCHEMA_VERSION,
   FUSION_INPUT_SCHEMA_VERSION,
   FusionError,
-  type FusionCanonicalInputV2,
+  type FusionCanonicalInputV3,
   type FusionChildRunResult,
+  type FusionBudgetStage,
   type FusionEvaluationV1,
+  type FusionStageBudgetPlanEntry,
   type ResolvedFusionModel,
   type ResolvedFusionModels,
 } from '../../src/core/fusion/types.js';
@@ -71,7 +72,7 @@ function models(options: { small?: number; large?: number } = {}): ResolvedFusio
   };
 }
 
-function canonicalInput(text: string): FusionCanonicalInputV2 {
+function canonicalInput(text: string): FusionCanonicalInputV3 {
   return {
     schema_version: FUSION_INPUT_SCHEMA_VERSION,
     cwd: '/tmp/project',
@@ -86,7 +87,8 @@ function canonicalInput(text: string): FusionCanonicalInputV2 {
       policy: {
         id: FUSION_COMMAND_CONTEXT_POLICY_ID,
         transform: FUSION_CONTEXT_TRANSFORM_ID,
-        version: 1,
+        version: 2,
+        receipt_format: 'omitted_activity.v2',
         user_text: 'verbatim',
         assistant_text: 'verbatim',
         assistant_thinking: 'ledger_only',
@@ -122,9 +124,44 @@ function canonicalInput(text: string): FusionCanonicalInputV2 {
         tool_call_names: [],
         ledger_entry_count: 0,
         ledger_root_sha256: 'a'.repeat(64),
+        omission_receipt_utf8_bytes: 0,
       },
     },
   };
+}
+
+function canonicalInputWithPromptBytes(targetBytes: number): FusionCanonicalInputV3 {
+  let textBytes = targetBytes - Buffer.byteLength(buildCandidatePrompt(canonicalInput('')), 'utf8');
+  assert.ok(textBytes >= 0, 'target must leave room for fixture text');
+  for (let attempt = 0; attempt < 10; attempt += 1) {
+    const input = canonicalInput('x'.repeat(textBytes));
+    const actual = Buffer.byteLength(buildCandidatePrompt(input), 'utf8');
+    if (actual === targetBytes) return input;
+    textBytes += targetBytes - actual;
+    assert.ok(textBytes >= 0, 'target adjustment must stay non-negative');
+  }
+  const finalInput = canonicalInput('x'.repeat(textBytes));
+  assert.equal(Buffer.byteLength(buildCandidatePrompt(finalInput), 'utf8'), targetBytes);
+  return finalInput;
+}
+
+function planEntry(
+  entries: readonly FusionStageBudgetPlanEntry[],
+  stage: FusionBudgetStage,
+  slot?: 1 | 2 | 3,
+): FusionStageBudgetPlanEntry {
+  const found = entries.find((entry) => entry.budget_stage === stage && entry.slot === slot);
+  assert.ok(found, `${stage} entry must exist`);
+  return found;
+}
+
+function compositionSum(parts: object): number {
+  let total = 0;
+  for (const value of Object.values(parts)) {
+    assert.equal(typeof value, 'number');
+    total += value;
+  }
+  return total;
 }
 
 function evaluation(): FusionEvaluationV1 {
@@ -182,7 +219,7 @@ interface RunOutcome {
 }
 
 async function runExpectingFailure(
-  input: FusionCanonicalInputV2,
+  input: FusionCanonicalInputV3,
   runner: FusionChildRunner,
   resolvedModels: ResolvedFusionModels = models(),
 ): Promise<RunOutcome> {
@@ -226,8 +263,11 @@ function assertBudgetError(
   assert.ok(budget.limiting_model.qualified_id.length > 0);
   assert.ok(budget.limiting_model.context_window_tokens > 0);
   assert.ok(budget.remediation.length > 0);
+  assert.ok(budget.blockers.length > 0);
   // The human-readable message must name every actionable fact too.
-  assert.match(error.message, /exceeds the safe input budget before child creation/);
+  assert.match(error.message, /Primary blocking stage/);
+  assert.match(error.message, /No child was created/);
+  assert.match(error.message, /Nothing was clipped, dropped, or substituted/);
   assert.match(error.message, new RegExp(String(budget.measured_utf8_bytes)));
   assert.match(error.message, new RegExp(String(budget.allowed_input_tokens)));
   assert.match(error.message, new RegExp(budget.limiting_model.qualified_id));
@@ -276,7 +316,7 @@ void describe('fusion stage budgets', () => {
   });
 
   void it('rejects routes whose capacity is unknown or too small to hold input', () => {
-    for (const contextWindow of [0, -1, Number.NaN, 1_000, 128_000]) {
+    for (const contextWindow of [0, -1, Number.NaN, 1_000, 40_000]) {
       const bad: ResolvedFusionModels = {
         candidates: [
           resolved('p/a', 200_000),
@@ -297,36 +337,34 @@ void describe('fusion stage budgets', () => {
     }
   });
 
-  void it('withholds a derived downstream reserve from the canonical-input budget', () => {
+  void it('forecasts each concrete stage against its assigned route', () => {
     const budget = new FusionBudget(models(), FUSION_COMMAND_CONTEXT_POLICY_ID);
-    assert.equal(
-      budget.allowedCanonicalInputTokens,
-      budget.allowedInputTokens - FUSION_DOWNSTREAM_RESERVE_TOKENS,
-    );
-    assert.ok(budget.allowedCanonicalInputTokens < budget.allowedInputTokens);
-    // The reserve must be converted through the same byte-to-token function used
-    // to measure prompts. Reserving output tokens directly would understate the
-    // cost of re-embedding those bytes in a later stage.
-    assert.equal(
-      FUSION_DOWNSTREAM_RESERVE_TOKENS,
-      fusionTokenUpperBound(FUSION_DOWNSTREAM_RESERVE_BYTES),
-    );
-    // And it must exceed the real measured repair-stage growth.
-    assert.ok(
-      FUSION_DOWNSTREAM_RESERVE_TOKENS > 96_088,
-      'reserve must cover the measured evaluation-repair growth',
-    );
+    const input = canonicalInput('small');
+    const plan = budget.plan(input);
+    assert.equal(plan.schema_version, 'pi-background-tasks.fusion-budget-plan.v2');
+    assert.equal(plan.policy.id, 'fusion-budget-policy-v2');
+    assert.equal(plan.stages.length, 6);
+    assert.equal(planEntry(plan.stages, 'candidate', 1).route.role, 'candidate-1');
+    assert.equal(planEntry(plan.stages, 'candidate', 2).route.role, 'candidate-2');
+    assert.equal(planEntry(plan.stages, 'candidate', 3).route.role, 'candidate-3');
+    assert.equal(planEntry(plan.stages, 'evaluation').route.role, 'evaluator');
+    assert.equal(planEntry(plan.stages, 'evaluation_repair').conditional, true);
+    assert.equal(planEntry(plan.stages, 'merge').route.role, 'merger');
+    for (const entry of plan.stages) {
+      assert.equal(entry.forecast_input_tokens_upper_bound, fusionTokenUpperBound(entry.forecast_utf8_bytes));
+      assert.equal(entry.signed_headroom_tokens, entry.allowed_input_tokens - entry.forecast_input_tokens_upper_bound);
+    }
   });
 
   void it('accepts a safe prompt at the boundary and rejects one byte past it', () => {
     const budget = new FusionBudget(models(), FUSION_COMMAND_CONTEXT_POLICY_ID);
     const allowedBytes = budget.allowedInputTokens * FUSION_BYTES_PER_TOKEN_DIVISOR;
     assert.doesNotThrow(() => {
-      budget.assertStagePrompt('candidate', '', 'x'.repeat(allowedBytes));
+      budget.assertStagePrompt('candidate', '', 'x'.repeat(allowedBytes), 3);
     });
     assert.throws(
       () => {
-        budget.assertStagePrompt('candidate', '', 'x'.repeat(allowedBytes + 1));
+        budget.assertStagePrompt('candidate', '', 'x'.repeat(allowedBytes + 1), 3);
       },
       (error: unknown) => error instanceof FusionError && error.code === 'prompt_budget_exceeded',
     );
@@ -337,7 +375,7 @@ void describe('fusion stage budgets', () => {
     const allowedBytes = budget.allowedInputTokens * FUSION_BYTES_PER_TOKEN_DIVISOR;
     assert.throws(
       () => {
-        budget.assertStagePrompt('candidate', 'ab', 'x'.repeat(allowedBytes - 1));
+        budget.assertStagePrompt('candidate', 'ab', 'x'.repeat(allowedBytes - 1), 3);
       },
       (error: unknown) => error instanceof FusionError && error.code === 'prompt_budget_exceeded',
     );
@@ -352,7 +390,7 @@ void describe('fusion stage budgets', () => {
     assert.ok(dense.length < allowedBytes, 'string length must be below the byte allowance');
     assert.throws(
       () => {
-        budget.assertStagePrompt('candidate', '', dense);
+        budget.assertStagePrompt('candidate', '', dense, 3);
       },
       (error: unknown) => error instanceof FusionError && error.code === 'prompt_budget_exceeded',
     );
@@ -366,6 +404,41 @@ void describe('fusion stage budgets', () => {
     try {
       assertBudgetError(outcome.error, 'candidate');
       assert.equal(outcome.calls.length, 0, 'no child may be launched when preflight rejects');
+    } finally {
+      await rm(outcome.root, { recursive: true, force: true });
+    }
+  });
+
+  void it('names merge as the incident primary blocker with repair as conditional', async () => {
+    const outcome = await runExpectingFailure(
+      canonicalInputWithPromptBytes(291_748),
+      async (options) => childResult(options, 'unreachable'),
+      models({ small: 272_000, large: 272_000 }),
+    );
+    try {
+      assertBudgetError(outcome.error, 'merge');
+      assert.equal(outcome.calls.length, 0);
+      assert.match(outcome.error.message, /Primary blocking stage: merge/);
+      assert.match(outcome.error.message, /evaluation_repair \(conditional\)/);
+      assert.match(outcome.error.message, /shortening the request cannot make this workflow fit/);
+      assert.match(outcome.error.message, /Artifact directory:/);
+      const planText = await readFile(
+        join(outcome.root, outcome.artifactDir, 'budget-plan.json'),
+        'utf8',
+      );
+      const plan = parseJsonText(planText);
+      assert.ok(typeof plan === 'object' && plan !== null);
+      const stages = Reflect.get(plan, 'stages');
+      assert.ok(Array.isArray(stages));
+      assert.equal(Reflect.get(stages[0], 'fits'), true);
+      assert.equal(Reflect.get(stages[3], 'fits'), true);
+      assert.equal(Reflect.get(Reflect.get(plan, 'primary_blocker'), 'budget_stage'), 'merge');
+      const composition = Reflect.get(plan, 'primary_blocker_composition');
+      assert.ok(typeof composition === 'object' && composition !== null);
+      assert.equal(
+        compositionSum(composition),
+        Reflect.get(Reflect.get(plan, 'primary_blocker'), 'forecast_utf8_bytes'),
+      );
     } finally {
       await rm(outcome.root, { recursive: true, force: true });
     }
@@ -404,7 +477,7 @@ void describe('fusion stage budgets', () => {
   void it('rejects evaluator, repair, and merger expansion before those children spawn', () => {
     // Defence in depth layer 2: even if a response somehow reached a later stage,
     // the exact rendered prompt is re-measured before that child is created.
-    const budget = new FusionBudget(models(), FUSION_COMMAND_CONTEXT_POLICY_ID);
+    const budget = new FusionBudget(models({ small: 200_000, large: 200_000 }), FUSION_COMMAND_CONTEXT_POLICY_ID);
     const allowedBytes = budget.allowedInputTokens * FUSION_BYTES_PER_TOKEN_DIVISOR;
     const oversizedPrompt = 'p'.repeat(allowedBytes + 1);
     for (const stage of ['evaluation', 'evaluation_repair', 'merge'] as const) {
@@ -426,8 +499,7 @@ void describe('fusion stage budgets', () => {
     // actionable configuration error, not discovered later at the provider.
     assert.equal(
       FUSION_MIN_CONTEXT_WINDOW_TOKENS,
-      FUSION_DOWNSTREAM_RESERVE_TOKENS +
-        FUSION_MIN_CANONICAL_INPUT_TOKENS +
+      FUSION_MIN_CANONICAL_INPUT_TOKENS +
         FUSION_RESERVED_OUTPUT_TOKENS +
         FUSION_FRAMING_RESERVE_TOKENS +
         FUSION_SAFETY_RESERVE_TOKENS,
@@ -504,32 +576,81 @@ void describe('fusion stage budgets', () => {
     });
   });
 
-  void it('proves the downstream reserve covers the widest real stage envelope', () => {
-    // The evaluation-repair prompt embeds the canonical input plus three candidate
-    // answers, an invalid evaluator output, and diagnostics. With every embedded
-    // output at its enforced contract maximum, the reserve must still hold.
-    const worstCaseBytes =
-      3 * FUSION_CANDIDATE_MAX_OUTPUT_BYTES +
-      FUSION_EVALUATION_MAX_OUTPUT_BYTES +
-      FUSION_DIAGNOSTICS_MAX_BYTES;
+  void it('adds upstream output contracts to real empty-slot renderings', () => {
+    const budget = new FusionBudget(models({ small: 272_000, large: 272_000 }), FUSION_COMMAND_CONTEXT_POLICY_ID);
+    const input = canonicalInputWithPromptBytes(291_748);
+    const plan = budget.plan(input);
+    const candidate = planEntry(plan.stages, 'candidate', 1);
+    const evaluationStage = planEntry(plan.stages, 'evaluation');
+    const repair = planEntry(plan.stages, 'evaluation_repair');
+    const merge = planEntry(plan.stages, 'merge');
+    assert.equal(candidate.fits, true);
+    assert.equal(evaluationStage.fits, true);
+    assert.equal(merge.fits, false);
+    assert.equal(repair.fits, false);
+    assert.equal(plan.primary_blocker?.budget_stage, 'merge');
+    assert.equal(plan.blockers.some((entry) => entry.budget_stage === 'evaluation_repair' && entry.conditional), true);
     assert.ok(
-      FUSION_DOWNSTREAM_RESERVE_BYTES >= worstCaseBytes,
-      'reserve must cover the widest stage at contract maxima',
+      repair.forecast_utf8_bytes >
+        evaluationStage.forecast_utf8_bytes + FUSION_EVALUATION_MAX_OUTPUT_BYTES,
     );
-    // The reserve is an exact sum of rendered-byte contracts plus fixed wrapper
-    // overhead, not a raw size inflated by an estimated escaping factor.
+    assert.ok(repair.forecast_utf8_bytes > merge.forecast_utf8_bytes);
+    assert.ok(
+      repair.forecast_utf8_bytes - merge.forecast_utf8_bytes >= FUSION_DIAGNOSTICS_MAX_BYTES,
+    );
+  });
+
+  void it('reproduces the compact incident plan as fitting with utilization warnings', () => {
+    const budget = new FusionBudget(models({ small: 272_000, large: 272_000 }), FUSION_COMMAND_CONTEXT_POLICY_ID);
+    const input = canonicalInputWithPromptBytes(214_068);
+    const plan = budget.plan(input);
+    assert.equal(plan.blockers.length, 0);
+    assert.equal(planEntry(plan.stages, 'candidate', 1).fits, true);
+    assert.equal(planEntry(plan.stages, 'evaluation').fits, true);
+    assert.equal(planEntry(plan.stages, 'merge').fits, true);
+    assert.equal(planEntry(plan.stages, 'evaluation_repair').fits, true);
+    assert.ok(planEntry(plan.stages, 'merge').signed_headroom_tokens > 0);
+    assert.ok(planEntry(plan.stages, 'evaluation_repair').signed_headroom_tokens > 0);
+    assert.ok(plan.warnings.length >= 2);
     assert.equal(
-      FUSION_DOWNSTREAM_RESERVE_BYTES,
-      worstCaseBytes + FUSION_WRAPPER_OVERHEAD_BYTES,
+      plan.warnings.some((entry) => entry.budget_stage === 'merge'),
+      true,
     );
-    const budget = new FusionBudget(models(), FUSION_COMMAND_CONTEXT_POLICY_ID);
-    // A canonical input exactly at its allowance still leaves room for that growth.
-    assert.ok(
-      budget.allowedCanonicalInputTokens +
-        fusionTokenUpperBound(FUSION_DOWNSTREAM_RESERVE_BYTES) <=
-        budget.allowedInputTokens,
-      'canonical allowance plus downstream reserve must fit the input budget',
+    assert.equal(
+      plan.warnings.some((entry) => entry.budget_stage === 'evaluation_repair'),
+      true,
     );
+    for (const warning of plan.warnings) {
+      assert.ok(warning.utilization >= FUSION_UTILIZATION_WARNING_THRESHOLD);
+    }
+  });
+
+  void it('emits one advisory utilization progress event on a tight fitting plan', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'pi-fusion-budget-warning-'));
+    try {
+      const events: string[] = [];
+      const runner: FusionChildRunner = async (options) => {
+        if (options.stage === 'candidate') return childResult(options, 'candidate answer');
+        if (options.stage === 'evaluation') return childResult(options, JSON.stringify(evaluation()));
+        return childResult(options, 'merged');
+      };
+      await new FusionOrchestrator({ childRunner: runner }).run({
+        source: 'command',
+        cwd: root,
+        canonicalInput: canonicalInputWithPromptBytes(214_068),
+        canonicalInputSerialized: JSON.stringify(canonicalInputWithPromptBytes(214_068)),
+        contextLedger: ledger,
+        config: defaultFusionModelConfig(),
+        models: models({ small: 272_000, large: 272_000 }),
+        onProgress: (event) => {
+          if (event.type === 'budget_warning') events.push(String(event.warnings.length));
+        },
+      });
+      assert.equal(events.length, 1);
+      assert.ok(Number(events[0]) >= 2);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
   });
 
   void it('lets safe prompts proceed through all five calls and persists the budget plan', async () => {
@@ -566,18 +687,20 @@ void describe('fusion stage budgets', () => {
       assert.ok(Array.isArray(routes));
       assert.equal(routes.length, 5, 'every configured route must be snapshotted');
       assert.equal(
-        Reflect.get(plan, 'limiting_qualified_id'),
-        'openai-codex/gpt-5.4-mini',
+        routes.some((route) => Reflect.get(route, 'qualified_id') === 'openai-codex/gpt-5.4-mini'),
+        true,
       );
-      const base = Reflect.get(plan, 'base_context');
-      assert.ok(typeof base === 'object' && base !== null);
-      assert.ok(Number(Reflect.get(base, 'slack_tokens')) > 0);
+      assert.equal(Reflect.get(plan, 'schema_version'), 'pi-background-tasks.fusion-budget-plan.v2');
+      const stages = Reflect.get(plan, 'stages');
+      assert.ok(Array.isArray(stages));
+      assert.equal(stages.length, 6);
+      assert.equal(Array.isArray(Reflect.get(plan, 'warnings')), true);
 
       const ledgerText = await readFile(
         join(root, result.details.artifact_dir, 'context-omission-ledger.json'),
         'utf8',
       );
-      assert.match(ledgerText, /visible-conversation-ledger-v1/);
+      assert.match(ledgerText, /visible-conversation-ledger-v2/);
     } finally {
       await rm(root, { recursive: true, force: true });
     }
@@ -595,12 +718,11 @@ void describe('fusion stage budgets', () => {
       );
       const plan = parseJsonText(planText);
       assert.ok(typeof plan === 'object' && plan !== null);
-      const base = Reflect.get(plan, 'base_context');
-      assert.ok(typeof base === 'object' && base !== null);
-      assert.ok(
-        Number(Reflect.get(base, 'slack_tokens')) < 0,
-        'a rejected plan must record negative slack',
-      );
+      const primary = Reflect.get(plan, 'primary_blocker');
+      assert.ok(typeof primary === 'object' && primary !== null);
+      assert.equal(Reflect.get(primary, 'fits'), false);
+      const composition = Reflect.get(plan, 'primary_blocker_composition');
+      assert.ok(typeof composition === 'object' && composition !== null);
     } finally {
       await rm(outcome.root, { recursive: true, force: true });
     }
@@ -655,8 +777,10 @@ void describe('fusion stage budgets', () => {
       `projected canonical input must be small, saw ${String(built.serialized.length)}`,
     );
     const budget = new FusionBudget(models(), built.input.conversation_projection.policy.id);
+    const plan = budget.plan(built.input);
+    assert.equal(plan.blockers.length, 0);
     assert.doesNotThrow(() => {
-      budget.assertBaseContext(built.serialized, 3);
+      budget.assertPlanFits(plan, 'unit-test');
     });
   });
 });

@@ -370,7 +370,7 @@ void describe('package', () => {
       '.pi/fusion',
       'context-omission-ledger.json',
       'budget-plan.json',
-      'fusion-input.v2',
+      'fusion-input.v3',
       'prompt_budget_exceeded',
     ]) {
       assert.match(
@@ -483,22 +483,20 @@ void describe('package', () => {
     assert.match(budget, /model_capacity_unknown/);
     assert.doesNotMatch(budget, /Math\.min\([^)]*allowed/i, 'budget must not clamp to fit');
 
-    // Output contracts must be enforced, which is what makes the downstream
-    // reserve a guarantee rather than an assumption.
+    // Output contracts must be enforced, which is what makes per-stage forecasts
+    // a guarantee rather than an assumption.
     assert.match(budget, /assertChildOutputWithinContract/);
     assert.match(budget, /child_output_cap/);
     assert.match(orchestratorSource(), /assertChildOutputWithinContract\('candidate'/);
 
-    // The downstream reserve must be converted through the same byte-to-token
-    // function used to measure prompts, not reserved as output tokens directly.
-    assert.match(
-      budget,
-      /FUSION_DOWNSTREAM_RESERVE_TOKENS = Math\.ceil\(\s*FUSION_DOWNSTREAM_RESERVE_BYTES \/ FUSION_BYTES_PER_TOKEN_DIVISOR/,
-    );
+    // Forecasts must add contract maxima to real empty-slot prompt renderings.
+    assert.match(budget, /buildEvaluationRepairPrompt/);
+    assert.match(budget, /upstream_output_contract_bytes/);
+    assert.doesNotMatch(budget, /FUSION_DOWNSTREAM_RESERVE_TOKENS/);
 
-    // Safety must derive from the smallest route, so no max-style selection.
+    // Route selection must not use a max-style allowance.
     assert.doesNotMatch(budget, /Math\.max\([^)]*allowed_input_tokens/);
-    assert.match(budget, /smallest input budget|never the largest/);
+    assert.match(budget, /fusionLimitingRoute/);
 
     // The conservative divisor must not drift to the 4-bytes-per-token assumption.
     assert.match(budget, /FUSION_BYTES_PER_TOKEN_DIVISOR = 2/);
@@ -512,7 +510,7 @@ void describe('package', () => {
         `orchestrator must preflight the ${stage} stage`,
       );
     }
-    assert.match(orchestrator, /assertBaseContext\(/);
+    assert.match(orchestrator, /assertPlanFits\(/);
   });
 
   void it('keeps production durable syncing handle-scoped and loud', async () => {

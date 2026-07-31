@@ -12,9 +12,9 @@ import {
   FUSION_EVALUATION_SCHEMA_VERSION,
   FUSION_INPUT_SCHEMA_VERSION,
   FusionError,
-  type FusionCanonicalInputV2,
+  type FusionCanonicalInputV3,
   type FusionChildRunResult,
-  type FusionContextOmissionLedgerV1,
+  type FusionContextOmissionLedgerV2,
   type FusionEvaluationV1,
   type FusionUsage,
   type ResolvedFusionModel,
@@ -23,7 +23,7 @@ import {
 import { FusionChildRunError, type RunPiChildOptions } from '../../src/core/fusion/pi-child.js';
 import { emptyLedger } from '../helpers/fusion-canonical.js';
 
-const ledger: FusionContextOmissionLedgerV1 = emptyLedger(FUSION_COMMAND_CONTEXT_POLICY_ID);
+const ledger: FusionContextOmissionLedgerV2 = emptyLedger(FUSION_COMMAND_CONTEXT_POLICY_ID);
 
 function resolved(qualifiedId: string, contextWindow = 200_000): ResolvedFusionModel {
   const slash = qualifiedId.indexOf('/');
@@ -48,7 +48,7 @@ function models(): ResolvedFusionModels {
   };
 }
 
-function canonicalInput(text = 'hello'): FusionCanonicalInputV2 {
+function canonicalInput(text = 'hello'): FusionCanonicalInputV3 {
   return {
     schema_version: FUSION_INPUT_SCHEMA_VERSION,
     cwd: '/tmp/project',
@@ -63,7 +63,8 @@ function canonicalInput(text = 'hello'): FusionCanonicalInputV2 {
       policy: {
         id: FUSION_COMMAND_CONTEXT_POLICY_ID,
         transform: FUSION_CONTEXT_TRANSFORM_ID,
-        version: 1,
+        version: 2,
+        receipt_format: 'omitted_activity.v2',
         user_text: 'verbatim',
         assistant_text: 'verbatim',
         assistant_thinking: 'ledger_only',
@@ -101,6 +102,7 @@ function canonicalInput(text = 'hello'): FusionCanonicalInputV2 {
         tool_call_names: [],
         ledger_entry_count: 0,
         ledger_root_sha256: 'a'.repeat(64),
+        omission_receipt_utf8_bytes: 0,
       },
     },
   };

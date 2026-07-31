@@ -17,14 +17,14 @@ import {
   FUSION_TOOL_CONTEXT_POLICY_ID,
   FusionError,
   type FusionBranchFilterDescriptor,
-  type FusionCanonicalInputV2,
-  type FusionCanonicalRequestV2,
-  type FusionContextOmissionLedgerV1,
+  type FusionCanonicalInputV3,
+  type FusionCanonicalRequestV3,
+  type FusionContextOmissionLedgerV2,
   type FusionContextPolicyDescriptor,
-  type FusionConversationProjectionV2,
+  type FusionContextProjectionMapEntry,
+  type FusionConversationProjectionV3,
   type FusionOmittedEventKind,
   type FusionOmittedEventRecord,
-  type FusionOmittedRunBytes,
   type FusionOmittedRunCounts,
   type FusionProjectionAccounting,
   type FusionProjectionEntry,
@@ -57,9 +57,9 @@ export interface BuildFusionCanonicalInputOptions {
 }
 
 export interface BuiltFusionCanonicalInput {
-  input: FusionCanonicalInputV2;
+  input: FusionCanonicalInputV3;
   serialized: string;
-  ledger: FusionContextOmissionLedgerV1;
+  ledger: FusionContextOmissionLedgerV2;
   transcriptLeafId: string | null;
 }
 
@@ -177,15 +177,6 @@ function ledgerLeafHash(index: number, record: FusionOmittedEventRecord): Buffer
     .digest();
 }
 
-function ledgerRunHash(leaves: readonly Buffer[], first: number): string {
-  const hash = createHash('sha256')
-    .update(Buffer.from('pi-fusion-ledger-run-v1\0', 'utf8'))
-    .update(uint64be(first))
-    .update(uint64be(leaves.length));
-  for (const leaf of leaves) hash.update(leaf);
-  return hash.digest('hex');
-}
-
 function ledgerRootHash(leaves: readonly Buffer[]): string {
   const hash = createHash('sha256')
     .update(Buffer.from('pi-fusion-ledger-root-v1\0', 'utf8'))
@@ -213,7 +204,8 @@ function policyDescriptor(source: FusionSource): FusionContextPolicyDescriptor {
   return {
     id: contextPolicyId(source),
     transform: FUSION_CONTEXT_TRANSFORM_ID,
-    version: 1,
+    version: 2,
+    receipt_format: 'omitted_activity.v2',
     user_text: 'verbatim',
     assistant_text: 'verbatim',
     assistant_thinking: 'ledger_only',
@@ -226,18 +218,19 @@ function policyDescriptor(source: FusionSource): FusionContextPolicyDescriptor {
 }
 
 /**
- * Accumulates omitted-event ledger rows and turns maximal contiguous omitted
- * runs into compact, source-ordered receipts inside the canonical input.
+ * Accumulates omitted-event ledger rows and turns maximal contiguous non-image
+ * omission runs into compact, source-ordered receipts inside the canonical input.
  */
 class ProjectionBuilder {
   private readonly entries: FusionProjectionEntry[] = [];
   private readonly ledger: FusionOmittedEventRecord[] = [];
   private readonly leaves: Buffer[] = [];
+  private readonly projectionMap: FusionContextProjectionMapEntry[] = [];
   private readonly toolCallNames = new Map<string, number>();
   private pendingCounts: Required<FusionOmittedRunCounts> | undefined;
-  private pendingBytes: Required<FusionOmittedRunBytes> | undefined;
-  private pendingLeaves: Buffer[] = [];
+  private pendingBytes = 0;
   private pendingLedgerFirst = 0;
+  private pendingLedgerLast = 0;
   private pendingSourceFirst = 0;
   private pendingSourceLast = 0;
 
@@ -273,76 +266,91 @@ class ProjectionBuilder {
     if (extra.toolCallId !== undefined) record.tool_call_id = extra.toolCallId;
     if (extra.mimeType !== undefined) record.mime_type = extra.mimeType;
     this.ledger.push(record);
-    const leaf = ledgerLeafHash(index, record);
-    this.leaves.push(leaf);
+    this.leaves.push(ledgerLeafHash(index, record));
 
     if (extra.toolName !== undefined && kind === 'tool_call') {
       this.toolCallNames.set(extra.toolName, (this.toolCallNames.get(extra.toolName) ?? 0) + 1);
     }
 
-    if (this.pendingCounts === undefined || this.pendingBytes === undefined) {
+    if (kind === 'tool_result_image') {
+      this.flush();
+      this.addLedgerOnlyImageMap(index);
+      return;
+    }
+
+    if (this.pendingCounts === undefined) {
       this.pendingCounts = {
         assistant_thinking: 0,
         tool_calls: 0,
         tool_result_texts: 0,
-        tool_result_images: 0,
       };
-      this.pendingBytes = {
-        assistant_thinking: 0,
-        tool_call_arguments: 0,
-        tool_result_text: 0,
-        tool_result_image: 0,
-      };
-      this.pendingLeaves = [];
+      this.pendingBytes = 0;
       this.pendingLedgerFirst = index;
       this.pendingSourceFirst = sourceOrdinal;
     }
+    this.pendingLedgerLast = index;
     this.pendingSourceLast = sourceOrdinal;
-    this.pendingLeaves.push(leaf);
-    if (kind === 'assistant_thinking') {
-      this.pendingCounts.assistant_thinking += 1;
-      this.pendingBytes.assistant_thinking += payload.length;
-    } else if (kind === 'tool_call') {
-      this.pendingCounts.tool_calls += 1;
-      this.pendingBytes.tool_call_arguments += payload.length;
-    } else if (kind === 'tool_result_text') {
-      this.pendingCounts.tool_result_texts += 1;
-      this.pendingBytes.tool_result_text += payload.length;
-    } else {
-      this.pendingCounts.tool_result_images += 1;
-      this.pendingBytes.tool_result_image += payload.length;
+    this.pendingBytes += payload.length;
+    if (kind === 'assistant_thinking') this.pendingCounts.assistant_thinking += 1;
+    else if (kind === 'tool_call') this.pendingCounts.tool_calls += 1;
+    else this.pendingCounts.tool_result_texts += 1;
+  }
+
+  private addLedgerOnlyImageMap(index: number): void {
+    const previous = this.projectionMap[this.projectionMap.length - 1];
+    if (
+      previous !== undefined &&
+      previous.entry_kind === 'ledger_only_tool_result_image' &&
+      previous.ledger_index_last + 1 === index
+    ) {
+      previous.ledger_index_last = index;
+      return;
     }
+    this.projectionMap.push({
+      entry_kind: 'ledger_only_tool_result_image',
+      ledger_index_first: index,
+      ledger_index_last: index,
+    });
   }
 
   private flush(): void {
     const counts = this.pendingCounts;
-    const bytes = this.pendingBytes;
-    if (counts === undefined || bytes === undefined) return;
+    if (counts === undefined) return;
+    const canonicalEntryIndex = this.entries.length;
     const entry: FusionProjectionOmissionEntry = {
-      kind: 'omitted_activity',
-      source_ordinal_first: this.pendingSourceFirst,
-      source_ordinal_last: this.pendingSourceLast,
-      ledger_index_first: this.pendingLedgerFirst,
-      ledger_index_last: this.pendingLedgerFirst + this.pendingLeaves.length - 1,
+      at: [this.pendingSourceFirst, this.pendingSourceLast],
+      bytes: this.pendingBytes,
       counts: compactCounts(counts),
-      payload_bytes: compactBytes(bytes),
-      ledger_run_sha256: ledgerRunHash(this.pendingLeaves, this.pendingLedgerFirst),
+      kind: 'omitted_activity',
     };
     this.entries.push(entry);
+    this.projectionMap.push({
+      canonical_entry_index: canonicalEntryIndex,
+      entry_kind: 'omitted_activity',
+      ledger_index_first: this.pendingLedgerFirst,
+      ledger_index_last: this.pendingLedgerLast,
+    });
     this.pendingCounts = undefined;
-    this.pendingBytes = undefined;
-    this.pendingLeaves = [];
+    this.pendingBytes = 0;
   }
 
   finish(
     source: FusionSource,
     branchFilter: FusionBranchFilterDescriptor,
     messageCount: number,
-  ): { projection: FusionConversationProjectionV2; ledger: FusionContextOmissionLedgerV1 } {
+  ): { projection: FusionConversationProjectionV3; ledger: FusionContextOmissionLedgerV2 } {
     this.flush();
     const rootSha256 = ledgerRootHash(this.leaves);
     let omittedRunCount = 0;
     let includedTextEntries = 0;
+    let receiptBytes = 0;
+    for (const entry of this.entries) {
+      if (entry.kind === 'text') includedTextEntries += 1;
+      else {
+        omittedRunCount += 1;
+        receiptBytes += utf8Bytes(canonicalJson(entry));
+      }
+    }
     let thinkingBytes = 0;
     let toolCallCount = 0;
     let toolArgumentBytes = 0;
@@ -350,19 +358,18 @@ class ProjectionBuilder {
     let toolResultTextBytes = 0;
     let toolResultImageCount = 0;
     let toolResultImageBytes = 0;
-    for (const entry of this.entries) {
-      if (entry.kind === 'text') {
-        includedTextEntries += 1;
-        continue;
+    for (const row of this.ledger) {
+      if (row.kind === 'assistant_thinking') thinkingBytes += row.payload_bytes;
+      else if (row.kind === 'tool_call') {
+        toolCallCount += 1;
+        toolArgumentBytes += row.payload_bytes;
+      } else if (row.kind === 'tool_result_text') {
+        toolResultTextCount += 1;
+        toolResultTextBytes += row.payload_bytes;
+      } else {
+        toolResultImageCount += 1;
+        toolResultImageBytes += row.payload_bytes;
       }
-      omittedRunCount += 1;
-      thinkingBytes += entry.payload_bytes.assistant_thinking ?? 0;
-      toolCallCount += entry.counts.tool_calls ?? 0;
-      toolArgumentBytes += entry.payload_bytes.tool_call_arguments ?? 0;
-      toolResultTextCount += entry.counts.tool_result_texts ?? 0;
-      toolResultTextBytes += entry.payload_bytes.tool_result_text ?? 0;
-      toolResultImageCount += entry.counts.tool_result_images ?? 0;
-      toolResultImageBytes += entry.payload_bytes.tool_result_image ?? 0;
     }
     const toolCallNames: FusionToolCallNameCount[] = [...this.toolCallNames.entries()]
       .map(([name, calls]) => ({ name, calls }))
@@ -386,6 +393,7 @@ class ProjectionBuilder {
       tool_call_names: toolCallNames,
       ledger_entry_count: this.ledger.length,
       ledger_root_sha256: rootSha256,
+      omission_receipt_utf8_bytes: receiptBytes,
     };
     return {
       projection: {
@@ -399,6 +407,7 @@ class ProjectionBuilder {
         policy_id: contextPolicyId(source),
         transform: FUSION_CONTEXT_TRANSFORM_ID,
         entries: this.ledger,
+        projection_map: this.projectionMap,
         root_sha256: rootSha256,
       },
     };
@@ -420,16 +429,6 @@ function compactCounts(counts: Required<FusionOmittedRunCounts>): FusionOmittedR
   if (counts.assistant_thinking > 0) out.assistant_thinking = counts.assistant_thinking;
   if (counts.tool_calls > 0) out.tool_calls = counts.tool_calls;
   if (counts.tool_result_texts > 0) out.tool_result_texts = counts.tool_result_texts;
-  if (counts.tool_result_images > 0) out.tool_result_images = counts.tool_result_images;
-  return out;
-}
-
-function compactBytes(bytes: Required<FusionOmittedRunBytes>): FusionOmittedRunBytes {
-  const out: FusionOmittedRunBytes = {};
-  if (bytes.assistant_thinking > 0) out.assistant_thinking = bytes.assistant_thinking;
-  if (bytes.tool_call_arguments > 0) out.tool_call_arguments = bytes.tool_call_arguments;
-  if (bytes.tool_result_text > 0) out.tool_result_text = bytes.tool_result_text;
-  if (bytes.tool_result_image > 0) out.tool_result_image = bytes.tool_result_image;
   return out;
 }
 
@@ -583,7 +582,7 @@ export function projectFusionConversation(
   messages: readonly Message[],
   source: FusionSource,
   branchFilter: FusionBranchFilterDescriptor,
-): { projection: FusionConversationProjectionV2; ledger: FusionContextOmissionLedgerV1 } {
+): { projection: FusionConversationProjectionV3; ledger: FusionContextOmissionLedgerV2 } {
   const builder = new ProjectionBuilder();
   for (const [sourceOrdinal, message] of messages.entries()) {
     if (message.role === 'user') projectUserMessage(builder, message.content, sourceOrdinal);
@@ -618,13 +617,13 @@ export function buildFusionCanonicalInput(
     active_tool_call_leaf_excluded: leaf.activeToolCallLeafExcluded,
   };
   const projected = projectFusionConversation(llmMessages, options.source, branchFilter);
-  const request: FusionCanonicalRequestV2 = {
+  const request: FusionCanonicalRequestV3 = {
     source: options.source,
     authority: requestAuthority(options.source),
     text: options.request,
     sha256: sha256Text(options.request),
   };
-  const input: FusionCanonicalInputV2 = {
+  const input: FusionCanonicalInputV3 = {
     schema_version: FUSION_INPUT_SCHEMA_VERSION,
     cwd: ctx.cwd,
     system_prompt: ctx.getSystemPrompt(),
