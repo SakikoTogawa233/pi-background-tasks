@@ -22,6 +22,12 @@ import {
   buildFusionCanonicalInput,
   normalizeFusionCommandRequest,
 } from './core/fusion/context.js';
+import {
+  FUSION_BRAINSTORM_WORKFLOW,
+  FUSION_VALIDATE_TOOL_NAME,
+  FUSION_VALIDATE_WORKFLOW,
+  type FusionWorkflowProfile,
+} from './core/fusion/workflows.js';
 import type { JsonObject } from './core/common.js';
 import { FusionOrchestrator } from './core/fusion/orchestrator.js';
 import {
@@ -76,6 +82,7 @@ interface FusionRunRequest {
   source: 'command' | 'tool';
   ctx: ExtensionContext;
   request: string;
+  profile?: FusionWorkflowProfile | undefined;
   capability?: FusionCapability | undefined;
   signal?: AbortSignal | undefined;
   toolCallId?: string | undefined;
@@ -92,9 +99,9 @@ export const FusionBrainstormParams = Type.Object(
   {
     prompt: Type.String({ description: 'Prompt to run through the five-model fusion workflow.' }),
     capability: Type.Optional(
-      Type.Union([Type.Literal('reason'), Type.Literal('inspect')], {
+      Type.Union([Type.Literal('reason'), Type.Literal('inspect'), Type.Literal('research')], {
         description:
-          "Optional candidate-child capability: 'reason' uses no tools; 'inspect' enables read-only file inspection.",
+          "Optional candidate-child capability: 'reason' uses no tools; 'inspect' enables read-only file inspection; 'research' enables read-only file inspection plus fusion_web_fetch.",
       }),
     ),
   },
@@ -149,29 +156,35 @@ function toolFailureMessage(error: unknown): string {
   return `Fusion failed${location}: ${errorMessage(error)}${errorArtifactSuffix(error)}`;
 }
 
-function progressText(event: FusionProgressEvent): string {
-  if (event.type === 'state') return `fusion: ${event.state.replace(/_/g, ' ')}`;
-  if (event.type === 'candidate_started') return `fusion: candidate ${String(event.slot)} starting`;
+function progressText(event: FusionProgressEvent, label = FUSION_BRAINSTORM_WORKFLOW.label): string {
+  if (event.type === 'state') return `${label}: ${event.state.replace(/_/g, ' ')}`;
+  if (event.type === 'candidate_started')
+    return `${label}: candidate ${String(event.slot)} starting`;
   if (event.type === 'candidate_completed')
-    return `fusion: candidates ${String(event.completed)}/${String(event.total)} complete`;
+    return `${label}: candidates ${String(event.completed)}/${String(event.total)} complete`;
   if (event.type === 'evaluation_started')
-    return event.repair ? 'fusion: repairing evaluator JSON' : 'fusion: evaluating candidates';
+    return event.repair
+      ? `${label}: repairing evaluator JSON`
+      : `${label}: evaluating candidates`;
   if (event.type === 'evaluation_retry')
-    return `fusion: evaluator schema retry (${String(event.errors.length)} issue${event.errors.length === 1 ? '' : 's'})`;
+    return `${label}: evaluator schema retry (${String(event.errors.length)} issue${event.errors.length === 1 ? '' : 's'})`;
   if (event.type === 'budget_warning')
-    return `fusion: budget warning (${String(event.warnings.length)} stage${event.warnings.length === 1 ? '' : 's'} at or above 80%)`;
+    return `${label}: budget warning (${String(event.warnings.length)} stage${event.warnings.length === 1 ? '' : 's'} at or above 80%)`;
   if (event.type === 'calibration_warning')
-    return `fusion: calibration warning (${String(event.warning.under_forecast_tokens)} tokens under forecast)`;
-  if (event.type === 'merge_started') return 'fusion: merging final answer';
-  if (event.type === 'completed') return 'fusion: completed';
-  if (event.type === 'cancelled') return `fusion: cancelled (${event.reason})`;
-  return `fusion: failed (${event.error})`;
+    return `${label}: calibration warning (${String(event.warning.under_forecast_tokens)} tokens under forecast)`;
+  if (event.type === 'merge_started') return `${label}: merging final answer`;
+  if (event.type === 'completed') return `${label}: completed`;
+  if (event.type === 'cancelled') return `${label}: cancelled (${event.reason})`;
+  return `${label}: failed (${event.error})`;
 }
 
-function makeProgressDetails(event: FusionProgressEvent): FusionProgressDetails {
+function makeProgressDetails(
+  event: FusionProgressEvent,
+  label = FUSION_BRAINSTORM_WORKFLOW.label,
+): FusionProgressDetails {
   return {
     schema_version: FUSION_PROGRESS_SCHEMA_VERSION,
-    status: progressText(event),
+    status: progressText(event, label),
     event,
   };
 }
@@ -199,12 +212,13 @@ function renderFusionResultText(
   details: FusionResultDetails,
   options: ToolRenderResultOptions,
   theme: Theme,
+  label = FUSION_BRAINSTORM_WORKFLOW.label,
 ) {
   if (options.expanded) {
     const container = new Container();
     container.addChild(
       new Text(
-        `${theme.fg('success', '✓ fusion complete')} ${theme.fg('dim', details.run_id)}\n${theme.fg('dim', `Artifacts: ${details.artifact_dir} · ${usageSummary(details)}`)}`,
+        `${theme.fg('success', `✓ ${label} complete`)} ${theme.fg('dim', details.run_id)}\n${theme.fg('dim', `Artifacts: ${details.artifact_dir} · ${usageSummary(details)}`)}`,
         0,
         0,
       ),
@@ -214,7 +228,7 @@ function renderFusionResultText(
   }
   const preview = mergedText.replace(/\s+/g, ' ').trim();
   return new Text(
-    `${theme.fg('success', '✓ fusion')} ${theme.fg('dim', details.run_id)} ${theme.fg('muted', usageSummary(details))}\n${preview}`,
+    `${theme.fg('success', `✓ ${label}`)} ${theme.fg('dim', details.run_id)} ${theme.fg('muted', usageSummary(details))}\n${preview}`,
     0,
     0,
   );
@@ -229,6 +243,7 @@ function isFusionResultDetails(value: unknown): value is FusionResultDetails {
   return (
     value['schema_version'] === FUSION_RESULT_SCHEMA_VERSION &&
     typeof value['run_id'] === 'string' &&
+    (value['workflow'] === 'brainstorm' || value['workflow'] === 'validate') &&
     (value['source'] === 'command' || value['source'] === 'tool') &&
     value['status'] === 'completed' &&
     typeof value['artifact_dir'] === 'string' &&
@@ -314,6 +329,40 @@ export function prepareFusionArguments(args: unknown): FusionBrainstormParamsVal
   };
 }
 
+export const FusionValidateParams = Type.Object(
+  {
+    prompt: Type.String({
+      description:
+        'What was done and what must hold true about it. Reviewers read the repository themselves.',
+    }),
+  },
+  { additionalProperties: false },
+);
+
+type FusionValidateParamsValue = Static<typeof FusionValidateParams>;
+
+/**
+ * `fusion_validate` takes no capability.
+ *
+ * A caller-supplied capability is rejected rather than ignored: silently dropping
+ * `capability:'reason'` would run a review whose children never read the code,
+ * which is the one outcome this tool exists to prevent.
+ */
+export function prepareFusionValidateArguments(args: unknown): FusionValidateParamsValue {
+  if (!isRecord(args)) throw new Error('fusion_validate arguments must be an object');
+  const keys = Object.keys(args);
+  if (keys.includes('capability')) {
+    throw new Error(
+      'fusion_validate does not accept capability; validation always runs candidates with read-only inspect access',
+    );
+  }
+  const unknown = keys.filter((key) => key !== 'prompt');
+  if (unknown.length > 0 || !keys.includes('prompt')) {
+    throw new Error('fusion_validate arguments must contain prompt only');
+  }
+  return { prompt: normalizeToolPrompt(args['prompt']) };
+}
+
 function linkSignal(source: AbortSignal | undefined, target: AbortController): () => void {
   if (source === undefined) return () => undefined;
   if (source.aborted) {
@@ -355,6 +404,7 @@ export function registerFusionExtension(pi: ExtensionAPI): void {
       if (shuttingDown || lifecycleGeneration !== generation)
         throw new Error('fusion extension is shutting down');
     };
+    const profile = request.profile ?? FUSION_BRAINSTORM_WORKFLOW;
     try {
       assertActive();
       const contextOptions =
@@ -362,13 +412,13 @@ export function registerFusionExtension(pi: ExtensionAPI): void {
           ? {
               source: request.source,
               request: request.request,
-              toolName: FUSION_BRAINSTORM_TOOL_NAME,
+              toolName: profile.toolName,
             }
           : {
               source: request.source,
               request: request.request,
               toolCallId: request.toolCallId,
-              toolName: FUSION_BRAINSTORM_TOOL_NAME,
+              toolName: profile.toolName,
             };
       const built = buildFusionCanonicalInput(request.ctx, contextOptions);
       const cwd = request.ctx.cwd;
@@ -394,7 +444,8 @@ export function registerFusionExtension(pi: ExtensionAPI): void {
         contextLedger: built.ledger,
         config: loaded.config,
         models,
-        candidateCapability: request.capability ?? FUSION_DEFAULT_CAPABILITY,
+        profile,
+        candidateCapability: request.capability,
         signal: controller.signal,
         onProgress: request.onProgress,
       });
@@ -583,12 +634,12 @@ export function registerFusionExtension(pi: ExtensionAPI): void {
     name: FUSION_BRAINSTORM_TOOL_NAME,
     label: 'Fusion Brainstorm',
     description:
-      "Run a five-model fusion workflow for a prompt and return the merged answer. Optional capability:'inspect' lets candidate children use read-only file tools.",
+      "Run a five-model fusion workflow for a prompt and return the merged answer. Optional capability:'inspect' lets candidate children use read-only file tools; capability:'research' also enables fusion_web_fetch.",
     promptSnippet:
       'Use fusion_brainstorm to get a merged answer from the five-model fusion workflow',
     promptGuidelines: [
-      "fusion_brainstorm is always available; call fusion_brainstorm({prompt}) for no-tool reasoning or fusion_brainstorm({prompt, capability:'inspect'}) when candidate children need read-only file inspection.",
-      "Use capability:'inspect' only when the answer benefits from reading/searching/listing repository files; evaluator and merger remain no-tools by policy.",
+      "fusion_brainstorm is always available; call fusion_brainstorm({prompt}) for no-tool reasoning, fusion_brainstorm({prompt, capability:'inspect'}) when candidate children need read-only file inspection, or fusion_brainstorm({prompt, capability:'research'}) when they also need to fetch a specific public URL.",
+      "Use capability:'inspect' only when the answer benefits from reading/searching/listing repository files; use capability:'research' only when public web fetching is required. Evaluator and merger remain no-tools by policy.",
     ],
     parameters: FusionBrainstormParams,
     prepareArguments: prepareFusionArguments,
@@ -640,12 +691,86 @@ export function registerFusionExtension(pi: ExtensionAPI): void {
     },
   });
 
+  pi.registerTool<typeof FusionValidateParams, FusionToolDetails>({
+    name: FUSION_VALIDATE_TOOL_NAME,
+    label: 'Fusion Validate',
+    description:
+      'Run a five-model fusion validation review of completed work and return the merged review. Reviewers always have read-only repository access; there is no capability argument.',
+    promptSnippet:
+      'Use fusion_validate to get a merged multi-model review of work that was just completed',
+    promptGuidelines: [
+      'Call fusion_validate({prompt}) after work is complete to get an independent multi-model review. It always runs with read-only repository inspection and takes no capability argument.',
+      'State in the prompt what was done, where it lives, and what must hold true. Reviewers read the repository themselves, but facts that exist only inside omitted tool output are not available to them; restate those in the prompt.',
+      'fusion_validate returns a prose review whose findings are classified critical, high, or minor. It never modifies files and is not a substitute for running tests or builds.',
+    ],
+    parameters: FusionValidateParams,
+    prepareArguments: prepareFusionValidateArguments,
+    async execute(toolCallId, params, signal, onUpdate, ctx) {
+      const prompt = normalizeToolPrompt(params.prompt);
+      const label = FUSION_VALIDATE_WORKFLOW.label;
+      let result: FusionRunResult;
+      try {
+        result = await runFusion({
+          source: 'tool',
+          ctx,
+          request: prompt,
+          profile: FUSION_VALIDATE_WORKFLOW,
+          // Workflow policy, not caller input: the fixed capability is resolved by the
+          // workflow itself, so no caller-selected value can reach this launch.
+          signal,
+          toolCallId,
+          onProgress: (event) => {
+            onUpdate?.({
+              content: textContent(progressText(event, label)),
+              details: makeProgressDetails(event, label),
+            });
+          },
+        });
+      } catch (error) {
+        throw new Error(toolFailureMessage(error), { cause: error });
+      }
+      const toolResult: FusionToolResultWithUsage = {
+        content: textContent(result.mergedText),
+        details: result.details,
+        usage: cloneFusionUsage(result.details.usage),
+      };
+      return toolResult;
+    },
+    renderCall(args, theme) {
+      const preview = args.prompt.replace(/\s+/g, ' ').trim();
+      return new Text(
+        `${theme.fg('toolTitle', theme.bold('fusion_validate '))}${theme.fg('muted', preview)}`,
+        0,
+        0,
+      );
+    },
+    renderResult(result, options, theme) {
+      if (isFusionProgressDetails(result.details))
+        return renderProgressResult(result.details, theme);
+      if (!isFusionResultDetails(result.details))
+        return new Text(theme.fg('error', 'Invalid fusion tool details'), 0, 0);
+      const mergedText = result.content
+        .map((part) => (part.type === 'text' ? part.text : ''))
+        .join('\n');
+      return renderFusionResultText(
+        mergedText,
+        result.details,
+        options,
+        theme,
+        FUSION_VALIDATE_WORKFLOW.label,
+      );
+    },
+  });
+
   pi.on('session_start', () => {
     shuttingDown = false;
     lifecycleGeneration += 1;
     const active = pi.getActiveTools();
-    if (!active.includes(FUSION_BRAINSTORM_TOOL_NAME)) {
-      pi.setActiveTools([...active, FUSION_BRAINSTORM_TOOL_NAME]);
+    const missing = [FUSION_BRAINSTORM_TOOL_NAME, FUSION_VALIDATE_TOOL_NAME].filter(
+      (name) => !active.includes(name),
+    );
+    if (missing.length > 0) {
+      pi.setActiveTools([...active, ...missing]);
     }
   });
 

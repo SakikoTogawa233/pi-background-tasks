@@ -1,6 +1,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
+import { existsSync } from 'node:fs';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -13,6 +14,7 @@ import {
   fusionPiChildEnv,
   parseFusionChildStderr,
   parseFusionToolCallLog,
+  resolveAnthropicSanitizerExtensionPath,
   runPiChild,
   type FusionChildProcess,
   type FusionChildSpawn,
@@ -22,10 +24,12 @@ import {
   FUSION_FORBIDDEN_TOOLS,
   FUSION_INSPECT_TOOLS,
   FUSION_TOOL_CALL_LOG_SCHEMA_VERSION,
+  FUSION_WEB_FETCH_TOOL_NAME,
   type ResolvedFusionModel,
 } from '../../src/core/fusion/types.js';
 import fusionChildExtension, {
   FUSION_CHILD_RESULT_PREFIX,
+  FUSION_RESEARCH_ENABLED_ENV,
   FUSION_TOOL_CALL_LOG_PATH_ENV,
   buildFusionChildResultMetadata,
 } from '../../src/fusion-child-extension.js';
@@ -307,10 +311,10 @@ void describe('fusion Pi child runner', () => {
     ]);
   });
 
-  void it('builds inspect argv with exact read-only allowlist and denylist', () => {
+  void it('builds byte-identical inspect argv with exact read-only allowlist and denylist', () => {
     const argv = buildFusionPiChildArgv(resolvedModel(), 'system', 'extension.js', 'inspect');
     assert.equal(argv.includes('--no-tools'), false);
-    assert.deepEqual(argv.slice(0, 11), [
+    assert.deepEqual(argv, [
       '--mode',
       'text',
       '--no-session',
@@ -322,7 +326,139 @@ void describe('fusion Pi child runner', () => {
       '--no-extensions',
       '--no-skills',
       '--no-prompt-templates',
+      '--no-themes',
+      '--no-context-files',
+      '--extension',
+      'extension.js',
+      '--provider',
+      'openai-codex',
+      '--model',
+      'gpt-5.5',
+      '--thinking',
+      'high',
+      '--system-prompt',
+      'system',
     ]);
+  });
+
+  void it('builds research argv with read-only tools plus fusion_web_fetch', () => {
+    const argv = buildFusionPiChildArgv(resolvedModel(), 'system', 'extension.js', 'research');
+    assert.equal(argv.includes('--no-tools'), false);
+    assert.deepEqual(argv.slice(0, 11), [
+      '--mode',
+      'text',
+      '--no-session',
+      '--no-builtin-tools',
+      '--tools',
+      [...FUSION_INSPECT_TOOLS, FUSION_WEB_FETCH_TOOL_NAME].join(','),
+      '--exclude-tools',
+      FUSION_FORBIDDEN_TOOLS.join(','),
+      '--no-extensions',
+      '--no-skills',
+      '--no-prompt-templates',
+    ]);
+  });
+
+  void it('appends the Anthropic sanitizer only for Claude routes', () => {
+    // Pi's system prompt carries documentation lines Anthropic rejects. The parent gets
+    // the sanitizer through extension discovery, but children run --no-extensions and
+    // inherit nothing, so a Claude child without it fails at the provider.
+    const sanitizer = () => '/pkg/anthropic-sps/index.ts';
+    const claude = buildFusionPiChildArgv(
+      resolvedModel('anthropic', 'claude-opus-5'),
+      'system',
+      'extension.js',
+      'reason',
+      sanitizer,
+    );
+    const extensionArgs = claude.reduce<string[]>((acc, value, index) => {
+      if (value === '--extension') acc.push(claude[index + 1] ?? '');
+      return acc;
+    }, []);
+    assert.deepEqual(extensionArgs, ['extension.js', '/pkg/anthropic-sps/index.ts']);
+    // The metadata extension must stay first so its message_end frame is never displaced.
+    assert.equal(extensionArgs[0], 'extension.js');
+  });
+
+  void it('keeps non-Anthropic child argv byte-identical to the pre-sanitizer form', () => {
+    // Adding Claude support must not move a single argv byte on other providers.
+    const sanitizer = () => {
+      throw new Error('sanitizer must not be resolved for non-Anthropic routes');
+    };
+    for (const provider of ['openai-codex', 'openai', 'google', 'unknown-provider']) {
+      const argv = buildFusionPiChildArgv(
+        resolvedModel(provider, 'm1'),
+        'system',
+        'extension.js',
+        'reason',
+        sanitizer,
+      );
+      assert.equal(argv.filter((value) => value === '--extension').length, 1);
+      assert.equal(argv[argv.indexOf('--extension') + 1], 'extension.js');
+    }
+  });
+
+  void it('resolves the sanitizer from the real installed package', () => {
+    // The sanitizer package publishes no main/exports, so it must be located through its
+    // manifest rather than a direct require. This pins that the real dependency resolves.
+    const resolved = resolveAnthropicSanitizerExtensionPath();
+    assert.match(resolved, /pi-anthropic-sps/);
+    assert.equal(existsSync(resolved), true);
+  });
+
+  void it('fails loudly when the sanitizer package or its extension is unusable', () => {
+    // Silently dropping the sanitizer would surface later as an opaque provider
+    // rejection, so every resolution failure must be explicit here instead.
+    assert.throws(
+      () =>
+        resolveAnthropicSanitizerExtensionPath({
+          resolvePackageJson: () => {
+            throw new Error('not installed');
+          },
+        }),
+      /could not be resolved.*Claude children cannot be launched without it/s,
+    );
+    assert.throws(
+      () =>
+        resolveAnthropicSanitizerExtensionPath({
+          resolvePackageJson: () => '/pkg/package.json',
+          readManifest: () => '{not json',
+        }),
+      /is not valid JSON/,
+    );
+    assert.throws(
+      () =>
+        resolveAnthropicSanitizerExtensionPath({
+          resolvePackageJson: () => '/pkg/package.json',
+          readManifest: () => '{"name":"x"}',
+        }),
+      /has no "pi" section/,
+    );
+    assert.throws(
+      () =>
+        resolveAnthropicSanitizerExtensionPath({
+          resolvePackageJson: () => '/pkg/package.json',
+          readManifest: () => '{"pi":{"extensions":[]}}',
+        }),
+      /declares no pi.extensions entries/,
+    );
+    assert.throws(
+      () =>
+        resolveAnthropicSanitizerExtensionPath({
+          resolvePackageJson: () => '/pkg/package.json',
+          readManifest: () => '{"pi":{"extensions":["  "]}}',
+        }),
+      /must be a non-blank string/,
+    );
+    assert.throws(
+      () =>
+        resolveAnthropicSanitizerExtensionPath({
+          resolvePackageJson: () => '/pkg/package.json',
+          readManifest: () => '{"pi":{"extensions":["./index.ts"]}}',
+          pathExists: () => false,
+        }),
+      /Anthropic sanitizer extension is missing/,
+    );
   });
 
   void it('rejects fusion tool policy intersections loudly', () => {
@@ -347,6 +483,32 @@ void describe('fusion Pi child runner', () => {
       total_result_bytes: 31,
       trace_complete: true,
     });
+  });
+
+  void it('round-trips fusion_web_fetch audit metadata without raw page content', () => {
+    const pageContent = 'PAGE CONTENT MUST NOT BE STORED';
+    const bytes = Buffer.from(
+      toolLogLine(0, {
+        tool_name: FUSION_WEB_FETCH_TOOL_NAME,
+        result_bytes: 123,
+        result_sha256: 'c'.repeat(64),
+        url: 'https://example.com/start',
+        final_url: 'https://example.com/final',
+        http_status: 200,
+        response_bytes: 456,
+        content_sha256: 'd'.repeat(64),
+      }),
+      'utf8',
+    );
+    assert.doesNotMatch(bytes.toString('utf8'), new RegExp(pageContent));
+    const trace = parseFusionToolCallLog(bytes);
+    const record = trace.records[0];
+    assert.equal(record?.tool_name, FUSION_WEB_FETCH_TOOL_NAME);
+    assert.equal(record?.url, 'https://example.com/start');
+    assert.equal(record?.final_url, 'https://example.com/final');
+    assert.equal(record?.http_status, 200);
+    assert.equal(record?.response_bytes, 456);
+    assert.equal(record?.content_sha256, 'd'.repeat(64));
   });
 
   void it('rejects a trailing partial tool-log line loudly', () => {
@@ -513,7 +675,7 @@ void describe('fusion Pi child runner', () => {
     assert.doesNotMatch(result.events.toString('utf8'), /final héllo/);
   });
 
-  void it('passes the tool-call log env var only for inspect children', async () => {
+  void it('passes tool-call audit env vars only for tool-enabled children', async () => {
     const root = await mkdtemp(join(tmpdir(), 'pi-fusion-tool-log-env-'));
     try {
       const child = new FakeChild(778);
@@ -536,6 +698,7 @@ void describe('fusion Pi child runner', () => {
       const record = harness.records[0];
       assert.ok(record);
       assert.equal(record.options.env?.[FUSION_TOOL_CALL_LOG_PATH_ENV], logPath);
+      assert.equal(record.options.env?.[FUSION_RESEARCH_ENABLED_ENV], undefined);
       // The real child extension creates this file at startup before tools can run. This
       // fake child never loads the extension, so the empty-but-present log is written here
       // to model a genuine zero-tool-call inspect run. An ABSENT file is a different case
@@ -550,6 +713,41 @@ void describe('fusion Pi child runner', () => {
         total_result_bytes: 0,
         trace_complete: true,
       });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  void it('passes the research env var only for research children', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'pi-fusion-research-env-'));
+    try {
+      const child = new FakeChild(782);
+      const harness = makeSpawn(child);
+      const logPath = join(root, 'candidate-1.attempt-1.tool-calls.jsonl');
+      const run = runPiChild({
+        stage: 'candidate',
+        slot: 1,
+        attempt: 1,
+        cwd: root,
+        model: resolvedModel(),
+        capability: 'research',
+        toolCallLogPath: logPath,
+        systemPrompt: 'system prompt',
+        userPrompt: 'prompt',
+        spawn: harness.spawn,
+        platform: 'linux',
+      });
+      await tick();
+      const record = harness.records[0];
+      assert.ok(record);
+      assert.equal(record.options.env?.[FUSION_TOOL_CALL_LOG_PATH_ENV], logPath);
+      assert.equal(record.options.env?.[FUSION_RESEARCH_ENABLED_ENV], '1');
+      await writeFile(logPath, '');
+      child.stdout.emitData(Buffer.from('final héllo\n', 'utf8'));
+      child.stderr.emitData(compactMetadata());
+      child.close(0, null);
+      const result = await run;
+      assert.equal(result.toolCallTrace?.summary.count, 0);
     } finally {
       await rm(root, { recursive: true, force: true });
     }

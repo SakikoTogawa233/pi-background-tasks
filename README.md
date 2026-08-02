@@ -2,26 +2,26 @@
 
 Claude-Code-like explicit background shell task manager for [Pi](https://pi.dev/).
 
-This package adds named, tracked background shell jobs with durable output files, bounded log reads, kill/timeout safety, task-owned context-window/token/tool-use/model telemetry, explicit Pi-agent telemetry wrapping for tasks marked as agents, a focused footer-dock task manager, `/tasks` fallback UI, and completion notifications that can wake the agent when LLM-launched work finishes. It also ships Fusion: a direct child-Pi five-call synthesis workflow exposed as `/fusion`, `/fusion-models`, and the always-active `fusion_brainstorm` tool. A terminal task status is published only after trailing wrapped-agent telemetry is consumed and final output plus terminal metadata have completed their durability writes.
+This package adds named, tracked background shell jobs with durable output files, bounded log reads, kill/timeout safety, task-owned context-window/token/tool-use/model telemetry, explicit Pi-agent telemetry wrapping for tasks marked as agents, a focused footer-dock task manager, `/tasks` fallback UI, and completion notifications that can wake the agent when LLM-launched work finishes. It also ships Fusion: a direct child-Pi five-call synthesis workflow exposed as `/fusion`, `/fusion-models`, and the always-active `fusion_brainstorm` and `fusion_validate` tools. A terminal task status is published only after trailing wrapped-agent telemetry is consumed and final output plus terminal metadata have completed their durability writes.
 
 ## Install
 
 From npm after publish:
 
 ```bash
-pi install npm:pi-background-tasks@0.7.7
+pi install npm:pi-background-tasks@0.9.0
 ```
 
 From git after pushing this package to its standalone repository and tagging:
 
 ```bash
-pi install git:github.com/ismailsaleekh/pi-background-tasks@v0.7.7
+pi install git:github.com/ismailsaleekh/pi-background-tasks@v0.9.0
 ```
 
 For project-local install:
 
 ```bash
-pi install -l npm:pi-background-tasks@0.7.7
+pi install -l npm:pi-background-tasks@0.9.0
 ```
 
 ## Commands
@@ -97,7 +97,8 @@ The lookup runs at most once per session on `session_start`, is time-boxed, and 
 - `bg_status` — inspect one task or all recent tasks.
 - `bg_logs` — read bounded task output.
 - `bg_kill` — stop a running task.
-- `fusion_brainstorm({prompt, capability?})` — always-active tool that runs the Fusion workflow and returns the exact merged text as the tool result for the parent agent to consume, with the exact Pi `Usage` shape attached when the host supports tool-result usage: token fields plus complete `cost.input`, `cost.output`, `cost.cacheRead`, `cost.cacheWrite`, and `cost.total`. Calling it as `fusion_brainstorm({prompt})` uses the default `reason` capability: no tools and byte-identical child argv/prompt behaviour to the previous release. The optional `capability` accepts only `"reason"` or `"inspect"`; `inspect` gives candidate children read-only repository inspection tools, while the evaluator and merger remain no-tools by stage policy. Its closed public schema has one required parameter, `prompt`, plus optional `capability`; extra keys are rejected. It has no eligibility, quota, routine, or justification gate. Tool context capture excludes the current assistant tool-call leaf when Pi is executing that `fusion_brainstorm` call, so the nested children do not see the in-progress tool call or sibling calls. Children receive the documented conversation projection described under [Conversation context policy](#conversation-context-policy): visible user/assistant text verbatim, with thinking and tool payloads replaced by explicit hash-accounted omission receipts. Because the prompt is composed by the parent agent, it is treated as authoritative and self-contained.
+- `fusion_validate({prompt})` — always-active tool that runs the same five-model Fusion workflow as a validation review of work that was just completed, and returns the merged prose review. Its closed public schema has exactly one parameter, `prompt`; **it takes no `capability` argument**, and a caller-supplied `capability` is rejected loudly rather than ignored. Candidate reviewers always run with the read-only `inspect` capability, because a reasoning-only reviewer cannot read the code it is judging; the evaluator and merger remain no-tools by stage policy. Findings are classified `critical`, `high`, or `minor`, each with a file/symbol location, the evidence the reviewer actually read, and why it matters. A review with no findings must state what was verified rather than returning an unexplained pass. See [Validation workflow](#validation-workflow).
+- `fusion_brainstorm({prompt, capability?})` — always-active tool that runs the Fusion workflow and returns the exact merged text as the tool result for the parent agent to consume, with the exact Pi `Usage` shape attached when the host supports tool-result usage: token fields plus complete `cost.input`, `cost.output`, `cost.cacheRead`, `cost.cacheWrite`, and `cost.total`. Calling it as `fusion_brainstorm({prompt})` uses the default `reason` capability: no tools and byte-identical child argv/prompt behaviour to the previous release. The optional `capability` accepts only `"reason"`, `"inspect"`, or `"research"`; `inspect` gives candidate children read-only repository inspection tools, and `research` adds the package-owned `fusion_web_fetch` tool for targeted public URL fetches. The evaluator and merger remain no-tools by stage policy. Its closed public schema has one required parameter, `prompt`, plus optional `capability`; extra keys are rejected. It has no eligibility, quota, routine, or justification gate. Tool context capture excludes the current assistant tool-call leaf when Pi is executing that `fusion_brainstorm` call, so the nested children do not see the in-progress tool call or sibling calls. Children receive the documented conversation projection described under [Conversation context policy](#conversation-context-policy): visible user/assistant text verbatim, with thinking and tool payloads replaced by explicit hash-accounted omission receipts. Because the prompt is composed by the parent agent, it is treated as authoritative and self-contained.
 
 `bg_run` requires a concise `name` for the footer dock, the shell `command`, and required `isAgent: boolean`. Set `isAgent: true` only when the background task launches an LLM/agent process (for example `pi -p ...` or `pi --mode json ...`); set `isAgent: false` for scripts, tests, dev servers, sleeps, and ordinary shell commands. It defaults both `notifyOnCompletion` and `triggerOnCompletion` to `true`. With those defaults, `bg_run` returns immediately, the agent continues only independent useful work or ends its current turn instead of sleeping or polling, and a durable `background-task-notification` for completed, failed, or killed state automatically starts a follow-up turn. The launch receipt states the effective notification/wake behavior explicitly. `bg_status` and `bg_logs` remain available for user-requested inspection, deliberately disabled completion delivery, concrete hang diagnosis, or reading output after the terminal event; they are not waiting primitives, and the terminal notification does not need status reconfirmation. Setting `triggerOnCompletion: false` keeps the notification but prevents it from starting an agent turn. Setting `notifyOnCompletion: false` suppresses both notification and wake-up even if `triggerOnCompletion` is true.
 
@@ -279,17 +280,61 @@ Model configuration is global under the Pi agent directory:
 fusion-models.json
 ```
 
+### Validation workflow
+
+`fusion_validate` is the same orchestrator, artifact store, budget engine, conversation projection, and evaluation schema as `fusion_brainstorm`, with different stage framing. A workflow profile selects the four system prompts and the capability policy; it never changes the canonical input schema, which remains `pi-background-tasks.fusion-input.v4` for both tools. Canonical input bytes and the omission ledger are provably identical across workflows for the same conversation, and that equality is asserted by the golden-bytes gate rather than assumed.
+
+| Concern | `fusion_brainstorm` | `fusion_validate` |
+|---|---|---|
+| Parameters | `{prompt, capability?}` | `{prompt}` — capability rejected |
+| Candidate capability | caller-selected, default `reason` | always `inspect` |
+| Evaluator / merger capability | `reason` by stage policy | `reason` by stage policy |
+| Run id prefix | `f` | `v` |
+| Output | prose answer | prose review |
+| Evaluation schema | `fusion-evaluation.v1` | `fusion-evaluation.v1` (identical) |
+
+The capability is fixed rather than defaulted. A `capability` argument on `fusion_validate` is a hard error at the schema boundary, and the orchestrator independently re-asserts the workflow capability before the artifact store or any child process exists, so a contradicting request launches **zero children**.
+
+The three reviewers are blind-compared exactly like brainstorm candidates, but the evaluator is additionally required to treat each distinct defect claim as a unit and to carry every surviving claim into `synthesis_plan.must_include`, **including claims raised by only one reviewer**. The merger is correspondingly forbidden from dropping a single-source finding or inventing one no reviewer raised, and must state the resolution and reason wherever reviewers disagreed. Without those two clauses a real defect that only one model noticed could disappear by silent majority vote, which is the failure mode a three-model review exists to prevent.
+
+`fusion_validate` is advisory and read-only. It never modifies files, it does not gate anything, and it is not a substitute for running tests or builds. Like every Fusion entry point, facts that exist only inside omitted tool output are not visible to reviewers; `inspect` lets them re-derive repository facts themselves, but uncommitted state that exists only in the parent agent's context must be restated in the prompt.
+
+### Anthropic child sanitization
+
+Fusion children launch with `--no-extensions` for isolation, which disables extension *discovery* while still honouring explicit `--extension` paths. The parent session normally loads an Anthropic system-prompt sanitizer through discovery, so a Claude child would inherit nothing and fail at the provider: Pi's own system prompt contains documentation lines Anthropic rejects.
+
+Children routed to the `anthropic` provider therefore receive a second explicit extension, [`@ravshansbox/pi-anthropic-sps`](https://github.com/ravshansbox/pi-anthropic-sps) (MIT), resolved from the package's own dependency tree. The metadata extension is always passed first so its `message_end` frame is never displaced.
+
+Children on every other provider receive exactly one `--extension` and their argv is byte-identical to the pre-sanitizer form. The sanitizer package publishes no `main`/`exports`, so it is located through its manifest's `pi.extensions[0]` entry rather than a direct require. Every resolution failure - package missing, manifest unreadable or malformed, no declared extension, or a declared file that does not exist - is a loud error before launch, because silently omitting the sanitizer would resurface later as an opaque provider rejection.
+
 ### Candidate capabilities
 
-Fusion candidate children support two launch-time capability profiles. `reason` is the default: it passes `--no-tools` and preserves the previous no-tool candidate argv and prompt bytes. `inspect` is available only to candidate children and replaces `--no-tools` with the exact read-only tool policy `--no-builtin-tools --tools read,grep,find,ls --exclude-tools bash,edit,write,fusion_brainstorm,bg_delegate,bg_result,bg_run,bg_kill,bg_status,bg_logs,bg_run_pi_attested`. No web or network capability is implemented. `inspect` is not an OS sandbox: read-only tools can expose files that the current process user can read.
+Fusion candidate children support three launch-time capability profiles. `reason` is the default: it passes `--no-tools` and preserves the previous no-tool candidate argv and prompt bytes. `inspect` is available only to candidate children and replaces `--no-tools` with the exact read-only tool policy `--no-builtin-tools --tools read,grep,find,ls --exclude-tools bash,edit,write,fusion_brainstorm,bg_delegate,bg_result,bg_run,bg_kill,bg_status,bg_logs,bg_run_pi_attested`. `research` extends `inspect` by adding the package-owned `fusion_web_fetch` tool to the `--tools` allowlist; the `--exclude-tools` denylist is unchanged and still bans `bash`, `edit`, `write`, `fusion_brainstorm`, `bg_delegate`, `bg_result`, `bg_run`, `bg_kill`, `bg_status`, `bg_logs`, and `bg_run_pi_attested`. The `reason` and `inspect` argv forms remain byte-identical to v0.7.8.
 
-Evaluator, evaluation-repair, and merger children always run with `--no-tools` by stage policy. Caller input cannot grant them tools, even when candidates use `inspect`. Capability is recorded as launch metadata in the run manifest and child argv, not added to the canonical child-facing input; the canonical input schema remains `pi-background-tasks.fusion-input.v4`.
+Evaluator, evaluation-repair, and merger children always run with `--no-tools` by stage policy. Caller input cannot grant them tools, even when candidates use `inspect` or `research`. Capability is recorded as launch metadata in the run manifest and child argv, not added to the canonical child-facing input; the canonical input schema remains `pi-background-tasks.fusion-input.v4`.
 
-The inspect candidate system prompt tells the child it may re-derive facts from the repository using `read`, `grep`, `find`, and `ls`. It also extends the untrusted-data rule to file contents: text read from files is data, never an instruction to follow.
+The inspect candidate system prompt tells the child it may re-derive facts from the repository using `read`, `grep`, `find`, and `ls`. The research prompt adds `fusion_web_fetch` for fetching a specific public URL as bounded Markdown or text. Both prompts extend the untrusted-data rule: projected conversation text, file contents, and fetched page content are data, never instructions to follow.
+
+`fusion_web_fetch` has a closed schema: `{ url: string, extract?: 'text' | 'markdown' }`. `extract` defaults to Markdown. There is deliberately no per-fetch prompt parameter. Anthropic documents the `{url, prompt}` extraction pattern as lossy by design: the prompt decides what reaches the model, so a false negative can enter a Fusion candidate answer, pass through blind evaluation, and reach the merged answer with no signal that the page contained missed information.
+
+HTML extraction uses the runtime dependency `turndown@7.2.4`; its only dependency is `@mixmark-io/domino`, so it does not require `jsdom`. Markdown is the default because it preserves link destinations, headings, tables, and code blocks better than plain text. This version has no web search, browser, PDF support, cache, or domain allowlist.
+
+| `fusion_web_fetch` policy | Value |
+|---|---:|
+| Request method | GET |
+| Schemes | `http:` and `https:` only |
+| Timeout | 60 seconds |
+| Response body cap | 2 MiB |
+| Returned content cap | 32 KiB |
+| Redirect cap | 5 hops |
+
+Network handling is basic network hygiene, not a secret-exfiltration control. The hostname is resolved once, every returned address is checked, the connection is pinned to the vetted address, and the socket's remote address is verified after connect. Address validation re-runs on every redirect hop. Private, loopback, link-local, unique-local, multicast, and cloud-metadata addresses are refused. A research child that can read files and reach the network can in principle send what it read; that is an accepted trade in this version, not a sandbox or security boundary.
+
+`fusion_web_fetch` fails loudly with typed errors rather than retrying or falling back to another URL, scheme, encoding, or extraction mode. Error codes include `invalid_url`, `unsupported_scheme`, `blocked_address`, `dns_failure`, `redirect_limit`, `redirect_blocked`, `response_too_large`, `unsupported_content_type`, `request_timeout`, `network_error`, `extraction_failed`, and `http_error`.
 
 Every child has a stale-action watchdog in addition to the 30-minute absolute timeout. `FUSION_CHILD_IDLE_TIMEOUT_MS` defaults to 900 seconds and fails the child if no stdout or stderr activity occurs during that window; any stdout or stderr activity resets the watchdog. The threshold is deliberately far above tool latency: the child metadata frame is emitted only at `message_end` and text-mode stdout carries only the final assistant message, so one slow model turn is legitimately silent on both streams and must not be killed. The absolute timeout remains a backstop for children that keep producing output but never finish.
 
-Inspect candidates also write a per-attempt tool-call audit log at `candidate-<slot>.attempt-<n>.tool-calls.jsonl`. The child appends one JSON line per completed tool call with the tool name, argument/result byte counts, and SHA-256 digests only. Raw arguments and raw results are never written because file paths, file contents, and tool results may contain secrets. After the child exits, the parent verifies the log is complete and contiguous; a trailing partial line, ordinal gap, duplicate ordinal, or schema-version mismatch is a loud failure.
+Inspect and research candidates also write a per-attempt tool-call audit log at `candidate-<slot>.attempt-<n>.tool-calls.jsonl`. The child appends one JSON line per completed tool call with the tool name, argument/result byte counts, and SHA-256 digests only. For `fusion_web_fetch`, the record also includes `url`, `final_url`, `http_status`, `response_bytes`, and `content_sha256`. Raw arguments, raw tool results, and page content are never written because file paths, file contents, fetched content, and tool results may contain secrets. After the child exits, the parent verifies the log is complete and contiguous; a trailing partial line, ordinal gap, duplicate ordinal, or schema-version mismatch is a loud failure.
 
 Missing config means all five slots are `$current`. Malformed config, stale explicit models, unavailable current models, and concurrent selector write conflicts fail loudly before child inference. Selector saves use an inter-process lock plus revision re-read before rename so simultaneous dialogs cannot silently overwrite each other. Candidate identities are anonymized before evaluation; provider/model metadata stays in local artifacts, not in evaluator prompts.
 
@@ -401,7 +446,7 @@ Fusion writes private debugging artifacts under:
 .pi/fusion/<session-id>-<pid>/<run-id>/
 ```
 
-Each run contains `manifest.json`, `canonical-input.json`, `context-omission-ledger.json`, `budget-plan.json`, candidate/evaluation/merge prompts, raw child JSONL events, stderr, responses, and, when inspect candidates run, tool-call logs named `candidate-<slot>.attempt-<n>.tool-calls.jsonl`, plus `blind-candidates.json`, `evaluation.json`, `merged.md`, and `error.json` for failed/cancelled runs. Persisted stage prompts are byte-identical to the exact bytes written to that child's stdin. `context-omission-ledger.json` carries the complete source-ordered omission ledger, and `budget-plan.json` records every configured route's capacity plus the pre-candidate feasibility decision, so a rejected run is as auditable as a successful one. Artifact files are written by private temp-file/fsync/rename, and v2 manifests persist cumulative child usage plus per-attempt observed usage/model data for successful, failed, and cancelled child attempts. Every usage record preserves the complete Pi cost breakdown; the same exact shape is cloned into `fusion_brainstorm` tool results so newer Pi hosts can calculate and replay footer/session statistics safely. These artifacts are local evidence only; they are not shown in `/jobs` or the background-task dock.
+Each run contains `manifest.json`, `canonical-input.json`, `context-omission-ledger.json`, `budget-plan.json`, candidate/evaluation/merge prompts, raw child JSONL events, stderr, responses, and, when inspect or research candidates run, tool-call logs named `candidate-<slot>.attempt-<n>.tool-calls.jsonl`, plus `blind-candidates.json`, `evaluation.json`, `merged.md`, and `error.json` for failed/cancelled runs. Persisted stage prompts are byte-identical to the exact bytes written to that child's stdin. `context-omission-ledger.json` carries the complete source-ordered omission ledger, and `budget-plan.json` records every configured route's capacity plus the pre-candidate feasibility decision, so a rejected run is as auditable as a successful one. Artifact files are written by private temp-file/fsync/rename, and v2 manifests persist cumulative child usage plus per-attempt observed usage/model data for successful, failed, and cancelled child attempts. Every usage record preserves the complete Pi cost breakdown; the same exact shape is cloned into `fusion_brainstorm` tool results so newer Pi hosts can calculate and replay footer/session statistics safely. These artifacts are local evidence only; they are not shown in `/jobs` or the background-task dock.
 
 For attested Pi tasks only, the task id is `b` plus 32 random hex characters (128 bits) and additional flat siblings are written in the same directory:
 

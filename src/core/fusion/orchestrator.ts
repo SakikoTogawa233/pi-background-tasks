@@ -13,18 +13,19 @@ import {
 } from './evaluation.js';
 import { FusionChildRunError, runPiChild, type RunPiChildOptions } from './pi-child.js';
 import {
-  FUSION_EVALUATION_REPAIR_SYSTEM_PROMPT,
-  FUSION_EVALUATOR_SYSTEM_PROMPT,
-  FUSION_MERGER_SYSTEM_PROMPT,
   buildBlindEvaluationInput,
   buildCandidatePrompt,
   buildEvaluationPrompt,
   buildEvaluationRepairPrompt,
   buildMergeInput,
   buildMergePrompt,
-  fusionCandidateSystemPrompt,
   type AnonymousFusionCandidate,
 } from './prompts.js';
+import {
+  FUSION_BRAINSTORM_WORKFLOW,
+  resolveWorkflowCapability,
+  type FusionWorkflowProfile,
+} from './workflows.js';
 import {
   FUSION_DEFAULT_CAPABILITY,
   FUSION_RESULT_SCHEMA_VERSION,
@@ -65,6 +66,8 @@ export interface FusionWorkflowInput {
   config: FusionModelConfigV1;
   models: ResolvedFusionModels;
   candidateCapability?: FusionCapability | undefined;
+  /** Stage framing and capability policy. Defaults to the brainstorm workflow. */
+  profile?: FusionWorkflowProfile | undefined;
   signal?: AbortSignal | undefined;
   onProgress?: FusionProgressSink | undefined;
 }
@@ -331,13 +334,19 @@ export class FusionOrchestrator {
   }
 
   async run(input: FusionWorkflowInput): Promise<FusionRunResult> {
+    const profile = input.profile ?? FUSION_BRAINSTORM_WORKFLOW;
+    // Workflow policy, not caller input: a fixed-capability workflow rejects each
+    // other capability here, before a single child exists, rather than silently
+    // substituting its own and running a review that never read the code.
+    const candidateCapability = resolveWorkflowCapability(profile, input.candidateCapability);
     const storeOptions: CreateFusionArtifactStoreOptions = {
       cwd: input.cwd,
+      profile,
       source: input.source,
       config: input.config,
       models: input.models,
       capabilities: {
-        candidate: input.candidateCapability ?? FUSION_DEFAULT_CAPABILITY,
+        candidate: candidateCapability,
         evaluation: FUSION_DEFAULT_CAPABILITY,
         merge: FUSION_DEFAULT_CAPABILITY,
       },
@@ -356,7 +365,8 @@ export class FusionOrchestrator {
       const budget = new FusionBudget(
         input.models,
         input.canonicalInput.conversation_projection.policy.id,
-        input.candidateCapability ?? FUSION_DEFAULT_CAPABILITY,
+        candidateCapability,
+        profile,
       );
       const budgetPlan = budget.plan(input.canonicalInput);
       await store.writeBudgetPlan(budgetPlan);
@@ -376,6 +386,8 @@ export class FusionOrchestrator {
         usage,
         budget,
         calibrationWarnings,
+        profile,
+        candidateCapability,
       );
       await store.transition('candidates_complete');
       input.onProgress?.({ type: 'state', state: 'candidates_complete' });
@@ -394,6 +406,7 @@ export class FusionOrchestrator {
         blindInput,
         budget,
         calibrationWarnings,
+        profile,
       );
       await store.writeEvaluationJson(evaluation);
       await store.transition('evaluation_complete');
@@ -403,7 +416,7 @@ export class FusionOrchestrator {
       input.onProgress?.({ type: 'state', state: 'merging' });
       const mergeInput = buildMergeInput(input.canonicalInput, shuffled.candidates, evaluation);
       const mergePrompt = buildMergePrompt(mergeInput);
-      budget.assertStagePrompt('merge', FUSION_MERGER_SYSTEM_PROMPT, mergePrompt);
+      budget.assertStagePrompt('merge', profile.mergerSystemPrompt, mergePrompt);
       input.onProgress?.({ type: 'merge_started' });
       const merged = await this.runChildWithRetry(
         input,
@@ -411,7 +424,7 @@ export class FusionOrchestrator {
         usage,
         input.models.merger,
         'merge',
-        FUSION_MERGER_SYSTEM_PROMPT,
+        profile.mergerSystemPrompt,
         mergePrompt,
         input.signal ?? new AbortController().signal,
         // Stage policy, not caller input: evaluator and merger are always reasoning-only.
@@ -427,7 +440,7 @@ export class FusionOrchestrator {
         budget,
         calibrationWarnings,
         'merge',
-        FUSION_MERGER_SYSTEM_PROMPT,
+        profile.mergerSystemPrompt,
         mergePrompt,
         merged,
       );
@@ -441,6 +454,7 @@ export class FusionOrchestrator {
         details: {
           schema_version: FUSION_RESULT_SCHEMA_VERSION,
           run_id: store.runId,
+          workflow: profile.id,
           source: input.source,
           status: 'completed',
           artifact_dir: store.artifactDir,
@@ -495,13 +509,14 @@ export class FusionOrchestrator {
     usage: FusionUsage,
     budget: FusionBudget,
     calibrationWarnings: FusionCalibrationViolation[],
+    profile: FusionWorkflowProfile,
+    candidateCapability: FusionCapability,
   ): Promise<readonly CandidateResult[]> {
     const controller = new AbortController();
     const abortListener = () => controller.abort();
     input.signal?.addEventListener('abort', abortListener, { once: true });
     if (input.signal?.aborted) controller.abort();
-    const candidateCapability = input.candidateCapability ?? FUSION_DEFAULT_CAPABILITY;
-    const systemPrompt = fusionCandidateSystemPrompt(candidateCapability);
+    const systemPrompt = profile.candidateSystemPrompt(candidateCapability);
     const prompt = buildCandidatePrompt(input.canonicalInput);
     for (const slot of [1, 2, 3] as const) {
       budget.assertStagePrompt('candidate', systemPrompt, prompt, slot);
@@ -580,9 +595,10 @@ export class FusionOrchestrator {
     blindInput: Parameters<typeof buildEvaluationPrompt>[0],
     budget: FusionBudget,
     calibrationWarnings: FusionCalibrationViolation[],
+    profile: FusionWorkflowProfile,
   ): Promise<FusionEvaluationV1> {
     const firstPrompt = buildEvaluationPrompt(blindInput);
-    budget.assertStagePrompt('evaluation', FUSION_EVALUATOR_SYSTEM_PROMPT, firstPrompt);
+    budget.assertStagePrompt('evaluation', profile.evaluatorSystemPrompt, firstPrompt);
     const first = await this.runEvaluationAttempt(
       input,
       store,
@@ -592,6 +608,7 @@ export class FusionOrchestrator {
       firstPrompt,
       1,
       false,
+      profile,
     );
     if (first.evaluation !== undefined) return first.evaluation;
     const errors = boundedEvaluationErrors(first.errors);
@@ -604,7 +621,7 @@ export class FusionOrchestrator {
     });
     budget.assertStagePrompt(
       'evaluation_repair',
-      FUSION_EVALUATION_REPAIR_SYSTEM_PROMPT,
+      profile.evaluationRepairSystemPrompt,
       repairPrompt,
     );
     const second = await this.runEvaluationAttempt(
@@ -616,6 +633,7 @@ export class FusionOrchestrator {
       repairPrompt,
       2,
       true,
+      profile,
     );
     if (second.evaluation !== undefined) return second.evaluation;
     throw new FusionError(
@@ -637,11 +655,12 @@ export class FusionOrchestrator {
     prompt: string,
     attempt: 1 | 2,
     repair: boolean,
+    profile: FusionWorkflowProfile,
   ): Promise<EvaluationAttemptResult> {
     input.onProgress?.({ type: 'evaluation_started', attempt, repair });
     const systemPrompt = repair
-      ? FUSION_EVALUATION_REPAIR_SYSTEM_PROMPT
-      : FUSION_EVALUATOR_SYSTEM_PROMPT;
+      ? profile.evaluationRepairSystemPrompt
+      : profile.evaluatorSystemPrompt;
     const result = await this.runChildWithRetry(
       input,
       store,
@@ -731,7 +750,7 @@ export class FusionOrchestrator {
         input.onProgress?.({ type: 'candidate_started', slot, attempt: logicalAttempt });
       }
       const toolCallLogPath =
-        capability === 'inspect'
+        capability !== 'reason'
           ? store.childToolCallLogPath(stage, slot, logicalAttempt)
           : undefined;
       try {

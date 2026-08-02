@@ -13,6 +13,7 @@ import {
   type ReadonlyParentSessionManager,
 } from '../context/parent-snapshot.js';
 import type { Message } from '@earendil-works/pi-ai';
+import { FUSION_BRAINSTORM_TOOL_NAME as FUSION_BRAINSTORM_TOOL_NAME_VALUE } from './workflows.js';
 import {
   FUSION_BRANCH_FILTER_ID,
   FUSION_COMMAND_CONTEXT_POLICY_ID,
@@ -33,7 +34,11 @@ import {
   type FusionSource,
 } from './types.js';
 
-export const FUSION_BRAINSTORM_TOOL_NAME = 'fusion_brainstorm';
+/**
+ * Re-exported from the workflow registry, which owns every workflow's tool name.
+ * Kept here so existing importers of this module keep working unchanged.
+ */
+export { FUSION_BRAINSTORM_TOOL_NAME, FUSION_VALIDATE_TOOL_NAME } from './workflows.js';
 
 /** Retained for source compatibility; Fusion's session access is the shared adapter. */
 export type FusionReadonlySessionManager = ReadonlyParentSessionManager;
@@ -202,7 +207,7 @@ export function buildFusionCanonicalInput(
       childCreated: false,
     });
   }
-  const toolName = options.toolName ?? FUSION_BRAINSTORM_TOOL_NAME;
+  const toolName = options.toolName ?? FUSION_BRAINSTORM_TOOL_NAME_VALUE;
   const snapshotOptions: ParentSnapshotOptions = {
     toolName,
     excludeActiveToolCallLeaf: options.source === 'tool',

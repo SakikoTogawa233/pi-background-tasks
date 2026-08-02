@@ -45,6 +45,7 @@ type JsonRecord = Record<string, unknown>;
 
 interface FusionFakeInvocation {
   stage: string;
+  workflow: string;
   provider: string;
   model: string;
   args: string[];
@@ -125,6 +126,7 @@ function parseInvocation(line: string): FusionFakeInvocation {
   assert.ok(isRecord(env), 'fake invocation env must be an object');
   return {
     stage: stringField(parsed, 'stage'),
+    workflow: stringField(parsed, 'workflow'),
     provider: stringField(parsed, 'provider'),
     model: stringField(parsed, 'model'),
     args: stringArray(parsed['args']),
@@ -402,10 +404,16 @@ void describe('fusion SDK integration', { concurrency: false }, () => {
         () => fusionTool.prepareArguments?.({ prompt: 'x', extra: true }),
         /must contain prompt and optional capability only/,
       );
-      // An unknown capability must fail loudly rather than silently defaulting to reason.
+      // 'research' became a supported capability, so it must now be accepted here. The
+      // boundary this test defends is that an UNKNOWN capability still fails loudly rather
+      // than silently defaulting to reason.
+      assert.deepEqual(fusionTool.prepareArguments?.({ prompt: 'x', capability: 'research' }), {
+        prompt: 'x',
+        capability: 'research',
+      });
       assert.throws(
-        () => fusionTool.prepareArguments?.({ prompt: 'x', capability: 'research' }),
-        /allowed values: reason, inspect/,
+        () => fusionTool.prepareArguments?.({ prompt: 'x', capability: 'browse' }),
+        /allowed values: reason, inspect, research/,
       );
       const commandNames = h.session.extensionRunner
         .getRegisteredCommands()
@@ -760,4 +768,72 @@ void describe('fusion SDK integration', { concurrency: false }, () => {
       await disposeHarness(h);
     }
   });
+
+  void it('runs fusion_validate end to end with inspect-only reviewers', async (t) => {
+    if (skipWin32FusionChildPathFixture(t)) return;
+    const h = await harness();
+    try {
+      assert.ok(h.session.getActiveToolNames().includes('fusion_validate'));
+      const tool = h.session.getToolDefinition('fusion_validate');
+      assert.ok(tool, 'fusion_validate should be registered at load');
+      assert.equal(Reflect.get(tool.parameters, 'additionalProperties'), false);
+      // The closed schema has exactly one parameter and rejects capability outright.
+      assert.throws(
+        () => tool.prepareArguments?.({ prompt: 'x', capability: 'inspect' }),
+        /does not accept capability/,
+      );
+      assert.throws(
+        () => tool.prepareArguments?.({ prompt: 'x', extra: true }),
+        /must contain prompt only/,
+      );
+
+      const result = await tool.execute(
+        'call-validate',
+        { prompt: 'validate the change' },
+        undefined,
+        undefined,
+        h.session.extensionRunner.createContext(),
+      );
+      assert.equal(
+        result.content[0]?.type === 'text' ? result.content[0].text : '',
+        'SDK fused answer.',
+      );
+      assert.ok(isFusionResultDetails(result.details));
+      assert.equal(result.details.workflow, 'validate');
+      assert.ok(result.details.run_id.startsWith('v'));
+
+      const calls = await invocations(h.fakeLogPath);
+      assert.equal(calls.length, 5, 'validate must make exactly five child calls');
+      const candidates = calls.filter((call) => call.stage === 'candidate');
+      const others = calls.filter((call) => call.stage !== 'candidate');
+      assert.equal(candidates.length, 3);
+      assert.equal(others.length, 2);
+
+      for (const call of candidates) {
+        assert.equal(call.workflow, 'validate');
+        // Reviewers get the read-only allowlist by argv, never --no-tools.
+        assert.ok(!call.args.includes('--no-tools'));
+        assert.ok(call.args.includes('--no-builtin-tools'));
+        assert.equal(call.args[call.args.indexOf('--tools') + 1], 'read,grep,find,ls');
+        const excluded = call.args[call.args.indexOf('--exclude-tools') + 1] ?? '';
+        for (const forbidden of ['bash', 'edit', 'write', 'fusion_brainstorm', 'fusion_validate']) {
+          assert.ok(excluded.includes(forbidden), `${forbidden} must be denied`);
+        }
+      }
+      // Evaluator and merger adjudicate the review and must stay reasoning-only.
+      for (const call of others) {
+        assert.ok(call.args.includes('--no-tools'), `${call.stage} must run with --no-tools`);
+        assert.ok(!call.args.includes('--tools'));
+      }
+      // The child sees the projected conversation, never a raw transcript.
+      for (const call of calls) {
+        assert.ok(call.stdin.includes('conversation_projection'));
+        assert.ok(!call.stdin.includes('conversation_transcript'));
+        assert.ok(call.stdin.includes(FUSION_INPUT_SCHEMA_VERSION));
+      }
+    } finally {
+      await disposeHarness(h);
+    }
+  });
+
 });

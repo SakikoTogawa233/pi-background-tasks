@@ -7,7 +7,7 @@ import { parseJsonText } from '../../src/core/common.js';
 import { FusionOrchestrator, type FusionChildRunner } from '../../src/core/fusion/orchestrator.js';
 import { defaultFusionModelConfig } from '../../src/core/fusion/config.js';
 import {
-  FUSION_CANDIDATE_INSPECT_SYSTEM_PROMPT,
+  FUSION_CANDIDATE_RESEARCH_SYSTEM_PROMPT,
   FUSION_CANDIDATE_SYSTEM_PROMPT,
 } from '../../src/core/fusion/prompts.js';
 import {
@@ -456,7 +456,7 @@ void describe('fusion orchestrator', () => {
     }
   });
 
-  void it('keeps evaluator and merger reasoning-only when candidates inspect', async () => {
+  void it('keeps evaluator and merger reasoning-only when candidates research', async () => {
     const root = await mkdtemp(join(tmpdir(), 'pi-fusion-orchestrator-capability-'));
     try {
       const calls: RunPiChildOptions[] = [];
@@ -480,19 +480,19 @@ void describe('fusion orchestrator', () => {
         contextLedger: ledger,
         config: defaultFusionModelConfig(),
         models: models(),
-        candidateCapability: 'inspect',
+        candidateCapability: 'research',
       });
       const candidateCalls = calls.filter((call) => call.stage === 'candidate');
       assert.deepEqual(
         candidateCalls.map((call) => call.capability),
-        ['inspect', 'inspect', 'inspect'],
+        ['research', 'research', 'research'],
       );
       assert.deepEqual(
         candidateCalls.map((call) => call.systemPrompt),
         [
-          FUSION_CANDIDATE_INSPECT_SYSTEM_PROMPT,
-          FUSION_CANDIDATE_INSPECT_SYSTEM_PROMPT,
-          FUSION_CANDIDATE_INSPECT_SYSTEM_PROMPT,
+          FUSION_CANDIDATE_RESEARCH_SYSTEM_PROMPT,
+          FUSION_CANDIDATE_RESEARCH_SYSTEM_PROMPT,
+          FUSION_CANDIDATE_RESEARCH_SYSTEM_PROMPT,
         ],
       );
       assert.notEqual(candidateCalls[0]?.systemPrompt, FUSION_CANDIDATE_SYSTEM_PROMPT);

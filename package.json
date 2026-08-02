@@ -1,7 +1,7 @@
 {
   "name": "pi-background-tasks",
-  "version": "0.7.8",
-  "description": "Pi extension package for background shell tasks plus five-model fusion brainstorming: bg_run tools, /bg commands, /fusion, fusion_brainstorm, model selector UI, bounded logs, kill/timeout safety, and completion wakeups.",
+  "version": "0.9.0",
+  "description": "Pi extension package for background shell tasks plus five-model fusion brainstorming and validation: bg_run tools, bg_delegate, /bg commands, /fusion, fusion_brainstorm, fusion_validate, model selector UI, bounded logs, kill/timeout safety, and completion wakeups.",
   "type": "module",
   "license": "ISC",
   "author": "Ismail <ismailsalikhodjaev@gmail.com>",
@@ -72,12 +72,17 @@
     "@earendil-works/pi-ai": "^0.83.0",
     "@earendil-works/pi-coding-agent": "^0.83.0",
     "@earendil-works/pi-tui": "^0.83.0",
+    "@ravshansbox/pi-anthropic-sps": "github:ravshansbox/pi-anthropic-sps",
     "@types/node": "^24.0.0",
+    "@types/turndown": "5.0.6",
     "tsx": "^4.19.0",
     "typebox": "^1.3.7",
     "typescript": "^5.9.0"
   },
   "engines": {
     "node": ">=22.19.0"
+  },
+  "dependencies": {
+    "turndown": "7.2.4"
   }
 }

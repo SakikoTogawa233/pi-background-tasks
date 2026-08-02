@@ -13,8 +13,8 @@ export type FusionThinkingLevel = 'off' | 'minimal' | 'low' | 'medium' | 'high' 
 export const FUSION_MODEL_CONFIG_SCHEMA_VERSION = 'pi-background-tasks.fusion-models.v1';
 export const FUSION_INPUT_SCHEMA_VERSION = 'pi-background-tasks.fusion-input.v4';
 export const FUSION_EVALUATION_SCHEMA_VERSION = 'pi-background-tasks.fusion-evaluation.v1';
-export const FUSION_RESULT_SCHEMA_VERSION = 'pi-background-tasks.fusion-result.v3';
-export const FUSION_MANIFEST_SCHEMA_VERSION = 'pi-background-tasks.fusion-manifest.v2';
+export const FUSION_RESULT_SCHEMA_VERSION = 'pi-background-tasks.fusion-result.v4';
+export const FUSION_MANIFEST_SCHEMA_VERSION = 'pi-background-tasks.fusion-manifest.v3';
 export const FUSION_CONTEXT_LEDGER_SCHEMA_VERSION = 'pi-background-tasks.fusion-context-ledger.v2';
 export const FUSION_BUDGET_PLAN_SCHEMA_VERSION = 'pi-background-tasks.fusion-budget-plan.v3';
 export const FUSION_CALIBRATION_VIOLATION_SCHEMA_VERSION =
@@ -44,17 +44,37 @@ export type FusionCandidateId = (typeof FUSION_CANDIDATE_IDS)[number];
 export const FUSION_STAGE_VALUES = ['candidate', 'evaluation', 'merge'] as const;
 export type FusionStage = (typeof FUSION_STAGE_VALUES)[number];
 
-export const FUSION_CAPABILITY_VALUES = Object.freeze(['reason', 'inspect'] as const);
+export const FUSION_CAPABILITY_VALUES = Object.freeze(['reason', 'inspect', 'research'] as const);
 export type FusionCapability = (typeof FUSION_CAPABILITY_VALUES)[number];
 export const FUSION_DEFAULT_CAPABILITY: FusionCapability = 'reason';
 
+export const FUSION_WEB_FETCH_TOOL_NAME = 'fusion_web_fetch' as const;
 export const FUSION_INSPECT_TOOLS = Object.freeze(['read', 'grep', 'find', 'ls'] as const);
+
+/**
+ * Workflow identities sharing one orchestrator, one context projection, one
+ * evaluation schema, and one artifact store. A workflow selects stage framing and
+ * capability policy only; it never changes the canonical input schema.
+ */
+export const FUSION_WORKFLOW_IDS = Object.freeze(['brainstorm', 'validate'] as const);
+export type FusionWorkflowId = (typeof FUSION_WORKFLOW_IDS)[number];
+
+/**
+ * The single capability the validate workflow ever runs candidates with.
+ *
+ * Deliberately separate from `FUSION_DEFAULT_CAPABILITY`, which must stay the
+ * least-privileged `reason` profile for brainstorm. A validator that cannot read
+ * the code it is judging produces opinion rather than validation, so this is a
+ * fixed workflow policy and not a default a caller may override.
+ */
+export const FUSION_VALIDATE_CAPABILITY: FusionCapability = 'inspect';
 
 export const FUSION_FORBIDDEN_TOOLS = Object.freeze([
   'bash',
   'edit',
   'write',
   'fusion_brainstorm',
+  'fusion_validate',
   'bg_delegate',
   'bg_result',
   'bg_run',
@@ -397,6 +417,7 @@ export interface FusionResultBudgetDetails {
 export interface FusionResultDetails {
   schema_version: typeof FUSION_RESULT_SCHEMA_VERSION;
   run_id: string;
+  workflow: FusionWorkflowId;
   source: FusionSource;
   status: 'completed';
   artifact_dir: string;
@@ -574,6 +595,11 @@ export interface FusionToolCallLogRecord {
   result_sha256: string;
   status: FusionToolCallLogStatus;
   duration_ms: number;
+  url?: string | undefined;
+  final_url?: string | undefined;
+  http_status?: number | undefined;
+  response_bytes?: number | undefined;
+  content_sha256?: string | undefined;
 }
 
 export interface FusionToolCallLogSummary {
@@ -632,6 +658,7 @@ export interface FusionArtifactRef {
 export interface FusionArtifactManifest {
   schema_version: typeof FUSION_MANIFEST_SCHEMA_VERSION;
   run_id: string;
+  workflow: FusionWorkflowId;
   source: FusionSource;
   state: FusionState;
   created_at: string;

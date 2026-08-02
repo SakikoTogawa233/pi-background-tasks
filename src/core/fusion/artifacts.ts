@@ -24,14 +24,21 @@ import {
   type FusionState,
   type FusionTerminalState,
   type FusionUsage,
+  type FusionWorkflowId,
   type ResolvedFusionModels,
 } from './types.js';
+import { FUSION_BRAINSTORM_WORKFLOW, type FusionWorkflowProfile } from './workflows.js';
 
-const RUN_ID_PATTERN = /^f[0-9a-f]{32}$/;
+/**
+ * Run ids are prefixed by workflow so an artifact directory is self-describing.
+ * The prefix set is closed: an unknown prefix must fail rather than be accepted.
+ */
+const RUN_ID_PATTERN = /^[fv][0-9a-f]{32}$/;
 
 interface MutableFusionArtifactManifest {
   schema_version: typeof FUSION_MANIFEST_SCHEMA_VERSION;
   run_id: string;
+  workflow: FusionWorkflowId;
   source: FusionSource;
   state: FusionState;
   created_at: string;
@@ -60,6 +67,7 @@ export interface CreateFusionArtifactStoreOptions {
   cwd: string;
   sessionId?: string | undefined;
   runId?: string | undefined;
+  profile?: FusionWorkflowProfile | undefined;
   source: FusionSource;
   config: FusionModelConfigV1;
   models: ResolvedFusionModels;
@@ -94,8 +102,8 @@ export interface RecordFusionFailedAttemptInput {
   usage?: FusionUsage;
 }
 
-function makeRunId(): string {
-  return `f${randomBytes(16).toString('hex')}`;
+function makeRunId(profile: FusionWorkflowProfile): string {
+  return `${profile.runIdPrefix}${randomBytes(16).toString('hex')}`;
 }
 
 function modelsForManifest(models: ResolvedFusionModels): MutableFusionArtifactManifest['models'] {
@@ -160,6 +168,7 @@ function publicManifest(manifest: MutableFusionArtifactManifest): FusionArtifact
   const out: FusionArtifactManifest = {
     schema_version: manifest.schema_version,
     run_id: manifest.run_id,
+    workflow: manifest.workflow,
     source: manifest.source,
     state: manifest.state,
     created_at: manifest.created_at,
@@ -215,8 +224,14 @@ export class FusionArtifactStore {
   }
 
   static async create(options: CreateFusionArtifactStoreOptions): Promise<FusionArtifactStore> {
-    const runId = options.runId ?? makeRunId();
+    const profile = options.profile ?? FUSION_BRAINSTORM_WORKFLOW;
+    const runId = options.runId ?? makeRunId(profile);
     if (!RUN_ID_PATTERN.test(runId)) throw errorForArtifact(`invalid fusion run id: ${runId}`);
+    if (!runId.startsWith(profile.runIdPrefix)) {
+      throw errorForArtifact(
+        `fusion run id ${runId} does not carry the ${profile.id} workflow prefix ${profile.runIdPrefix}`,
+      );
+    }
     const sessionSegment = sanitizePathSegment(
       options.sessionId ?? `session-${String(process.pid)}`,
     );
@@ -229,6 +244,7 @@ export class FusionArtifactStore {
     const manifest: MutableFusionArtifactManifest = {
       schema_version: FUSION_MANIFEST_SCHEMA_VERSION,
       run_id: runId,
+      workflow: profile.id,
       source: options.source,
       state: 'initializing',
       created_at: timestamp,

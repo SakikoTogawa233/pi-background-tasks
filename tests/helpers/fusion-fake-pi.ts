@@ -49,9 +49,17 @@ function argValue(name) {
   const index = args.indexOf(name);
   return index >= 0 ? args[index + 1] : undefined;
 }
+function hasFusionToolPolicy() {
+  // Reasoning-only children pass --no-tools. Tool-enabled children (inspect and each
+  // later capability) replace it with an explicit allowlist. Both are legitimate
+  // fusion children, so recognising only --no-tools would make a tool-enabled child
+  // fall through to the delegate path and fail as a non-fusion invocation.
+  if (args.includes('--no-tools')) return true;
+  return args.includes('--no-builtin-tools') && typeof argValue('--tools') === 'string';
+}
 function isFusionChild() {
   const extension = argValue('--extension');
-  return argValue('--mode') === 'text' && args.includes('--no-tools') && args.includes('--no-extensions') && args.includes('--no-context-files') && typeof extension === 'string' && /fusion-child\\.(?:ts|js)$/.test(extension);
+  return argValue('--mode') === 'text' && hasFusionToolPolicy() && args.includes('--no-extensions') && args.includes('--no-context-files') && typeof extension === 'string' && /fusion-child\\.(?:ts|js)$/.test(extension);
 }
 if (!isFusionChild()) {
   if (!delegate) {
@@ -65,6 +73,12 @@ if (!isFusionChild()) {
   }
   process.exit(result.status === null ? 97 : result.status);
 }
+// The real fusion child extension creates its tool-call log before tools can run,
+// so an ABSENT file means the audit trail was never established rather than "zero tool
+// calls". The parent enforces that distinction, so the fake must establish the file too
+// or every tool-enabled child fails as a missing audit trail.
+const toolCallLogPath = process.env.PI_FUSION_TOOL_CALL_LOG_PATH;
+if (toolCallLogPath) appendFileSync(toolCallLogPath, '');
 const provider = argValue('--provider') || 'fake-provider';
 const model = argValue('--model') || 'fake-model';
 const systemPrompt = argValue('--system-prompt') || '';
@@ -80,7 +94,8 @@ let stage = 'candidate';
 if (systemPrompt.includes('invalid blind-evaluation JSON response')) stage = 'evaluation-repair';
 else if (systemPrompt.includes('strict blind evaluator')) stage = 'evaluation';
 else if (systemPrompt.includes('final synthesis process')) stage = 'merge';
-appendFileSync(logPath, JSON.stringify({ stage, provider, model, args, stdin, systemPrompt, cwd: process.cwd(), env: { PI_SESSION_ID: process.env.PI_SESSION_ID || null, PI_PROVIDER: process.env.PI_PROVIDER || null, PI_MODEL: process.env.PI_MODEL || null, PI_SKIP_VERSION_CHECK: process.env.PI_SKIP_VERSION_CHECK || null } }) + '\\n');
+const workflow = systemPrompt.includes('validation report') || systemPrompt.includes('validation reports') ? 'validate' : 'brainstorm';
+appendFileSync(logPath, JSON.stringify({ stage, workflow, provider, model, args, stdin, systemPrompt, cwd: process.cwd(), env: { PI_SESSION_ID: process.env.PI_SESSION_ID || null, PI_PROVIDER: process.env.PI_PROVIDER || null, PI_MODEL: process.env.PI_MODEL || null, PI_SKIP_VERSION_CHECK: process.env.PI_SKIP_VERSION_CHECK || null } }) + '\\n');
 if (failStage && stage === failStage) {
   console.error('fusion fake pi failing requested stage ' + stage);
   process.exit(42);

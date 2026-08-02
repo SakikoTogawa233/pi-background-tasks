@@ -1,12 +1,14 @@
 import { spawn as nodeSpawn, type SpawnOptions } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { lstat, readFile } from 'node:fs/promises';
+import { createRequire } from 'node:module';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
   FUSION_CHILD_RESULT_PREFIX,
   FUSION_CHILD_RESULT_SCHEMA_VERSION,
+  FUSION_RESEARCH_ENABLED_ENV,
   FUSION_TOOL_CALL_LOG_PATH_ENV,
   type FusionChildResultMetadata,
 } from '../../fusion-child-extension.js';
@@ -15,6 +17,7 @@ import {
   FUSION_FORBIDDEN_TOOLS,
   FUSION_INSPECT_TOOLS,
   FUSION_TOOL_CALL_LOG_SCHEMA_VERSION,
+  FUSION_WEB_FETCH_TOOL_NAME,
   FusionError,
   addFusionUsage,
   cloneFusionUsage,
@@ -211,6 +214,111 @@ export function resolveFusionChildExtensionPath(
   return candidate;
 }
 
+/**
+ * Provider whose children require the Anthropic system-prompt sanitizer.
+ *
+ * Pi's own system prompt contains documentation lines that Anthropic rejects, so a
+ * Claude child launched without the sanitizer fails at the provider rather than
+ * producing an answer. The parent session loads the sanitizer through ordinary
+ * extension discovery, but Fusion children run with `--no-extensions` for
+ * isolation and therefore inherit nothing; the sanitizer must be re-supplied
+ * explicitly per child.
+ */
+export const FUSION_SANITIZED_PROVIDER = 'anthropic';
+export const FUSION_ANTHROPIC_SANITIZER_PACKAGE = '@ravshansbox/pi-anthropic-sps';
+const FUSION_ANTHROPIC_SANITIZER_MANIFEST = `${FUSION_ANTHROPIC_SANITIZER_PACKAGE}/package.json`;
+
+export interface FusionSanitizerDependencies {
+  resolvePackageJson?: ((specifier: string) => string) | undefined;
+  readManifest?: ((path: string) => string) | undefined;
+  pathExists?: ((path: string) => boolean) | undefined;
+}
+
+function manifestExtensionEntry(manifestText: string, manifestPath: string): string {
+  let parsed: unknown;
+  try {
+    parsed = parseJsonText(manifestText);
+  } catch (error) {
+    throw new FusionError(
+      `Anthropic sanitizer manifest ${manifestPath} is not valid JSON: ${error instanceof Error ? error.message : String(error)}`,
+      { code: 'orchestration_failed', childCreated: false },
+    );
+  }
+  if (!isJsonObject(parsed)) {
+    throw new FusionError(`Anthropic sanitizer manifest ${manifestPath} must be an object`, {
+      code: 'orchestration_failed',
+      childCreated: false,
+    });
+  }
+  const pi = parsed['pi'];
+  if (!isJsonObject(pi)) {
+    throw new FusionError(
+      `Anthropic sanitizer manifest ${manifestPath} has no "pi" section declaring its extension`,
+      { code: 'orchestration_failed', childCreated: false },
+    );
+  }
+  const extensions = pi['extensions'];
+  if (!Array.isArray(extensions) || extensions.length === 0) {
+    throw new FusionError(
+      `Anthropic sanitizer manifest ${manifestPath} declares no pi.extensions entries`,
+      { code: 'orchestration_failed', childCreated: false },
+    );
+  }
+  const [entry] = extensions;
+  if (typeof entry !== 'string' || entry.trim().length === 0) {
+    throw new FusionError(
+      `Anthropic sanitizer manifest ${manifestPath} pi.extensions[0] must be a non-blank string`,
+      { code: 'orchestration_failed', childCreated: false },
+    );
+  }
+  return entry;
+}
+
+/**
+ * Resolve the sanitizer extension file shipped by the sanitizer package.
+ *
+ * The package intentionally publishes no `main`/`exports`, so the entry cannot be
+ * required directly; its manifest is resolved and the declared `pi.extensions[0]`
+ * path is joined against the package root. Every failure is loud: a Claude child
+ * launched without the sanitizer would fail at the provider with a far less
+ * actionable error, so silently omitting it is never correct.
+ */
+export function resolveAnthropicSanitizerExtensionPath(
+  dependencies: FusionSanitizerDependencies = {},
+): string {
+  const resolvePackageJson =
+    dependencies.resolvePackageJson ?? createRequire(import.meta.url).resolve;
+  const readManifest = dependencies.readManifest ?? ((path: string) => readFileSync(path, 'utf8'));
+  const pathExists = dependencies.pathExists ?? existsSync;
+  let manifestPath: string;
+  try {
+    manifestPath = resolvePackageJson(FUSION_ANTHROPIC_SANITIZER_MANIFEST);
+  } catch (error) {
+    throw new FusionError(
+      `Anthropic sanitizer package ${FUSION_ANTHROPIC_SANITIZER_PACKAGE} could not be resolved: ${error instanceof Error ? error.message : String(error)}. Claude children cannot be launched without it.`,
+      { code: 'orchestration_failed', childCreated: false },
+    );
+  }
+  let manifestText: string;
+  try {
+    manifestText = readManifest(manifestPath);
+  } catch (error) {
+    throw new FusionError(
+      `Anthropic sanitizer manifest ${manifestPath} could not be read: ${error instanceof Error ? error.message : String(error)}`,
+      { code: 'orchestration_failed', childCreated: false },
+    );
+  }
+  const entry = manifestExtensionEntry(manifestText, manifestPath);
+  const extensionPath = resolve(dirname(manifestPath), entry);
+  if (!pathExists(extensionPath)) {
+    throw new FusionError(
+      `Anthropic sanitizer extension is missing: ${extensionPath} (declared by ${manifestPath})`,
+      { code: 'orchestration_failed', childCreated: false },
+    );
+  }
+  return extensionPath;
+}
+
 export function assertFusionToolPolicyDisjoint(
   allowlist: readonly string[] = FUSION_INSPECT_TOOLS,
   denylist: readonly string[] = FUSION_FORBIDDEN_TOOLS,
@@ -225,14 +333,29 @@ export function assertFusionToolPolicyDisjoint(
   }
 }
 
+function researchToolAllowlist(): readonly string[] {
+  return [...FUSION_INSPECT_TOOLS, FUSION_WEB_FETCH_TOOL_NAME];
+}
+
 function fusionToolArgv(capability: FusionCapability): string[] {
-  assertFusionToolPolicyDisjoint();
   if (capability === 'reason') return ['--no-tools'];
   if (capability === 'inspect') {
+    assertFusionToolPolicyDisjoint(FUSION_INSPECT_TOOLS);
     return [
       '--no-builtin-tools',
       '--tools',
       FUSION_INSPECT_TOOLS.join(','),
+      '--exclude-tools',
+      FUSION_FORBIDDEN_TOOLS.join(','),
+    ];
+  }
+  if (capability === 'research') {
+    const allowlist = researchToolAllowlist();
+    assertFusionToolPolicyDisjoint(allowlist);
+    return [
+      '--no-builtin-tools',
+      '--tools',
+      allowlist.join(','),
       '--exclude-tools',
       FUSION_FORBIDDEN_TOOLS.join(','),
     ];
@@ -243,12 +366,35 @@ function fusionToolArgv(capability: FusionCapability): string[] {
   });
 }
 
+/**
+ * Extensions explicitly loaded into a child, in deterministic order.
+ *
+ * `--no-extensions` disables discovery but still honours explicit `--extension`
+ * paths, so this list is the complete set a child receives. The metadata
+ * extension is always present; the Anthropic sanitizer is appended only for
+ * Claude routes, keeping non-Anthropic child argv byte-identical to before.
+ */
+export function fusionChildExtensionPaths(
+  model: ResolvedFusionModel,
+  childExtensionPath: string,
+  resolveSanitizer: () => string = resolveAnthropicSanitizerExtensionPath,
+): readonly string[] {
+  if (model.provider !== FUSION_SANITIZED_PROVIDER) return [childExtensionPath];
+  return [childExtensionPath, resolveSanitizer()];
+}
+
 export function buildFusionPiChildArgv(
   model: ResolvedFusionModel,
   systemPrompt: string,
   childExtensionPath = resolveFusionChildExtensionPath(),
   capability: FusionCapability = FUSION_DEFAULT_CAPABILITY,
+  resolveSanitizer: () => string = resolveAnthropicSanitizerExtensionPath,
 ): string[] {
+  const extensionArgs = fusionChildExtensionPaths(
+    model,
+    childExtensionPath,
+    resolveSanitizer,
+  ).flatMap((path) => ['--extension', path]);
   return [
     '--mode',
     'text',
@@ -259,8 +405,7 @@ export function buildFusionPiChildArgv(
     '--no-prompt-templates',
     '--no-themes',
     '--no-context-files',
-    '--extension',
-    childExtensionPath,
+    ...extensionArgs,
     '--provider',
     model.provider,
     '--model',
@@ -291,6 +436,29 @@ function assertClosedRecord(
   const expected = [...keys].sort();
   if (actual.length !== expected.length || actual.some((key, index) => key !== expected[index])) {
     throw new Error(`${label} keys mismatch: expected ${expected.join(', ')}`);
+  }
+  return value;
+}
+
+function assertClosedRecordWithOptional(
+  value: unknown,
+  requiredKeys: readonly string[],
+  optionalKeys: readonly string[],
+  label: string,
+): Record<PropertyKey, unknown> {
+  if (!isJsonObject(value) || Array.isArray(value)) throw new Error(`${label} must be an object`);
+  const allowed = new Set([...requiredKeys, ...optionalKeys]);
+  const actual = Object.keys(value).sort();
+  const missing = requiredKeys.filter((key) => !Object.hasOwn(value, key));
+  const unknownKeys = actual.filter((key) => !allowed.has(key));
+  if (missing.length > 0 || unknownKeys.length > 0) {
+    throw new Error(
+      `${label} keys mismatch: required ${[...requiredKeys].sort().join(', ')}; optional ${[
+        ...optionalKeys,
+      ]
+        .sort()
+        .join(', ')}`,
+    );
   }
   return value;
 }
@@ -430,7 +598,7 @@ export function parseFusionChildStderr(stderr: Buffer): ParsedFusionChildStderr 
 }
 
 function parseToolCallLogRecord(value: unknown, label: string): FusionToolCallLogRecord {
-  const record = assertClosedRecord(
+  const record = assertClosedRecordWithOptional(
     value,
     [
       'schema_version',
@@ -443,6 +611,7 @@ function parseToolCallLogRecord(value: unknown, label: string): FusionToolCallLo
       'status',
       'duration_ms',
     ],
+    ['url', 'final_url', 'http_status', 'response_bytes', 'content_sha256'],
     label,
   );
   if (record['schema_version'] !== FUSION_TOOL_CALL_LOG_SCHEMA_VERSION) {
@@ -450,7 +619,7 @@ function parseToolCallLogRecord(value: unknown, label: string): FusionToolCallLo
   }
   const status = record['status'];
   if (status !== 'ok' && status !== 'error') throw new Error(`${label}.status is invalid`);
-  return {
+  const parsedRecord: FusionToolCallLogRecord = {
     schema_version: FUSION_TOOL_CALL_LOG_SCHEMA_VERSION,
     ordinal: requireUsageInteger(record, 'ordinal', label),
     tool_name: requireNonBlankString(record, 'tool_name', label),
@@ -461,6 +630,16 @@ function parseToolCallLogRecord(value: unknown, label: string): FusionToolCallLo
     status,
     duration_ms: requireUsageInteger(record, 'duration_ms', label),
   };
+  if (record['url'] !== undefined) parsedRecord.url = requireNonBlankString(record, 'url', label);
+  if (record['final_url'] !== undefined)
+    parsedRecord.final_url = requireNonBlankString(record, 'final_url', label);
+  if (record['http_status'] !== undefined)
+    parsedRecord.http_status = requireUsageInteger(record, 'http_status', label);
+  if (record['response_bytes'] !== undefined)
+    parsedRecord.response_bytes = requireUsageInteger(record, 'response_bytes', label);
+  if (record['content_sha256'] !== undefined)
+    parsedRecord.content_sha256 = requireSha256(record, 'content_sha256', label);
+  return parsedRecord;
 }
 
 export function parseFusionToolCallLog(bytes: Buffer): FusionToolCallTrace {
@@ -908,10 +1087,10 @@ export async function runPiChild(options: RunPiChildOptions): Promise<FusionChil
   const platform = options.platform ?? process.platform;
   const capability = options.capability ?? FUSION_DEFAULT_CAPABILITY;
   const env = fusionPiChildEnv(options.env ?? process.env);
-  if (capability === 'inspect') {
+  if (capability !== 'reason') {
     if (options.toolCallLogPath === undefined) {
       throw childError(
-        'fusion inspect child requires a tool-call log path',
+        `fusion ${capability} child requires a tool-call log path`,
         'orchestration_failed',
         options,
         false,
@@ -919,6 +1098,7 @@ export async function runPiChild(options: RunPiChildOptions): Promise<FusionChil
       );
     }
     env[FUSION_TOOL_CALL_LOG_PATH_ENV] = options.toolCallLogPath;
+    if (capability === 'research') env[FUSION_RESEARCH_ENABLED_ENV] = '1';
   }
   const stdoutLimit = options.stdoutLimitBytes ?? FUSION_CHILD_STDOUT_LIMIT_BYTES;
   const stderrLimit = options.stderrLimitBytes ?? FUSION_CHILD_STDERR_LIMIT_BYTES;
@@ -1151,15 +1331,15 @@ export async function runPiChild(options: RunPiChildOptions): Promise<FusionChil
       );
     }
     let toolCallTrace: FusionToolCallTrace | undefined;
-    if (capability === 'inspect') {
-      // The launch path above refuses to spawn an inspect child without a log path, so
+    if (capability !== 'reason') {
+      // The launch path above refuses to spawn a tool-enabled child without a log path, so
       // this is unreachable. Assert rather than defaulting: a `?? ''` here would silently
       // read an empty path if that guard were ever refactored away, turning a missing
       // audit trail into a successful run.
       const logPath = options.toolCallLogPath;
       if (logPath === undefined) {
         throw childError(
-          'fusion inspect child completed without a tool-call log path',
+          `fusion ${capability} child completed without a tool-call log path`,
           'orchestration_failed',
           options,
         );

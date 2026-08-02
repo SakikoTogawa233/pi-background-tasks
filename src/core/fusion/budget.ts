@@ -14,18 +14,15 @@ import {
   isUsableContextWindow,
 } from '../context/token-budget.js';
 import {
-  FUSION_EVALUATION_REPAIR_SYSTEM_PROMPT,
-  FUSION_EVALUATOR_SYSTEM_PROMPT,
-  FUSION_MERGER_SYSTEM_PROMPT,
   buildBlindEvaluationInput,
   buildCandidatePrompt,
   buildEvaluationPrompt,
   buildEvaluationRepairPrompt,
   buildMergeInput,
   buildMergePrompt,
-  fusionCandidateSystemPrompt,
   type AnonymousFusionCandidate,
 } from './prompts.js';
+import { FUSION_BRAINSTORM_WORKFLOW, type FusionWorkflowProfile } from './workflows.js';
 import {
   FUSION_BUDGET_PLAN_SCHEMA_VERSION,
   FUSION_CALIBRATION_VIOLATION_SCHEMA_VERSION,
@@ -680,16 +677,19 @@ export class FusionBudget {
   readonly limiting: FusionRouteCapacity;
   private readonly contextPolicyId: string;
   private readonly candidateCapability: FusionCapability;
+  private readonly profile: FusionWorkflowProfile;
 
   constructor(
     models: ResolvedFusionModels,
     contextPolicyId: string,
     candidateCapability: FusionCapability = FUSION_DEFAULT_CAPABILITY,
+    profile: FusionWorkflowProfile = FUSION_BRAINSTORM_WORKFLOW,
   ) {
     this.routes = fusionRouteCapacities(models);
     this.limiting = fusionLimitingRoute(this.routes);
     this.contextPolicyId = contextPolicyId;
     this.candidateCapability = candidateCapability;
+    this.profile = profile;
   }
 
   get allowedInputTokens(): number {
@@ -716,7 +716,7 @@ export class FusionBudget {
   }
 
   private drafts(input: FusionCanonicalInputV3): readonly StageForecastDraft[] {
-    const candidateSystemPrompt = fusionCandidateSystemPrompt(this.candidateCapability);
+    const candidateSystemPrompt = this.profile.candidateSystemPrompt(this.candidateCapability);
     const candidatePrompt = buildCandidatePrompt(input);
     const blindInput = buildBlindEvaluationInput(input, EMPTY_CANDIDATES);
     const evaluationPrompt = buildEvaluationPrompt(blindInput);
@@ -759,7 +759,7 @@ export class FusionBudget {
         budget_stage: 'evaluation',
         route: this.routeForStage('evaluation'),
         conditional: false,
-        system_prompt: FUSION_EVALUATOR_SYSTEM_PROMPT,
+        system_prompt: this.profile.evaluatorSystemPrompt,
         empty_user_prompt: evaluationPrompt,
         upstream_output_contract_bytes: 3 * FUSION_CANDIDATE_MAX_OUTPUT_BYTES,
       },
@@ -767,7 +767,7 @@ export class FusionBudget {
         budget_stage: 'merge',
         route: this.routeForStage('merge'),
         conditional: false,
-        system_prompt: FUSION_MERGER_SYSTEM_PROMPT,
+        system_prompt: this.profile.mergerSystemPrompt,
         empty_user_prompt: mergePrompt,
         upstream_output_contract_bytes:
           3 * FUSION_CANDIDATE_MAX_OUTPUT_BYTES + FUSION_EVALUATION_MAX_OUTPUT_BYTES,
@@ -776,7 +776,7 @@ export class FusionBudget {
         budget_stage: 'evaluation_repair',
         route: this.routeForStage('evaluation_repair'),
         conditional: true,
-        system_prompt: FUSION_EVALUATION_REPAIR_SYSTEM_PROMPT,
+        system_prompt: this.profile.evaluationRepairSystemPrompt,
         empty_user_prompt: repairPrompt,
         upstream_output_contract_bytes:
           3 * FUSION_CANDIDATE_MAX_OUTPUT_BYTES +

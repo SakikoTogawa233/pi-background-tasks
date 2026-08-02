@@ -7,7 +7,9 @@ import { fileURLToPath } from 'node:url';
 import {
   FUSION_GOLDEN_CASES,
   computeFusionGoldenCorpus,
+  computeFusionValidateGoldenCorpus,
   serializeFusionGoldenCorpus,
+  serializeFusionValidateGoldenCorpus,
 } from '../helpers/fusion-golden-corpus.js';
 
 /**
@@ -22,6 +24,9 @@ import {
  * The golden file is deliberately NOT auto-updated when it already exists.
  */
 const goldenPath = fileURLToPath(new URL('../fixtures/fusion-golden-bytes.json', import.meta.url));
+const validateGoldenPath = fileURLToPath(
+  new URL('../fixtures/fusion-validate-golden-bytes.json', import.meta.url),
+);
 
 function sha256(value: string): string {
   return createHash('sha256').update(value, 'utf8').digest('hex');
@@ -96,6 +101,61 @@ void describe('fusion artifact byte immutability', () => {
           `${record.case_id} canonical input must not contain omitted payload ${secret}`,
         );
       }
+    }
+  });
+
+  void it('matches the committed validate golden corpus byte-for-byte', async () => {
+    const serialized = serializeFusionValidateGoldenCorpus();
+    assert.ok(
+      existsSync(validateGoldenPath),
+      'committed Fusion validate golden fixture is required; it is never auto-generated. Restore it from git history or follow the reviewed migration procedure.',
+    );
+    const committed = await readFile(validateGoldenPath, 'utf8');
+    assert.equal(
+      sha256(serialized),
+      sha256(committed),
+      'Fusion validate artifact bytes changed. This is a breaking change to a frozen format, not a refactor detail. Diff tests/fixtures/fusion-validate-golden-bytes.json against the recomputed corpus before doing anything else.',
+    );
+    assert.equal(serialized, committed);
+  });
+
+  void it('produces byte-identical validate output across repeated construction', () => {
+    assert.equal(serializeFusionValidateGoldenCorpus(), serializeFusionValidateGoldenCorpus());
+  });
+
+  void it('leaves canonical input and ledger identical across workflows', () => {
+    // A workflow selects stage framing only. If a workflow ever changed the projected
+    // conversation or the omission ledger, two tools would disagree about what the
+    // model was shown while both still claiming the same fusion-input.v4 schema.
+    const records = computeFusionValidateGoldenCorpus();
+    assert.equal(records.length, FUSION_GOLDEN_CASES.length);
+    for (const record of records) {
+      assert.ok(
+        record.canonical_input_matches_brainstorm,
+        `${record.case_id} canonical input must not depend on the workflow`,
+      );
+      assert.ok(
+        record.context_ledger_matches_brainstorm,
+        `${record.case_id} omission ledger must not depend on the workflow`,
+      );
+    }
+  });
+
+  void it('moves budget plan bytes for every case under the validate workflow', () => {
+    // Validate framing is genuinely larger than brainstorm framing, so every stage
+    // forecast must shift. Identical plans would mean the profile never reached the
+    // budget engine and validate runs were being sized with the wrong prompts.
+    const brainstorm = computeFusionGoldenCorpus();
+    const validate = computeFusionValidateGoldenCorpus();
+    for (const [index, record] of validate.entries()) {
+      const peer = brainstorm[index];
+      assert.ok(peer !== undefined);
+      assert.equal(record.case_id, peer.case_id);
+      assert.notDeepEqual(
+        record.budget_plans,
+        peer.budget_plans,
+        `${record.case_id} validate budget plans must differ from brainstorm`,
+      );
     }
   });
 });

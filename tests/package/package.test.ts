@@ -7,7 +7,10 @@ import { dirname, join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { parseJsonText } from '../../src/core/common.js';
-import { prepareFusionArguments } from '../../src/fusion-extension.js';
+import {
+  prepareFusionArguments,
+  prepareFusionValidateArguments,
+} from '../../src/fusion-extension.js';
 
 // npm ships as npm.cmd on Windows, and spawnSync with shell:false does not
 // consult PATHEXT, so spawning the bare name yields status null with no child.
@@ -48,6 +51,8 @@ interface PackageJson {
   scripts: Record<string, string>;
   files: string[];
   peerDependencies: Record<string, string>;
+  dependencies?: Record<string, string> | undefined;
+  devDependencies?: Record<string, string> | undefined;
 }
 
 interface NpmPackFile {
@@ -120,7 +125,18 @@ function parsePackageJson(value: unknown): PackageJson {
         (entry): entry is [string, string] => typeof entry[1] === 'string',
       ),
     ),
+    dependencies: stringRecordField(value, 'dependencies'),
+    devDependencies: stringRecordField(value, 'devDependencies'),
   };
+}
+
+function stringRecordField(value: object, key: string): Record<string, string> | undefined {
+  const raw = field(value, key);
+  if (raw === undefined) return undefined;
+  assert.ok(isObject(raw), `${key} must be an object`);
+  return Object.fromEntries(
+    Object.entries(raw).filter((entry): entry is [string, string] => typeof entry[1] === 'string'),
+  );
 }
 
 async function pkg(): Promise<PackageJson> {
@@ -279,6 +295,17 @@ function isolatedNpmEnv(rootDir: string): NodeJS.ProcessEnv {
   };
 }
 
+function offlineNpmEnv(rootDir: string): NodeJS.ProcessEnv {
+  const env = isolatedNpmEnv(rootDir);
+  const home = process.env['HOME'] ?? process.env['USERPROFILE'];
+  const cache = process.env['NPM_CONFIG_CACHE'] ?? (home === undefined ? undefined : join(home, '.npm'));
+  if (cache === undefined) throw new Error('npm cache path is required for offline package install');
+  env['NPM_CONFIG_CACHE'] = cache;
+  env['npm_config_cache'] = cache;
+  env['NPM_CONFIG_REGISTRY'] = 'https://registry.npmjs.org/';
+  return env;
+}
+
 function parsePackEntries(stdout: string): NpmPackEntry[] {
   const parsed = parseJsonValue(stdout);
   assert.ok(Array.isArray(parsed), 'npm pack output must be an array');
@@ -332,6 +359,7 @@ void describe('package', () => {
       'src/core/fusion/orchestrator.ts',
       'src/core/fusion/pi-child.ts',
       'src/core/fusion/budget.ts',
+      'src/core/fusion/workflows.ts',
       'src/fusion-extension.ts',
       'src/fusion-child-extension.ts',
       'src/core/context/visible-conversation-v2.ts',
@@ -390,6 +418,7 @@ void describe('package', () => {
       '/fusion',
       '/fusion-models',
       'fusion_brainstorm',
+      'fusion_validate',
       'fusion-result',
       'fusion-models.json',
       '.pi/fusion',
@@ -421,13 +450,13 @@ void describe('package', () => {
       prompt: 'hello',
       capability: 'inspect',
     });
-    assert.throws(
-      () => prepareFusionArguments({ prompt: 'hello', capability: 'research' }),
-      /allowed values: reason, inspect/,
-    );
+    assert.deepEqual(prepareFusionArguments({ prompt: 'hello', capability: 'research' }), {
+      prompt: 'hello',
+      capability: 'research',
+    });
     assert.throws(
       () => prepareFusionArguments({ prompt: 'hello', capability: 'bogus' }),
-      /allowed values: reason, inspect/,
+      /allowed values: reason, inspect, research/,
     );
     assert.throws(
       () => prepareFusionArguments({ prompt: 'hello', extra: true }),
@@ -466,12 +495,39 @@ void describe('package', () => {
         `FUSION_FORBIDDEN_TOOLS must continue to deny ${forbidden}`,
       );
     }
+    assert.match(
+      types,
+      /FUSION_CAPABILITY_VALUES\s*=\s*Object\.freeze\(\[\s*'reason',\s*'inspect',\s*'research',?\s*\]/,
+      'fusion capability values must include research without changing order',
+    );
+    assert.match(
+      types,
+      /FUSION_WEB_FETCH_TOOL_NAME\s*=\s*'fusion_web_fetch'/,
+      'fusion_web_fetch must be the package-owned research tool name',
+    );
     // The default capability must stay the least-privileged one. A default of 'inspect'
     // would silently grant filesystem access to every existing caller.
     assert.match(
       types,
       /FUSION_DEFAULT_CAPABILITY:\s*FusionCapability\s*=\s*'reason'/,
       'fusion default capability must remain the no-tools reason profile',
+    );
+  });
+
+  void it('Fusion research web fetch registers only in research mode', async () => {
+    const childExtension = await text('src/fusion-child-extension.ts');
+    const registration = childExtension.indexOf('pi.registerTool<typeof FusionWebFetchParams');
+    assert.ok(registration > 0, 'fusion_web_fetch registration must exist');
+    const prefix = childExtension.slice(Math.max(0, registration - 500), registration);
+    assert.match(
+      prefix,
+      /if \(researchEnabled === '1'\) \{[\s\S]*$/,
+      'fusion_web_fetch registration must be guarded by the research env flag',
+    );
+    assert.doesNotMatch(
+      childExtension.slice(0, registration),
+      /pi\.registerTool<typeof FusionWebFetchParams/,
+      'fusion_web_fetch must not be registered before the research guard',
     );
   });
 
@@ -508,6 +564,93 @@ void describe('package', () => {
       /writeFile/,
       'fusion golden byte gate must not auto-generate committed fixtures',
     );
+    for (const fixture of [
+      'tests/fixtures/fusion-golden-bytes.json',
+      'tests/fixtures/fusion-validate-golden-bytes.json',
+    ]) {
+      assert.ok(existsSync(new URL(fixture, root)), `${fixture} must be committed`);
+    }
+  });
+
+  void it('validates fusion_validate arguments loudly and accepts no capability', async () => {
+    assert.deepEqual(prepareFusionValidateArguments({ prompt: '  review it  ' }), {
+      prompt: 'review it',
+    });
+    // A caller-supplied capability must fail rather than be ignored: silently
+    // dropping capability:'reason' would run a review whose children never read the
+    // code, which is precisely what this tool exists to prevent.
+    assert.throws(
+      () => prepareFusionValidateArguments({ prompt: 'p', capability: 'reason' }),
+      /does not accept capability/,
+    );
+    assert.throws(
+      () => prepareFusionValidateArguments({ prompt: 'p', capability: 'inspect' }),
+      /does not accept capability/,
+    );
+    assert.throws(
+      () => prepareFusionValidateArguments({ prompt: 'p', extra: true }),
+      /must contain prompt only/,
+    );
+    assert.throws(() => prepareFusionValidateArguments({}), /must contain prompt only/);
+    assert.throws(() => prepareFusionValidateArguments({ prompt: '   ' }), /must not be blank/);
+
+    const types = await text('src/core/fusion/types.ts');
+    // Validation must stay inspect-only. A change to `reason` here would silently
+    // downgrade every validation run to opinion while still reporting success.
+    assert.match(
+      types,
+      /FUSION_VALIDATE_CAPABILITY:\s*FusionCapability\s*=\s*'inspect'/,
+      'the validate workflow capability must remain inspect',
+    );
+  });
+
+  void it('ships the Anthropic sanitizer as a real dependency for Claude children', async () => {
+    const p = await pkg();
+    const declared =
+      p.dependencies?.['@ravshansbox/pi-anthropic-sps'] ??
+      p.devDependencies?.['@ravshansbox/pi-anthropic-sps'];
+    assert.ok(declared, 'the Anthropic sanitizer must be a declared dependency');
+    // Claude children run --no-extensions and inherit nothing from the parent, so the
+    // sanitizer must be resolved and passed explicitly rather than assumed present.
+    const child = await text('src/core/fusion/pi-child.ts');
+    assert.match(child, /FUSION_SANITIZED_PROVIDER\s*=\s*'anthropic'/);
+    assert.match(child, /@ravshansbox\/pi-anthropic-sps/);
+    assert.match(
+      child,
+      /model\.provider !== FUSION_SANITIZED_PROVIDER/,
+      'the sanitizer must be gated on provider so other routes keep identical argv',
+    );
+  });
+
+  void it('Fusion validate cannot recurse through each child tool policy', async () => {
+    const types = await text('src/core/fusion/types.ts');
+    const delegateLaunch = await text('src/core/delegate/launch.ts');
+    for (const source of [types, delegateLaunch]) {
+      assert.match(
+        source,
+        /'fusion_validate'/,
+        'fusion_validate must be denied to every tool-enabled child',
+      );
+    }
+  });
+
+  void it('workflow launch sites document their capability invariant', async () => {
+    const orchestrator = await text('src/core/fusion/orchestrator.ts');
+    const extension = await text('src/fusion-extension.ts');
+    // Distinct from the two "Stage policy" comments guarded above, so neither guard
+    // can be satisfied by the other's text.
+    const orchestratorNotes = orchestrator.match(/Workflow policy, not caller input/g) ?? [];
+    const extensionNotes = extension.match(/Workflow policy, not caller input/g) ?? [];
+    assert.equal(
+      orchestratorNotes.length,
+      1,
+      'the orchestrator must document the workflow capability invariant exactly once',
+    );
+    assert.equal(
+      extensionNotes.length,
+      1,
+      'the validate tool launch must document the workflow capability invariant exactly once',
+    );
   });
 
   void it('fusion production code avoids direct completion APIs and local adapters', async () => {
@@ -521,6 +664,7 @@ void describe('package', () => {
       'src/core/fusion/artifacts.ts',
       'src/core/fusion/orchestrator.ts',
       'src/core/fusion/budget.ts',
+      'src/core/fusion/web-fetch.ts',
       'src/ui/fusion-model-selector.ts',
       'src/fusion-child-extension.ts',
       'extensions/background-tasks.ts',
@@ -567,8 +711,8 @@ void describe('package', () => {
       assert.match(child, new RegExp(`cost\\.${key}`));
     }
     const types = await text('src/core/fusion/types.ts');
-    assert.match(types, /fusion-result\.v3/);
-    assert.match(types, /fusion-manifest\.v2/);
+    assert.match(types, /fusion-result\.v4/);
+    assert.match(types, /fusion-manifest\.v3/);
     assert.match(types, /export type FusionUsage = Usage/);
     const extension = await text('src/fusion-extension.ts');
     assert.match(extension, /usage: Usage/);
@@ -834,6 +978,7 @@ void describe('package', () => {
       'src/core/fusion/artifacts.ts',
       'src/core/fusion/orchestrator.ts',
       'src/core/fusion/budget.ts',
+      'src/core/fusion/web-fetch.ts',
       'src/testing/normalize.ts',
       'README.md',
       'TESTING.md',
@@ -883,7 +1028,7 @@ void describe('package', () => {
         ],
         {
           cwd: temp,
-          env: isolatedNpmEnv(installEnvRoot),
+          env: offlineNpmEnv(installEnvRoot),
         },
       );
       assert.equal(install.status, 0, install.stderr);

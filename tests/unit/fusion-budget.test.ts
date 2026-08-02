@@ -43,6 +43,7 @@ import { defaultFusionModelConfig } from '../../src/core/fusion/config.js';
 import { buildFusionCanonicalInput } from '../../src/core/fusion/context.js';
 import {
   FUSION_CANDIDATE_INSPECT_SYSTEM_PROMPT,
+  FUSION_CANDIDATE_RESEARCH_SYSTEM_PROMPT,
   FUSION_CANDIDATE_SYSTEM_PROMPT,
   buildCandidatePrompt,
 } from '../../src/core/fusion/prompts.js';
@@ -903,19 +904,28 @@ void describe('fusion stage budgets', () => {
     );
   });
 
-  void it('forecasts inspect candidate stages with the inspect system prompt bytes', () => {
-    const input = canonicalInput('specific repository fact requested');
+  void it('forecasts tool-enabled candidate stages with capability-specific system prompt bytes', () => {
+    const input = canonicalInput('specific repository fact and public URL requested');
     const reasonBudget = new FusionBudget(models(), FUSION_COMMAND_CONTEXT_POLICY_ID, 'reason');
     const inspectBudget = new FusionBudget(models(), FUSION_COMMAND_CONTEXT_POLICY_ID, 'inspect');
+    const researchBudget = new FusionBudget(models(), FUSION_COMMAND_CONTEXT_POLICY_ID, 'research');
     const reasonCandidate = planEntry(reasonBudget.plan(input).stages, 'candidate', 1);
     const inspectCandidate = planEntry(inspectBudget.plan(input).stages, 'candidate', 1);
-    const expectedDelta =
+    const researchCandidate = planEntry(researchBudget.plan(input).stages, 'candidate', 1);
+    const expectedInspectDelta =
       Buffer.byteLength(FUSION_CANDIDATE_INSPECT_SYSTEM_PROMPT, 'utf8') -
       Buffer.byteLength(FUSION_CANDIDATE_SYSTEM_PROMPT, 'utf8');
+    const expectedResearchDelta =
+      Buffer.byteLength(FUSION_CANDIDATE_RESEARCH_SYSTEM_PROMPT, 'utf8') -
+      Buffer.byteLength(FUSION_CANDIDATE_SYSTEM_PROMPT, 'utf8');
     assert.notEqual(FUSION_CANDIDATE_INSPECT_SYSTEM_PROMPT, FUSION_CANDIDATE_SYSTEM_PROMPT);
+    assert.notEqual(FUSION_CANDIDATE_RESEARCH_SYSTEM_PROMPT, FUSION_CANDIDATE_SYSTEM_PROMPT);
     assert.match(FUSION_CANDIDATE_INSPECT_SYSTEM_PROMPT, /read-only tools: read, grep, find, ls/);
-    assert.equal(inspectCandidate.input_utf8_bytes - reasonCandidate.input_utf8_bytes, expectedDelta);
+    assert.match(FUSION_CANDIDATE_RESEARCH_SYSTEM_PROMPT, /fusion_web_fetch/);
+    assert.equal(inspectCandidate.input_utf8_bytes - reasonCandidate.input_utf8_bytes, expectedInspectDelta);
+    assert.equal(researchCandidate.input_utf8_bytes - reasonCandidate.input_utf8_bytes, expectedResearchDelta);
     assert.notEqual(inspectCandidate.input_utf8_bytes, reasonCandidate.input_utf8_bytes);
+    assert.notEqual(researchCandidate.input_utf8_bytes, reasonCandidate.input_utf8_bytes);
   });
 
   void it('reproduces the compact incident plan as fitting with utilization warnings', () => {
