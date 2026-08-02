@@ -25,23 +25,23 @@ import {
   FUSION_TOOL_CONTEXT_POLICY_ID,
   FusionError,
   type FusionBranchFilterDescriptor,
-  type FusionCanonicalInputV3,
   type FusionCanonicalRequestV3,
   type FusionContextOmissionLedgerV2,
   type FusionContextPolicyDescriptor,
   type FusionContextProjectionMapEntry,
-  type FusionConversationProjectionV3,
   type FusionOmittedEventKind,
   type FusionOmittedEventRecord,
-  type FusionOmittedRunCounts,
-  type FusionProjectionAccounting,
-  type FusionProjectionEntry,
-  type FusionProjectionOmissionEntry,
-  type FusionProjectionTextEntry,
   type FusionRequestAuthority,
   type FusionSource,
   type FusionToolCallNameCount,
 } from '../../src/core/fusion/types.js';
+import type {
+  OmittedRunCounts as FusionOmittedRunCounts,
+  ProjectionAccounting as FusionProjectionAccounting,
+  ProjectionEntry as FusionProjectionEntry,
+  ProjectionOmissionEntry as FusionProjectionOmissionEntry,
+  ProjectionTextEntry as FusionProjectionTextEntry,
+} from '../../src/core/context/visible-conversation-v2.js';
 
 const FUSION_BRAINSTORM_TOOL_NAME = 'fusion_brainstorm';
 
@@ -64,8 +64,23 @@ export interface BuildFusionCanonicalInputOptions {
   toolName?: string;
 }
 
+interface LegacyFusionConversationProjectionV3 {
+  policy: FusionContextPolicyDescriptor;
+  branch_filter: FusionBranchFilterDescriptor;
+  entries: readonly FusionProjectionEntry[];
+  accounting: FusionProjectionAccounting;
+}
+
+interface LegacyFusionCanonicalInputV3 {
+  schema_version: typeof FUSION_INPUT_SCHEMA_VERSION;
+  cwd: string;
+  system_prompt: string;
+  request: FusionCanonicalRequestV3;
+  conversation_projection: LegacyFusionConversationProjectionV3;
+}
+
 export interface BuiltFusionCanonicalInput {
-  input: FusionCanonicalInputV3;
+  input: LegacyFusionCanonicalInputV3;
   serialized: string;
   ledger: FusionContextOmissionLedgerV2;
   transcriptLeafId: string | null;
@@ -346,7 +361,7 @@ class ProjectionBuilder {
     source: FusionSource,
     branchFilter: FusionBranchFilterDescriptor,
     messageCount: number,
-  ): { projection: FusionConversationProjectionV3; ledger: FusionContextOmissionLedgerV2 } {
+  ): { projection: LegacyFusionConversationProjectionV3; ledger: FusionContextOmissionLedgerV2 } {
     this.flush();
     const rootSha256 = ledgerRootHash(this.leaves);
     let omittedRunCount = 0;
@@ -590,7 +605,7 @@ export function projectFusionConversation(
   messages: readonly Message[],
   source: FusionSource,
   branchFilter: FusionBranchFilterDescriptor,
-): { projection: FusionConversationProjectionV3; ledger: FusionContextOmissionLedgerV2 } {
+): { projection: LegacyFusionConversationProjectionV3; ledger: FusionContextOmissionLedgerV2 } {
   const builder = new ProjectionBuilder();
   for (const [sourceOrdinal, message] of messages.entries()) {
     if (message.role === 'user') projectUserMessage(builder, message.content, sourceOrdinal);
@@ -631,7 +646,7 @@ export function buildFusionCanonicalInput(
     text: options.request,
     sha256: sha256Text(options.request),
   };
-  const input: FusionCanonicalInputV3 = {
+  const input: LegacyFusionCanonicalInputV3 = {
     schema_version: FUSION_INPUT_SCHEMA_VERSION,
     cwd: ctx.cwd,
     system_prompt: ctx.getSystemPrompt(),

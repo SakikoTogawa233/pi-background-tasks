@@ -2,15 +2,18 @@ import { SessionManager } from '@earendil-works/pi-coding-agent';
 import type { AssistantMessage, ToolResultMessage, UserMessage } from '@earendil-works/pi-ai';
 import {
   buildFusionCanonicalInput,
+  expandFusionProjectionEntry,
   type BuildFusionCanonicalInputOptions,
   type BuiltFusionCanonicalInput,
 } from '../../src/core/fusion/context.js';
 import type {
+  ProjectionEntry,
+  ProjectionOmissionEntry,
+  ProjectionTextEntry,
+} from '../../src/core/context/visible-conversation-v2.js';
+import type {
   FusionCanonicalInputV3,
   FusionContextOmissionLedgerV2,
-  FusionProjectionEntry,
-  FusionProjectionOmissionEntry,
-  FusionProjectionTextEntry,
   FusionUsage,
 } from '../../src/core/fusion/types.js';
 
@@ -80,19 +83,27 @@ export function buildFrom(
   );
 }
 
+export type ExpandedFusionTextEntry = ProjectionTextEntry;
+export type ExpandedFusionOmissionEntry = ProjectionOmissionEntry;
+export type ExpandedFusionEntry = ProjectionEntry;
+
+export function expandedEntries(input: FusionCanonicalInputV3): readonly ExpandedFusionEntry[] {
+  return input.conversation_projection.entries.map(expandFusionProjectionEntry);
+}
+
 export function textEntries(
   input: FusionCanonicalInputV3,
-): readonly FusionProjectionTextEntry[] {
-  return input.conversation_projection.entries.filter(
-    (entry): entry is FusionProjectionTextEntry => entry.kind === 'text',
+): readonly ExpandedFusionTextEntry[] {
+  return expandedEntries(input).filter(
+    (entry): entry is ExpandedFusionTextEntry => entry.kind === 'text',
   );
 }
 
 export function omissionEntries(
   input: FusionCanonicalInputV3,
-): readonly FusionProjectionOmissionEntry[] {
-  return input.conversation_projection.entries.filter(
-    (entry): entry is FusionProjectionOmissionEntry => entry.kind === 'omitted_activity',
+): readonly ExpandedFusionOmissionEntry[] {
+  return expandedEntries(input).filter(
+    (entry): entry is ExpandedFusionOmissionEntry => entry.kind === 'omitted_activity',
   );
 }
 
@@ -102,8 +113,8 @@ export function projectedText(input: FusionCanonicalInputV3): string {
     .join('\n');
 }
 
-export function entryKinds(input: FusionCanonicalInputV3): readonly FusionProjectionEntry['kind'][] {
-  return input.conversation_projection.entries.map((entry) => entry.kind);
+export function entryKinds(input: FusionCanonicalInputV3): readonly ExpandedFusionEntry['kind'][] {
+  return expandedEntries(input).map((entry) => entry.kind);
 }
 
 /** Minimal ledger for orchestrator tests that supply a hand-built canonical input. */

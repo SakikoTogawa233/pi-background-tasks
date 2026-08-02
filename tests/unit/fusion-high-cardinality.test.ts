@@ -1,14 +1,18 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { canonicalJson } from '../../src/core/attested-pi-run.js';
+import { FusionBudget } from '../../src/core/fusion/budget.js';
 import {
-  FUSION_CANDIDATE_MAX_OUTPUT_BYTES,
-  FUSION_DIAGNOSTICS_MAX_BYTES,
-  FUSION_EVALUATION_MAX_OUTPUT_BYTES,
-  fusionTokenUpperBound,
-} from '../../src/core/fusion/budget.js';
-import type { FusionProjectionOmissionEntry } from '../../src/core/fusion/types.js';
-import { buildFrom, omissionEntries, projectedText } from '../helpers/fusion-canonical.js';
+  FUSION_COMMAND_CONTEXT_POLICY_ID,
+  type ResolvedFusionModel,
+  type ResolvedFusionModels,
+} from '../../src/core/fusion/types.js';
+import {
+  buildFrom,
+  omissionEntries,
+  projectedText,
+  type ExpandedFusionOmissionEntry,
+} from '../helpers/fusion-canonical.js';
 import { buildHighCardinalitySession } from '../helpers/fusion-high-cardinality.js';
 
 /**
@@ -18,6 +22,31 @@ import { buildHighCardinalitySession } from '../helpers/fusion-high-cardinality.
  * could not reproduce it: the cost came from receipt cardinality, not payload
  * size.
  */
+function resolved(qualifiedId: string, contextWindow: number): ResolvedFusionModel {
+  const slash = qualifiedId.indexOf('/');
+  return {
+    selection: '$current',
+    source: 'current',
+    provider: qualifiedId.slice(0, slash),
+    model: qualifiedId.slice(slash + 1),
+    qualifiedId,
+    thinkingLevel: 'high',
+    contextWindow,
+  };
+}
+
+function codexModels(): ResolvedFusionModels {
+  return {
+    candidates: [
+      resolved('openai-codex/gpt-5.6-sol', 272_000),
+      resolved('openai-codex/gpt-5.6-terra', 272_000),
+      resolved('openai-codex/gpt-5.5', 272_000),
+    ],
+    evaluator: resolved('openai-codex/gpt-5.6-sol', 272_000),
+    merger: resolved('openai-codex/gpt-5.6-sol', 272_000),
+  };
+}
+
 void describe('fusion high-cardinality tool activity', () => {
   void it('keeps receipt metadata small when omitted events are numerous and short', () => {
     const session = buildHighCardinalitySession();
@@ -53,25 +82,28 @@ void describe('fusion high-cardinality tool activity', () => {
     );
   });
 
-  void it('emits only the compact model-facing receipt fields', () => {
+  void it('emits only the compact model-facing receipt tuple', () => {
     const session = buildHighCardinalitySession({ runs: 8 });
     const built = buildFrom(session.messages, { source: 'tool', request: 'r' });
+    const compactReceipts = built.input.conversation_projection.entries.filter(
+      (entry) => entry[0] === 'o',
+    );
+    assert.equal(compactReceipts.length, session.expectedRuns);
+    for (const receipt of compactReceipts) {
+      assert.equal(receipt.length, 4);
+      assert.equal(receipt[0], 'o');
+      const span = receipt[1];
+      assert.equal(span.length, 2);
+      assert.ok(span[0] <= span[1]);
+      assert.ok(Number.isSafeInteger(receipt[2]) && receipt[2] >= 0);
+      const counts = receipt[3];
+      assert.equal(counts.length, 3);
+      for (const value of counts) {
+        assert.ok(Number.isSafeInteger(value) && value >= 0, 'tuple counts must be non-negative');
+      }
+    }
     for (const receipt of omissionEntries(built.input)) {
       assert.deepEqual(Object.keys(receipt).sort(), ['at', 'bytes', 'counts', 'kind']);
-      assert.equal(receipt.kind, 'omitted_activity');
-      assert.equal(receipt.at.length, 2);
-      assert.ok(receipt.at[0] <= receipt.at[1]);
-      assert.ok(Number.isSafeInteger(receipt.bytes) && receipt.bytes >= 0);
-      for (const key of Object.keys(receipt.counts)) {
-        assert.ok(
-          ['assistant_thinking', 'tool_calls', 'tool_result_texts'].includes(key),
-          `unexpected count key ${key}`,
-        );
-      }
-      // Zero-valued kinds must be absent, never serialized as zero.
-      for (const value of Object.values(receipt.counts)) {
-        assert.ok(typeof value === 'number' && value > 0, 'zero counts must be absent');
-      }
     }
     // Retired coordinates and hashes must not reappear in the prompt bytes.
     for (const banned of [
@@ -132,39 +164,19 @@ void describe('fusion high-cardinality tool activity', () => {
     assert.doesNotMatch(built.serialized, /k{50}/);
   });
 
-  void it('keeps the whole workflow inside a real route budget at contract maxima', () => {
+  void it('keeps input-only workflow preflight inside a real route budget', () => {
     const session = buildHighCardinalitySession();
     const built = buildFrom(session.messages, { source: 'tool', request: 'summarize' });
-    const canonical = Buffer.byteLength(built.serialized, 'utf8');
-    // Mirrors the limiting route from the incident: 272,000-token window.
-    const allowed = 231_040;
-    const wrapper = 16 * 1024;
-    const stages: Array<[string, number]> = [
-      ['candidate', canonical],
-      ['evaluation', canonical + 3 * FUSION_CANDIDATE_MAX_OUTPUT_BYTES + wrapper],
-      [
-        'merge',
-        canonical +
-          3 * FUSION_CANDIDATE_MAX_OUTPUT_BYTES +
-          FUSION_EVALUATION_MAX_OUTPUT_BYTES +
-          wrapper,
-      ],
-      [
-        'evaluation_repair',
-        canonical +
-          3 * FUSION_CANDIDATE_MAX_OUTPUT_BYTES +
-          FUSION_EVALUATION_MAX_OUTPUT_BYTES +
-          FUSION_DIAGNOSTICS_MAX_BYTES +
-          wrapper,
-      ],
-    ];
-    for (const [stage, bytes] of stages) {
-      const tokens = fusionTokenUpperBound(bytes);
+    const budget = new FusionBudget(codexModels(), FUSION_COMMAND_CONTEXT_POLICY_ID);
+    const plan = budget.plan(built.input);
+    assert.equal(plan.blockers.length, 0);
+    for (const stage of plan.stages) {
       assert.ok(
-        tokens <= allowed,
-        `${stage} must fit the limiting route, saw ${String(tokens)} of ${String(allowed)}`,
+        stage.input_only_input_tokens_upper_bound <= stage.allowed_input_tokens,
+        `${stage.budget_stage} input must fit the limiting route, saw ${String(stage.input_only_input_tokens_upper_bound)} of ${String(stage.allowed_input_tokens)}`,
       );
     }
+    assert.equal(plan.warnings.some((entry) => entry.warning_kind === 'worst_case_reservation'), true);
   });
 
   void it('produces byte-identical output for repeated construction', () => {
@@ -173,7 +185,7 @@ void describe('fusion high-cardinality tool activity', () => {
     const second = buildFrom(session.messages, { source: 'tool', request: 'same' });
     assert.equal(first.serialized, second.serialized);
     assert.equal(canonicalJson(first.ledger), canonicalJson(second.ledger));
-    const receipts: readonly FusionProjectionOmissionEntry[] = omissionEntries(first.input);
+    const receipts: readonly ExpandedFusionOmissionEntry[] = omissionEntries(first.input);
     assert.equal(receipts.length, session.expectedRuns);
   });
 });

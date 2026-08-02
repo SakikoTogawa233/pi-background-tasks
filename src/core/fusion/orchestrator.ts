@@ -1,6 +1,6 @@
 import { randomBytes as nodeRandomBytes } from 'node:crypto';
 import { parseJsonText } from '../common.js';
-import { FusionBudget, assertChildOutputWithinContract } from './budget.js';
+import { FUSION_BUDGET_POLICY, FusionBudget, assertChildOutputWithinContract } from './budget.js';
 import {
   FusionArtifactStore,
   type CreateFusionArtifactStoreOptions,
@@ -30,6 +30,7 @@ import {
   FusionError,
   addFusionUsage,
   createEmptyFusionUsage,
+  type FusionCalibrationViolation,
   type FusionCanonicalInputV3,
   type FusionCandidateId,
   type FusionContextOmissionLedgerV2,
@@ -334,6 +335,7 @@ export class FusionOrchestrator {
     const store = await this.createArtifactStore(storeOptions);
     input.onProgress?.({ type: 'state', state: 'initializing' });
     const usage = createEmptyFusionUsage();
+    const calibrationWarnings: FusionCalibrationViolation[] = [];
     try {
       await store.writeCanonicalInput(input.canonicalInputSerialized);
       await store.writeContextLedger(input.contextLedger);
@@ -355,7 +357,13 @@ export class FusionOrchestrator {
       }
       await store.transition('candidates_running');
       input.onProgress?.({ type: 'state', state: 'candidates_running' });
-      const candidateResults = await this.runCandidates(input, store, usage, budget);
+      const candidateResults = await this.runCandidates(
+        input,
+        store,
+        usage,
+        budget,
+        calibrationWarnings,
+      );
       await store.transition('candidates_complete');
       input.onProgress?.({ type: 'state', state: 'candidates_complete' });
 
@@ -366,7 +374,14 @@ export class FusionOrchestrator {
 
       await store.transition('evaluating');
       input.onProgress?.({ type: 'state', state: 'evaluating' });
-      const evaluation = await this.runEvaluation(input, store, usage, blindInput, budget);
+      const evaluation = await this.runEvaluation(
+        input,
+        store,
+        usage,
+        blindInput,
+        budget,
+        calibrationWarnings,
+      );
       await store.writeEvaluationJson(evaluation);
       await store.transition('evaluation_complete');
       input.onProgress?.({ type: 'state', state: 'evaluation_complete' });
@@ -391,6 +406,16 @@ export class FusionOrchestrator {
       );
       addFusionUsage(usage, merged.usage);
       await store.recordChildAttempt({ result: merged, prompt: mergePrompt, responseKind: 'md' });
+      await this.recordCalibrationObservation(
+        input,
+        store,
+        budget,
+        calibrationWarnings,
+        'merge',
+        FUSION_MERGER_SYSTEM_PROMPT,
+        mergePrompt,
+        merged,
+      );
       assertChildOutputWithinContract('merge', merged.text);
       await store.writeMerged(merged.text);
       await store.setUsage(usage);
@@ -409,6 +434,14 @@ export class FusionOrchestrator {
             .snapshot()
             .attempts.filter((attempt) => attempt.stage === 'evaluation').length,
           usage,
+          budget: {
+            policy_id: FUSION_BUDGET_POLICY.id,
+            calibration_version: budgetPlan.policy.calibration_version,
+            route_table: budget.routes,
+            rate_sources: budget.resultRateSources,
+            unknown_provider_warnings: budget.unknownProviderWarnings,
+            calibration_warnings: calibrationWarnings,
+          },
         },
       };
     } catch (error) {
@@ -446,6 +479,7 @@ export class FusionOrchestrator {
     store: FusionArtifactStore,
     usage: FusionUsage,
     budget: FusionBudget,
+    calibrationWarnings: FusionCalibrationViolation[],
   ): Promise<readonly CandidateResult[]> {
     const controller = new AbortController();
     const abortListener = () => controller.abort();
@@ -480,6 +514,17 @@ export class FusionOrchestrator {
           'md',
         ).then(async (result) => {
           await store.recordChildAttempt({ result, prompt, responseKind: 'md' });
+          await this.recordCalibrationObservation(
+            input,
+            store,
+            budget,
+            calibrationWarnings,
+            'candidate',
+            FUSION_CANDIDATE_SYSTEM_PROMPT,
+            prompt,
+            result,
+            slot,
+          );
           // The response is durable before the contract check, so an oversized
           // answer is preserved as evidence rather than lost.
           assertChildOutputWithinContract('candidate', result.text);
@@ -516,10 +561,20 @@ export class FusionOrchestrator {
     usage: FusionUsage,
     blindInput: Parameters<typeof buildEvaluationPrompt>[0],
     budget: FusionBudget,
+    calibrationWarnings: FusionCalibrationViolation[],
   ): Promise<FusionEvaluationV1> {
     const firstPrompt = buildEvaluationPrompt(blindInput);
     budget.assertStagePrompt('evaluation', FUSION_EVALUATOR_SYSTEM_PROMPT, firstPrompt);
-    const first = await this.runEvaluationAttempt(input, store, usage, firstPrompt, 1, false);
+    const first = await this.runEvaluationAttempt(
+      input,
+      store,
+      usage,
+      budget,
+      calibrationWarnings,
+      firstPrompt,
+      1,
+      false,
+    );
     if (first.evaluation !== undefined) return first.evaluation;
     const errors = boundedEvaluationErrors(first.errors);
     input.onProgress?.({ type: 'evaluation_retry', errors });
@@ -534,7 +589,16 @@ export class FusionOrchestrator {
       FUSION_EVALUATION_REPAIR_SYSTEM_PROMPT,
       repairPrompt,
     );
-    const second = await this.runEvaluationAttempt(input, store, usage, repairPrompt, 2, true);
+    const second = await this.runEvaluationAttempt(
+      input,
+      store,
+      usage,
+      budget,
+      calibrationWarnings,
+      repairPrompt,
+      2,
+      true,
+    );
     if (second.evaluation !== undefined) return second.evaluation;
     throw new FusionError(
       `evaluation schema repair failed: ${formatEvaluationErrors(second.errors)}`,
@@ -550,6 +614,8 @@ export class FusionOrchestrator {
     input: FusionWorkflowInput,
     store: FusionArtifactStore,
     usage: FusionUsage,
+    budget: FusionBudget,
+    calibrationWarnings: FusionCalibrationViolation[],
     prompt: string,
     attempt: 1 | 2,
     repair: boolean,
@@ -573,11 +639,56 @@ export class FusionOrchestrator {
     );
     addFusionUsage(usage, result.usage);
     await store.recordChildAttempt({ result, prompt, responseKind: 'txt' });
+    await this.recordCalibrationObservation(
+      input,
+      store,
+      budget,
+      calibrationWarnings,
+      'evaluation',
+      systemPrompt,
+      prompt,
+      result,
+    );
     await store.setUsage(usage);
     // Bound the evaluator output before it can be embedded in a repair prompt.
     assertChildOutputWithinContract('evaluation', result.text);
     const parsed = parseEvaluationAttempt(result.text);
     return { result, evaluation: parsed.evaluation, errors: parsed.errors };
+  }
+
+  private async recordCalibrationObservation(
+    input: FusionWorkflowInput,
+    store: FusionArtifactStore,
+    budget: FusionBudget,
+    calibrationWarnings: FusionCalibrationViolation[],
+    stage: FusionStage,
+    systemPrompt: string,
+    userPrompt: string,
+    result: FusionChildRunResult,
+    slot?: CandidateSlot,
+  ): Promise<void> {
+    const violation = budget.calibrationViolationForCompletedChild(
+      stage,
+      systemPrompt,
+      userPrompt,
+      result,
+      slot,
+    );
+    if (violation === undefined) return;
+    calibrationWarnings.push(violation);
+    let artifact = 'calibration-violation artifact was not written';
+    try {
+      const ref = await store.recordCalibrationViolation({
+        stage,
+        attempt: result.attempt,
+        violation,
+        ...(slot === undefined ? {} : { slot }),
+      });
+      artifact = ref.path;
+    } catch (error) {
+      artifact = `calibration-violation artifact write failed: ${errorText(error)}`;
+    }
+    input.onProgress?.({ type: 'calibration_warning', warning: violation, artifact });
   }
 
   private async runChildWithRetry(

@@ -3,6 +3,7 @@ import { open } from 'node:fs/promises';
 import { extname, isAbsolute, join, win32 } from 'node:path';
 import { DEFAULT_MAX_BYTES } from '@earendil-works/pi-coding-agent';
 import type { BackgroundTaskChildProcess } from './registry.js';
+import type { DelegateBudgetRouteSource } from './delegate/types.js';
 
 export const TASK_STATUS_VALUES = ['running', 'completed', 'failed', 'killed'] as const;
 export const TERMINAL_TASK_STATUS_VALUES = ['completed', 'failed', 'killed'] as const;
@@ -83,6 +84,7 @@ export interface DelegateTaskFacts {
   seedSha256: string;
   childSessionId: string;
   route: { provider: string; model: string; qualifiedId: string };
+  budget: DelegateBudgetRouteSource;
   autoDeliver: 'never' | 'when_small' | 'always';
   /** Set once the run reaches a terminal state and its result has been evaluated. */
   outcome?: DelegateTaskOutcome | undefined;

@@ -1,9 +1,18 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
+import { join } from 'node:path';
 import { SessionManager } from '@earendil-works/pi-coding-agent';
+import { canonicalJson } from '../../src/core/attested-pi-run.js';
+import {
+  UnsupportedConversationBlockError,
+  projectVisibleConversationV2,
+} from '../../src/core/context/visible-conversation-v2.js';
 import {
   buildFusionCanonicalInput,
+  compactFusionProjectionEntry,
+  expandFusionProjectionEntry,
   normalizeFusionCommandRequest,
 } from '../../src/core/fusion/context.js';
 import {
@@ -29,6 +38,7 @@ import {
   assistantMessage,
   buildFrom,
   entryKinds,
+  expandedEntries,
   omissionEntries,
   projectedText,
   testUsage,
@@ -36,6 +46,7 @@ import {
   toolResultMessage,
   userMessage,
 } from '../helpers/fusion-canonical.js';
+import { buildHighCardinalitySession } from '../helpers/fusion-high-cardinality.js';
 
 function evaluation(): FusionEvaluationV1 {
   return {
@@ -88,7 +99,7 @@ void describe('fusion context projection and prompts', () => {
     );
   });
 
-  void it('builds deterministic v3 canonical command input with an authoritative request', () => {
+  void it('builds deterministic v4 canonical command input with an authoritative request', () => {
     const built = buildFrom([userMessage('hello')], { source: 'command', request: 'answer' });
     assert.equal(built.input.schema_version, FUSION_INPUT_SCHEMA_VERSION);
     assert.equal(built.input.cwd, '/tmp/project');
@@ -199,6 +210,107 @@ void describe('fusion context projection and prompts', () => {
     assert.deepEqual(first.ledger, second.ledger);
   });
 
+  void it('round-trips compact tuples without losing roles, ordinals, or exact text', () => {
+    const messages = [
+      userMessage([
+        { type: 'text', text: 'user block zero' },
+        { type: 'text', text: 'user block one' },
+      ]),
+      assistantMessage([
+        { type: 'thinking', thinking: 'hidden' },
+        { type: 'text', text: 'assistant visible' },
+        { type: 'toolCall', id: 'c1', name: 'read', arguments: { path: 'a' } },
+      ]),
+      toolResultMessage('c1', 'read', [{ type: 'text', text: 'omitted result' }]),
+    ];
+    const projected = projectVisibleConversationV2(messages);
+    const compact = projected.entries.map(compactFusionProjectionEntry);
+    const expanded = compact.map(expandFusionProjectionEntry);
+    assert.deepEqual(expanded, projected.entries);
+
+    const beforeText = projected.entries.filter((entry) => entry.kind === 'text');
+    const afterText = expanded.filter((entry) => entry.kind === 'text');
+    assert.equal(afterText.length, beforeText.length);
+    for (const [index, before] of beforeText.entries()) {
+      const after = afterText[index];
+      assert.ok(after);
+      assert.equal(after.role, before.role);
+      assert.equal(after.source_ordinal, before.source_ordinal);
+      assert.equal(after.block_ordinal, before.block_ordinal);
+      assert.equal(after.text, before.text);
+    }
+  });
+
+  void it('keeps the ledger root unchanged by compact tuple encoding', () => {
+    const messages = [
+      userMessage('visible'),
+      assistantMessage([
+        { type: 'thinking', thinking: 'secret' },
+        { type: 'toolCall', id: 'c1', name: 'read', arguments: { path: 'x' } },
+      ]),
+      toolResultMessage('c1', 'read', [{ type: 'text', text: 'payload' }]),
+    ];
+    const before = projectVisibleConversationV2(messages);
+    const after = buildFrom(messages, { source: 'tool', request: 'r' });
+    assert.equal(
+      after.input.conversation_projection.accounting.ledger_root_sha256,
+      before.ledger.root_sha256,
+    );
+    assert.equal(after.ledger.root_sha256, before.ledger.root_sha256);
+  });
+
+  void it('is byte-identical across separate processes', () => {
+    const script = join(process.cwd(), 'tests', 'helpers', 'fusion-canonical-subprocess.ts');
+    const first = spawnSync(process.execPath, ['--import', 'tsx', script], {
+      cwd: process.cwd(),
+      encoding: 'utf8',
+      env: { ...process.env, NODE_NO_WARNINGS: '1' },
+    });
+    const second = spawnSync(process.execPath, ['--import', 'tsx', script], {
+      cwd: process.cwd(),
+      encoding: 'utf8',
+      env: { ...process.env, NODE_NO_WARNINGS: '1' },
+    });
+    assert.equal(first.status, 0, first.stderr);
+    assert.equal(second.status, 0, second.stderr);
+    assert.equal(first.stdout, second.stdout);
+  });
+
+  void it('materially shrinks a many-entry canonical input versus the verbose object encoding', () => {
+    const session = buildHighCardinalitySession({ runs: 180, callsPerRun: 1, visibleTextBytes: 24 });
+    const built = buildFrom(session.messages, { source: 'tool', request: 'summarize' });
+    const verboseEntries = expandedEntries(built.input);
+    const verboseReceiptBytes = verboseEntries.reduce(
+      (total, entry) =>
+        entry.kind === 'omitted_activity'
+          ? total + Buffer.byteLength(canonicalJson(entry), 'utf8')
+          : total,
+      0,
+    );
+    const verboseInput = {
+      ...built.input,
+      conversation_projection: {
+        ...built.input.conversation_projection,
+        entries: verboseEntries,
+        accounting: {
+          ...built.input.conversation_projection.accounting,
+          omission_receipt_utf8_bytes: verboseReceiptBytes,
+        },
+      },
+    };
+    const verboseSerialized = canonicalJson(verboseInput);
+    const compactBytes = Buffer.byteLength(built.serialized, 'utf8');
+    const verboseBytes = Buffer.byteLength(verboseSerialized, 'utf8');
+    assert.ok(
+      compactBytes <= Math.floor(verboseBytes * 0.75),
+      `compact input ${String(compactBytes)} B must be at least 25% smaller than verbose ${String(verboseBytes)} B`,
+    );
+    assert.ok(
+      verboseBytes - compactBytes > 20_000,
+      `expected a material byte reduction, saw ${String(verboseBytes - compactBytes)} B`,
+    );
+  });
+
   void it('changes only the affected hashes when an omitted payload byte changes', () => {
     const base = buildFrom(
       [toolResultMessage('c1', 'read', [{ type: 'text', text: 'payload-a' }])],
@@ -260,10 +372,11 @@ void describe('fusion context projection and prompts', () => {
       counts: { tool_calls: 2, tool_result_texts: 2 },
       kind: 'omitted_activity',
     });
+    assert.deepEqual(built.input.conversation_projection.entries[1], ['o', [1, 3], 8, [0, 2, 2]]);
     assert.equal(
       built.input.conversation_projection.accounting.omission_receipt_utf8_bytes,
       Buffer.byteLength(
-        '{"at":[1,3],"bytes":8,"counts":{"tool_calls":2,"tool_result_texts":2},"kind":"omitted_activity"}',
+        '["o",[1,3],8,[0,2,2]]',
         'utf8',
       ),
     );
@@ -407,11 +520,12 @@ void describe('fusion context projection and prompts', () => {
   });
 
   void it('tells children how to read the projection and its explicit omissions', () => {
-    assert.match(FUSION_CANONICAL_INPUT_GUIDE, /omitted_activity/);
+    assert.match(FUSION_CANONICAL_INPUT_GUIDE, /\["t", role, sourceOrdinal, blockOrdinal, text\]/);
+    assert.match(FUSION_CANONICAL_INPUT_GUIDE, /\["o", \[firstSourceOrdinal, lastSourceOrdinal\], bytes, \[assistantThinking, toolCalls, toolResultTexts\]\]/);
     assert.match(FUSION_CANONICAL_INPUT_GUIDE, /explicit_text/);
     assert.match(FUSION_CANONICAL_INPUT_GUIDE, /do not guess their contents/);
     assert.match(FUSION_CANONICAL_INPUT_GUIDE, /untrusted data/);
-    assert.match(FUSION_CANDIDATE_SYSTEM_PROMPT, /omitted_activity/);
+    assert.match(FUSION_CANDIDATE_SYSTEM_PROMPT, /Omission tuple/);
   });
 
   void it('gives the evaluation repair child the full closed schema and blind constraints', () => {
@@ -422,6 +536,30 @@ void describe('fusion context projection and prompts', () => {
     assert.match(FUSION_EVALUATION_REPAIR_SYSTEM_PROMPT, /candidate_assessments/);
     assert.match(FUSION_EVALUATION_REPAIR_SYSTEM_PROMPT, /Objects must be closed/);
     assert.match(FUSION_EVALUATION_REPAIR_SYSTEM_PROMPT, /Preserve blindness/);
+  });
+
+  void it('still throws the typed unsupported-block error for unknown block types', () => {
+    assert.throws(
+      () =>
+        buildFrom(
+          [
+            {
+              role: 'assistant',
+              content: [{ type: 'unknown_block_kind' }],
+              timestamp: 1,
+              api: 'openai-codex-responses',
+              provider: 'openai-codex',
+              model: 'gpt-5.5',
+              usage: testUsage(),
+              stopReason: 'stop',
+            } as never,
+          ],
+          { source: 'tool', request: 'r' },
+        ),
+      (error: unknown) =>
+        error instanceof UnsupportedConversationBlockError &&
+        /unsupported conversation block/.test(error.message),
+    );
   });
 
   void it('gives every retained block exactly one disposition', () => {

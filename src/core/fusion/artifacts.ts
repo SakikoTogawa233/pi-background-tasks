@@ -13,6 +13,7 @@ import {
   type FusionArtifactRef,
   type FusionAttemptArtifactRecord,
   type FusionBudgetPlanV1,
+  type FusionCalibrationViolation,
   type FusionCandidateId,
   type FusionContextOmissionLedgerV2,
   type FusionChildRunResult,
@@ -176,6 +177,10 @@ function attemptPrefix(stage: FusionStage, slot: 1 | 2 | 3 | undefined, attempt:
 
 function responseName(prefix: string, kind: 'md' | 'txt'): string {
   return `${prefix}.response.${kind}`;
+}
+
+function calibrationViolationName(prefix: string): string {
+  return `${prefix}.calibration-violation.json`;
 }
 
 export class FusionArtifactStore {
@@ -350,6 +355,16 @@ export class FusionArtifactStore {
       if (input.result.slot !== undefined) record.slot = input.result.slot;
       manifest.attempts.push(record);
     });
+  }
+
+  async recordCalibrationViolation(input: {
+    stage: FusionStage;
+    slot?: 1 | 2 | 3;
+    attempt: number;
+    violation: FusionCalibrationViolation;
+  }): Promise<FusionArtifactRef> {
+    const prefix = attemptPrefix(input.stage, input.slot, input.attempt);
+    return this.writeArtifact(calibrationViolationName(prefix), `${canonicalJson(input.violation)}\n`);
   }
 
   async recordFailedAttempt(input: RecordFusionFailedAttemptInput): Promise<void> {

@@ -394,8 +394,9 @@ void describe('package', () => {
       '.pi/fusion',
       'context-omission-ledger.json',
       'budget-plan.json',
-      'fusion-input.v3',
-      'prompt_budget_exceeded',
+      'fusion-input.v4',
+      'prompt_budget_exceeded_forecast',
+      'prompt_budget_exceeded_measured',
     ]) {
       assert.match(
         readme,
@@ -467,7 +468,7 @@ void describe('package', () => {
       assert.match(child, new RegExp(`cost\\.${key}`));
     }
     const types = await text('src/core/fusion/types.ts');
-    assert.match(types, /fusion-result\.v2/);
+    assert.match(types, /fusion-result\.v3/);
     assert.match(types, /fusion-manifest\.v2/);
     assert.match(types, /export type FusionUsage = Usage/);
     const extension = await text('src/fusion-extension.ts');
@@ -487,6 +488,7 @@ void describe('package', () => {
     const transform = await text('src/core/context/visible-conversation-v2.ts');
     const parentSnapshot = await text('src/core/context/parent-snapshot.ts');
     const tokenBudget = await text('src/core/context/token-budget.ts');
+    const delegateChild = await text('src/delegate-child-extension.ts');
 
     // No clipping of retained conversational text. Scan code only: comments
     // legitimately discuss truncation in order to forbid it.
@@ -513,7 +515,8 @@ void describe('package', () => {
     assert.match(context, /tool_payload_preview_bytes: 0/);
 
     // Budget rejection must be a loud typed error, never a clamp or a downgrade.
-    assert.match(budget, /prompt_budget_exceeded/);
+    assert.match(budget, /prompt_budget_exceeded_forecast/);
+    assert.match(budget, /prompt_budget_exceeded_measured/);
     assert.match(budget, /model_capacity_unknown/);
     assert.doesNotMatch(budget, /Math\.min\([^)]*allowed/i, 'budget must not clamp to fit');
 
@@ -528,25 +531,34 @@ void describe('package', () => {
     assert.match(budget, /upstream_output_contract_bytes/);
     assert.doesNotMatch(budget, /FUSION_DOWNSTREAM_RESERVE_TOKENS/);
 
-    // Route selection must not use a max-style allowance.
-    assert.doesNotMatch(budget, /Math\.max\([^)]*allowed_input_tokens/);
+    // Route selection must rank byte capacity, not token capacity.
+    assert.doesNotMatch(budget, /Math\.max\([^)]*route\.allowed_input_tokens/);
     assert.match(budget, /fusionLimitingRoute/);
+    assert.match(budget, /byte_capacity_utf8_bytes/);
 
-    // The conservative divisor must not drift to the 4-bytes-per-token
-    // assumption. It now lives in the shared module and Fusion re-exports it, so
-    // both the definition and the binding are pinned; neither can drift alone.
-    assert.match(tokenBudget, /BYTES_PER_TOKEN_DIVISOR = 2\b/);
-    assert.match(budget, /FUSION_BYTES_PER_TOKEN_DIVISOR = BYTES_PER_TOKEN_DIVISOR/);
-    assert.doesNotMatch(
-      tokenBudget,
-      /BYTES_PER_TOKEN_DIVISOR = (?!2\b)/,
-      'the shared bytes-per-token divisor must remain exactly 2',
-    );
-    // The shared arithmetic must stay a ceiling and must never clamp an
-    // unusable route into a usable-looking one.
-    assert.match(tokenBudget, /Math\.ceil\(utf8Bytes \/ BYTES_PER_TOKEN_DIVISOR\)/);
-    assert.doesNotMatch(tokenBudget, /Math\.max\(/, 'shared budget arithmetic must not clamp');
-    assert.doesNotMatch(tokenBudget, /Math\.min\(/, 'shared budget arithmetic must not clamp');
+    // The shared estimator must stay affine, per-family, additive, and visibly
+    // conservative for unbacked routes.
+    assert.doesNotMatch(tokenBudget, /BYTES_PER_TOKEN_DIVISOR/);
+    assert.match(tokenBudget, /TOKEN_BUDGET_CALIBRATION_VERSION/);
+    assert.match(tokenBudget, /rate_bytes_per_token_x100: 173/);
+    assert.match(tokenBudget, /rate_bytes_per_token_x100: 289/);
+    assert.match(tokenBudget, /rate_bytes_per_token_x100: 100/);
+    assert.match(tokenBudget, /backed: false/);
+    assert.match(tokenBudget, /estimateInputTokens/);
+    assert.match(tokenBudget, /unknown_output_contract/);
+    assert.match(tokenBudget, /multibyteBytes/);
+    assert.match(tokenBudget, /variableTokenTotal \+ rateSource\.affine_f_tokens/);
+    assert.match(tokenBudget, /TOKEN_BUDGET_PROVABLE_RATE_X100 = 100/);
+    assert.match(tokenBudget, /TOKEN_BUDGET_CONSERVATIVE_RATE_X100 = 200/);
+    assert.match(tokenBudget, /TOKEN_BUDGET_DENSE_ASCII_WHITESPACE_THRESHOLD_X10000/);
+    assert.match(tokenBudget, /TOKEN_BUDGET_DELEGATE_CONSERVATIVE_RATE_X100 = TOKEN_BUDGET_PROVABLE_RATE_X100/);
+    assert.doesNotMatch(tokenBudget, /sessions:/);
+    assert.doesNotMatch(tokenBudget, /days:/);
+    assert.match(tokenBudget, /Math\.min\(configured, TOKEN_BUDGET_CONSERVATIVE_RATE_X100\)/);
+    assert.doesNotMatch(tokenBudget, /Math\.ceil\(utf8Bytes \//);
+    assert.match(delegateChild, /retainedInputMeasurement/);
+    assert.match(delegateChild, /retainedInputMultibyteBytes/);
+    assert.match(delegateChild, /retainedInputDenseBytes/);
 
     // The shared transform must remain knob-free: a consumer must not be able to
     // ask it for a weaker disclosure policy.

@@ -1,14 +1,24 @@
 import type { Usage } from '@earendil-works/pi-ai';
+import type {
+  EstimateInputTokensResult,
+  TokenBudgetByteClassBreakdown,
+  TokenBudgetDominantByteClass,
+  TokenBudgetFamily,
+  TokenBudgetFamilyCalibration,
+  TokenBudgetRateSource,
+} from '../context/token-budget.js';
 
 export type FusionThinkingLevel = 'off' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max';
 
 export const FUSION_MODEL_CONFIG_SCHEMA_VERSION = 'pi-background-tasks.fusion-models.v1';
-export const FUSION_INPUT_SCHEMA_VERSION = 'pi-background-tasks.fusion-input.v3';
+export const FUSION_INPUT_SCHEMA_VERSION = 'pi-background-tasks.fusion-input.v4';
 export const FUSION_EVALUATION_SCHEMA_VERSION = 'pi-background-tasks.fusion-evaluation.v1';
-export const FUSION_RESULT_SCHEMA_VERSION = 'pi-background-tasks.fusion-result.v2';
+export const FUSION_RESULT_SCHEMA_VERSION = 'pi-background-tasks.fusion-result.v3';
 export const FUSION_MANIFEST_SCHEMA_VERSION = 'pi-background-tasks.fusion-manifest.v2';
 export const FUSION_CONTEXT_LEDGER_SCHEMA_VERSION = 'pi-background-tasks.fusion-context-ledger.v2';
-export const FUSION_BUDGET_PLAN_SCHEMA_VERSION = 'pi-background-tasks.fusion-budget-plan.v2';
+export const FUSION_BUDGET_PLAN_SCHEMA_VERSION = 'pi-background-tasks.fusion-budget-plan.v3';
+export const FUSION_CALIBRATION_VIOLATION_SCHEMA_VERSION =
+  'pi-background-tasks.fusion-calibration-violation.v1';
 
 /**
  * Conversation-projection transform shared by every Fusion entry point.
@@ -170,31 +180,26 @@ export interface FusionContextOmissionLedgerV2 {
   root_sha256: string;
 }
 
-export interface FusionProjectionTextEntry {
-  kind: 'text';
-  source_ordinal: number;
-  block_ordinal: number;
-  role: 'user' | 'assistant';
-  text: string;
-}
+export type FusionProjectionTextEntry = [
+  tag: 't',
+  role: 'u' | 'a',
+  sourceOrdinal: number,
+  blockOrdinal: number,
+  text: string,
+];
 
-/**
- * Per-kind counts for one omitted run. Zero-valued kinds are omitted from the
- * serialized receipt by a fixed policy rule so receipt size does not scale with
- * the number of tracked kinds; absent means exactly zero.
- */
-export interface FusionOmittedRunCounts {
-  assistant_thinking?: number;
-  tool_calls?: number;
-  tool_result_texts?: number;
-}
+export type FusionProjectionOmissionCounts = [
+  assistantThinking: number,
+  toolCalls: number,
+  toolResults: number,
+];
 
-export interface FusionProjectionOmissionEntry {
-  kind: 'omitted_activity';
-  at: readonly [number, number];
-  bytes: number;
-  counts: FusionOmittedRunCounts;
-}
+export type FusionProjectionOmissionEntry = [
+  tag: 'o',
+  sourceOrdinalSpan: [first: number, last: number],
+  bytes: number,
+  counts: FusionProjectionOmissionCounts,
+];
 
 export type FusionProjectionEntry = FusionProjectionTextEntry | FusionProjectionOmissionEntry;
 
@@ -247,20 +252,24 @@ export interface FusionProjectionAccounting {
   omission_receipt_utf8_bytes: number;
 }
 
-export interface FusionConversationProjectionV3 {
+export interface FusionConversationProjectionV4 {
   policy: FusionContextPolicyDescriptor;
   branch_filter: FusionBranchFilterDescriptor;
   entries: readonly FusionProjectionEntry[];
   accounting: FusionProjectionAccounting;
 }
 
-export interface FusionCanonicalInputV3 {
+export type FusionConversationProjectionV3 = FusionConversationProjectionV4;
+
+export interface FusionCanonicalInputV4 {
   schema_version: typeof FUSION_INPUT_SCHEMA_VERSION;
   cwd: string;
   system_prompt: string;
   request: FusionCanonicalRequestV3;
-  conversation_projection: FusionConversationProjectionV3;
+  conversation_projection: FusionConversationProjectionV4;
 }
+
+export type FusionCanonicalInputV3 = FusionCanonicalInputV4;
 
 export interface CandidateAssessment {
   candidate_id: FusionCandidateId;
@@ -355,6 +364,15 @@ export function addFusionUsage(target: FusionUsage, delta: FusionUsage): void {
   target.cost.total += delta.cost.total;
 }
 
+export interface FusionResultBudgetDetails {
+  policy_id: string;
+  calibration_version: string;
+  route_table: readonly FusionRouteCapacity[];
+  rate_sources: readonly TokenBudgetRateSource[];
+  unknown_provider_warnings: readonly string[];
+  calibration_warnings: readonly FusionCalibrationViolation[];
+}
+
 export interface FusionResultDetails {
   schema_version: typeof FUSION_RESULT_SCHEMA_VERSION;
   run_id: string;
@@ -369,6 +387,7 @@ export interface FusionResultDetails {
   };
   evaluator_attempts: number;
   usage: FusionUsage;
+  budget: FusionResultBudgetDetails;
 }
 
 export type FusionProgressEvent =
@@ -378,6 +397,7 @@ export type FusionProgressEvent =
   | { type: 'evaluation_started'; attempt: 1 | 2; repair: boolean }
   | { type: 'evaluation_retry'; errors: readonly string[] }
   | { type: 'budget_warning'; warnings: readonly FusionBudgetWarning[]; error: string }
+  | { type: 'calibration_warning'; warning: FusionCalibrationViolation; artifact: string }
   | { type: 'merge_started' }
   | { type: 'completed'; runId: string; artifactDir: string }
   | { type: 'failed'; runId: string; artifactDir: string; error: string }
@@ -389,7 +409,8 @@ export type FusionErrorCode =
   | 'model_unavailable'
   | 'context_capture_failed'
   | 'context_policy_unsupported_block'
-  | 'prompt_budget_exceeded'
+  | 'prompt_budget_exceeded_forecast'
+  | 'prompt_budget_exceeded_measured'
   | 'model_capacity_unknown'
   | 'child_spawn_failed'
   | 'child_stdin_failed'
@@ -403,11 +424,53 @@ export type FusionErrorCode =
   | 'state_transition_invalid'
   | 'orchestration_failed';
 
-/** Structured detail attached to a `prompt_budget_exceeded` failure. */
+export type FusionBudgetCheckKind = 'input_only_preflight' | 'rendered_prompt';
+
+export interface FusionBudgetComponentBreakdown {
+  visible_text: { bytes: number; tokens: number };
+  omission_receipts: { bytes: number; tokens: number };
+  projection_metadata: { bytes: number; tokens: number };
+  request: { bytes: number; tokens: number };
+  static_stage_framing: { bytes: number; tokens: number };
+  upstream_output_contracts: { bytes: number; tokens: number };
+}
+
+export interface FusionBudgetDenseRegion {
+  offset: number;
+  len: number;
+  detector: 'not_implemented_step_6';
+}
+
+export interface FusionBudgetRouteTableEntry {
+  role: FusionRouteCapacity['role'];
+  qualified_id: string;
+  allowed_input_tokens: number;
+  family: TokenBudgetFamily;
+  effective_rate_bytes_per_token_x100: number;
+  byte_capacity_utf8_bytes: number;
+  backed: boolean;
+}
+
+export interface FusionBudgetCounterfactuals {
+  empty_request: FusionBudgetEmptyRequestVerdict;
+  without_reservation: {
+    forecast_input_tokens_upper_bound: number;
+    signed_headroom_tokens: number;
+    fits: boolean;
+  };
+  at_median_rate: {
+    forecast_input_tokens_upper_bound: number | null;
+    signed_headroom_tokens: number | null;
+    fits: boolean | null;
+  };
+}
+
+/** Structured detail attached to a split prompt-budget failure. */
 export interface FusionBudgetErrorDetail {
   budget_stage: FusionBudgetStage;
   slot?: 1 | 2 | 3;
   measurement_kind: 'stage_forecast' | 'rendered_prompt';
+  check_kind: FusionBudgetCheckKind;
   measured_utf8_bytes: number;
   measured_input_tokens_upper_bound: number;
   allowed_input_tokens: number;
@@ -417,6 +480,20 @@ export interface FusionBudgetErrorDetail {
     qualified_id: string;
     context_window_tokens: number;
   };
+  rate_source: TokenBudgetRateSource;
+  backed: boolean;
+  dominant_byte_class: TokenBudgetDominantByteClass;
+  component_breakdown: FusionBudgetComponentBreakdown;
+  byte_class_breakdown: TokenBudgetByteClassBreakdown;
+  dense_regions: readonly FusionBudgetDenseRegion[];
+  bytes_over: number;
+  tokens_over: number;
+  required_allowed_tokens: number;
+  route_table: readonly FusionBudgetRouteTableEntry[];
+  counterfactuals: FusionBudgetCounterfactuals;
+  stage_upstream_actuals: readonly { stage: FusionStage; bytes: number }[];
+  policy_id: string;
+  calibration_version: string;
   context_policy_id: string;
   remediation: readonly string[];
   blockers: readonly FusionBudgetBlocker[];
@@ -540,6 +617,9 @@ export interface FusionRouteCapacity {
   framing_reserve_tokens: number;
   safety_reserve_tokens: number;
   allowed_input_tokens: number;
+  family: TokenBudgetFamily;
+  rate_source: TokenBudgetRateSource;
+  byte_capacity_utf8_bytes: number;
 }
 
 export interface FusionBudgetStageComposition {
@@ -556,20 +636,31 @@ export interface FusionStageBudgetPlanEntry {
   slot?: 1 | 2 | 3;
   route: FusionRouteCapacity;
   conditional: boolean;
+  check_kind: 'input_only_preflight';
+  input_utf8_bytes: number;
+  upstream_output_contract_bytes: number;
   forecast_utf8_bytes: number;
+  input_only_input_tokens_upper_bound: number;
   forecast_input_tokens_upper_bound: number;
   allowed_input_tokens: number;
+  input_only_signed_headroom_tokens: number;
   signed_headroom_tokens: number;
-  utilization: number;
+  input_only_utilization_basis_points: number;
+  utilization_basis_points: number;
+  input_only_estimate: EstimateInputTokensResult;
+  reservation_estimate: EstimateInputTokensResult;
   fits: boolean;
+  reservation_fits: boolean;
 }
 
 export interface FusionBudgetBlocker extends FusionStageBudgetPlanEntry {
   overage_tokens: number;
+  bytes_over: number;
 }
 
 export interface FusionBudgetWarning extends FusionStageBudgetPlanEntry {
-  threshold: 0.8;
+  warning_kind: 'input_utilization' | 'worst_case_reservation';
+  threshold_basis_points: number;
 }
 
 export interface FusionBudgetEmptyRequestVerdict {
@@ -595,8 +686,9 @@ export interface FusionBudgetPlanV1 {
 
 /** Documented, versioned budget policy. */
 export interface FusionBudgetPolicyDescriptor {
-  id: 'fusion-budget-policy-v2';
-  bytes_per_token_divisor: number;
+  id: 'fusion-budget-policy-v3';
+  calibration_version: string;
+  calibration_table: Readonly<Record<TokenBudgetFamily, TokenBudgetFamilyCalibration>>;
   reserved_output_tokens: number;
   framing_reserve_tokens: number;
   safety_reserve_tokens: number;
@@ -604,5 +696,31 @@ export interface FusionBudgetPolicyDescriptor {
   evaluation_output_contract_bytes: number;
   merge_output_contract_bytes: number;
   diagnostics_contract_bytes: number;
-  utilization_warning_threshold: 0.8;
+  utilization_warning_threshold_basis_points: 8000;
+}
+
+export interface FusionCalibrationViolation {
+  schema_version: typeof FUSION_CALIBRATION_VIOLATION_SCHEMA_VERSION;
+  stage: FusionStage;
+  slot?: 1 | 2 | 3;
+  attempt: number;
+  route: {
+    provider: string;
+    model: string;
+    qualified_id: string;
+  };
+  family: TokenBudgetFamily;
+  rate_source: TokenBudgetRateSource;
+  prompt_utf8_bytes: number;
+  prompt_sha256: string;
+  forecast_input_tokens: number;
+  billed_input_tokens: number;
+  billed_input_breakdown: {
+    input: number;
+    cache_read: number;
+    cache_write: number;
+  };
+  under_forecast_tokens: number;
+  byte_class_breakdown: TokenBudgetByteClassBreakdown;
+  dominant_byte_class: TokenBudgetDominantByteClass;
 }

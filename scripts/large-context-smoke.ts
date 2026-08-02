@@ -18,7 +18,6 @@ import type { AssistantMessage, ToolResultMessage, UserMessage } from '@earendil
 import { canonicalJson } from '../src/core/attested-pi-run.js';
 import { buildFusionCanonicalInput } from '../src/core/fusion/context.js';
 import {
-  FUSION_BYTES_PER_TOKEN_DIVISOR,
   FUSION_CANDIDATE_MAX_OUTPUT_BYTES,
   FUSION_EVALUATION_MAX_OUTPUT_BYTES,
   FUSION_MIN_CONTEXT_WINDOW_TOKENS,
@@ -307,7 +306,7 @@ async function main(): Promise<void> {
       );
     }
     console.log(
-      `\nbytes-per-token divisor in use: ${String(FUSION_BYTES_PER_TOKEN_DIVISOR)} (conservative ceiling)`,
+      `\ninput estimator: ${plan.policy.calibration_version} (${plan.policy.id})`,
     );
     console.log('\nPer-stage forecast:');
     for (const entry of plan.stages) {

@@ -19,6 +19,7 @@ import {
   type DelegateAutoDeliverMode,
   type DelegateCapability,
   type DelegateDeliveryMode,
+  type DelegateBudgetRouteSource,
   type DelegateRoute,
 } from './core/delegate/types.js';
 import {
@@ -134,6 +135,7 @@ export interface DelegateLaunchDetails {
   artifact_dir: string;
   seed_sha256: string;
   seed_utf8_bytes: number;
+  budget: DelegateBudgetRouteSource;
   auto_deliver: DelegateAutoDeliverMode;
   notify_on_completion: boolean;
   trigger_on_completion: boolean;
@@ -145,6 +147,7 @@ export interface DelegateResultDetails {
   state: 'running' | 'committed' | 'failed' | 'cancelled';
   delivery: DelegateDeliveryMode | 'none';
   route?: { provider: string; model: string } | undefined;
+  budget?: DelegateBudgetRouteSource | undefined;
   answer_bytes?: number | undefined;
   answer_sha256?: string | undefined;
   turns?: number | undefined;
@@ -379,6 +382,7 @@ export function registerDelegateExtension(
         artifact_dir: prepared.facts.artifactDir,
         seed_sha256: prepared.facts.seedSha256,
         seed_utf8_bytes: prepared.preflight.plan.seed_utf8_bytes,
+        budget: prepared.facts.budget,
         auto_deliver: autoDeliver,
         notify_on_completion: launchOptions.notifyOnCompletion,
         trigger_on_completion: launchOptions.triggerOnCompletion,
@@ -391,6 +395,7 @@ export function registerDelegateExtension(
             `Child session: ${prepared.preflight.childSessionId} (separate from this session)`,
             `Artifacts: ${prepared.facts.artifactDir}`,
             `Seed: ${String(prepared.preflight.plan.seed_utf8_bytes)} bytes, sha256 ${prepared.facts.seedSha256}`,
+            `Estimator: family ${prepared.facts.budget.family}, source ${prepared.facts.budget.rate_source.source}, rate ${String(prepared.facts.budget.rate_source.effective_rate_bytes_per_token_x100)}/100 B/tok + ${String(prepared.facts.budget.rate_source.affine_f_tokens)} tokens${prepared.facts.budget.rate_source.warning === null ? '' : `; warning: ${prepared.facts.budget.rate_source.warning}`}`,
             `Capability: ${capability} (read/search/list only)`,
             `Limits: ${String(prepared.preflight.limits.max_turns)} turns, ${String(prepared.preflight.limits.max_tool_calls)} tool calls, ${String(prepared.preflight.limits.timeout_seconds)}s`,
             `Auto-deliver: ${autoDeliver}`,
@@ -472,6 +477,7 @@ export function registerDelegateExtension(
           state: 'running',
           delivery: 'none',
           artifact_dir: facts.artifactDir,
+          budget: facts.budget,
         };
         return {
           content: textContent(
@@ -524,6 +530,7 @@ export function registerDelegateExtension(
         state: 'committed',
         delivery: decision.mode,
         route: verified.package.route,
+        budget: facts.budget,
         answer_bytes: verified.package.answer.byte_length,
         answer_sha256: verified.package.answer.sha256,
         turns: verified.package.turns,
@@ -536,6 +543,7 @@ export function registerDelegateExtension(
         `Answer: ${String(verified.package.answer.byte_length)} bytes, sha256 ${verified.package.answer.sha256} (verified).`,
         `Turns: ${String(verified.package.turns)} · tool calls: ${String(verified.package.tool_calls)} · usage: ${verified.package.usage.status}`,
         `Artifacts: ${facts.artifactDir}`,
+        `Estimator: family ${facts.budget.family}, source ${facts.budget.rate_source.source}, rate ${String(facts.budget.rate_source.effective_rate_bytes_per_token_x100)}/100 B/tok + ${String(facts.budget.rate_source.affine_f_tokens)} tokens${facts.budget.rate_source.warning === null ? '' : `; warning: ${facts.budget.rate_source.warning}`}`,
       ].join('\n');
       if (decision.mode === 'artifact') {
         return {

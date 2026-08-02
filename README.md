@@ -9,19 +9,19 @@ This package adds named, tracked background shell jobs with durable output files
 From npm after publish:
 
 ```bash
-pi install npm:pi-background-tasks@0.7.6
+pi install npm:pi-background-tasks@0.7.7
 ```
 
 From git after pushing this package to its standalone repository and tagging:
 
 ```bash
-pi install git:github.com/ismailsaleekh/pi-background-tasks@v0.7.6
+pi install git:github.com/ismailsaleekh/pi-background-tasks@v0.7.7
 ```
 
 For project-local install:
 
 ```bash
-pi install -l npm:pi-background-tasks@0.7.6
+pi install -l npm:pi-background-tasks@0.7.7
 ```
 
 ## Commands
@@ -285,9 +285,9 @@ Progress is surfaced through `fusion` status updates, TUI cancellable loader UI 
 
 ### Conversation context policy
 
-Fusion children receive a **versioned conversation projection**, not a raw execution transcript. The canonical input schema is `pi-background-tasks.fusion-input.v3` and every run states exactly what was included and what was omitted.
+Fusion children receive a **versioned conversation projection**, not a raw execution transcript. The canonical input schema is `pi-background-tasks.fusion-input.v4` and every run states exactly what was included and what was omitted.
 
-The projection transform (`visible-conversation-ledger-v1`) is shared by both entry points:
+The projection transform (`visible-conversation-ledger-v2`) is shared by both entry points:
 
 | Content | Disposition |
 |---|---|
@@ -300,20 +300,21 @@ The projection transform (`visible-conversation-ledger-v1`) is shared by both en
 | Tool-result images | excluded; recorded as an omission receipt (never raw bytes) |
 | Active `fusion_brainstorm` call and its sibling calls | scope-excluded from the branch |
 
-Omissions are **explicit, deterministic, and auditable** — never silent. Each omitted event produces a ledger row with its kind, exact byte count, and SHA-256 of the omitted bytes. Contiguous omissions collapse into source-ordered `omitted_activity` receipts. Each receipt is deliberately compact, carrying only what a reading model can act on:
+Omissions are **explicit, deterministic, and auditable** — never silent. Each omitted event produces a ledger row with its kind, exact byte count, and SHA-256 of the omitted bytes. Fusion v4 encodes child-facing projection entries as positional tuples to remove repeated object keys while preserving every role, ordinal, span, byte total, count, and text byte:
 
 ```json
-{"at":[1,9],"bytes":29019,"counts":{"tool_calls":5,"tool_result_texts":5},"kind":"omitted_activity"}
+["t","u",0,0,"hello"]
+["o",[1,9],29019,[0,5,5]]
 ```
 
-`at` is the inclusive source-ordinal span, `bytes` is the total omitted non-image payload for that run, and a zero-valued count is absent rather than serialized. Per-event hashes, ledger indices, and the per-kind byte map live in `context-omission-ledger.json`, not in the prompt: a child cannot verify a hash of payload it does not hold, so forwarding one only consumed context. That ledger also carries a `projection_map` proving every ledger row is represented by exactly one receipt or image marker, and `accounting.omission_receipt_utf8_bytes` records the exact receipt cost. The complete ledger is persisted as `context-omission-ledger.json`. **No head, tail, or preview of an omitted payload is ever forwarded** (`tool_payload_preview_bytes` is `0`), because an arbitrary prefix is usually irrelevant and can leak secrets or carry tool-output prompt injection. Repeated construction is byte-identical, so hashes are stable.
+Text tuples are `["t", role, sourceOrdinal, blockOrdinal, text]`, where `role` is `"u"` for user or `"a"` for assistant. Omission tuples are `["o", [firstSourceOrdinal, lastSourceOrdinal], bytes, [assistantThinking, toolCalls, toolResultTexts]]`. The span is inclusive, `bytes` is the total omitted non-image payload for that run, and the count tuple order is fixed. Per-event hashes, ledger indices, and per-event byte details live in `context-omission-ledger.json`, not in the prompt: a child cannot verify a hash of payload it does not hold, so forwarding one only consumed context. That ledger also carries a `projection_map` proving every ledger row is represented by exactly one receipt or ledger-only image marker, and `accounting.omission_receipt_utf8_bytes` records the exact compact tuple receipt cost. The complete ledger is persisted as `context-omission-ledger.json`, and its row shape and root hash are unchanged by the compact encoding. **No head, tail, or preview of an omitted payload is ever forwarded** (`tool_payload_preview_bytes` is `0`), because an arbitrary prefix is usually irrelevant and can leak secrets or carry tool-output prompt injection. Repeated construction is byte-identical via canonical JSON, so prompt bytes and hashes are stable.
 
 Two entry points share the transform but differ in request authority:
 
 | Entry point | Policy id | `request.authority` |
 |---|---|---|
-| `fusion_brainstorm({prompt})` | `fusion-tool-explicit-v1` | `explicit_text` — the prompt is authoritative and self-contained |
-| `/fusion [prompt]` | `fusion-command-conversation-v1` | `directive_over_projected_conversation` |
+| `fusion_brainstorm({prompt})` | `fusion-tool-explicit-v2` | `explicit_text` — the prompt is authoritative and self-contained |
+| `/fusion [prompt]` | `fusion-command-conversation-v2` | `directive_over_projected_conversation` |
 
 **Documented limitation:** facts that exist only inside omitted tool output are not available to Fusion children. Restate any required finding as visible conversation text, or include it in the `fusion_brainstorm` prompt. Children are instructed to say so plainly rather than guess. No model-generated summarization is used as hidden preprocessing.
 
@@ -321,7 +322,7 @@ Two entry points share the transform but differ in request authority:
 
 Every prompt-expansion stage — candidate, evaluator, evaluation repair, and merger — is size-checked **before any child process is created**, and each stage is checked against **its own configured route**, so a large-context slot cannot hide a small-context sibling and a small slot cannot veto stages it never serves.
 
-The input token bound is `ceil(utf8Bytes / 2)`. This is a ceiling, not an estimate: across 159 real large Fusion prompts the densest observed ratio was 3.552 bytes per input token, so the divisor keeps roughly a 1.7x margin and also bounds dense non-ASCII input.
+Input forecasting uses the shared affine estimator `estimateInputTokens({family, segments})`: additive integer byte-class accounting plus a 512-token affine intercept. Calibrated normal-ASCII rates are used only for backed exact model IDs, measured prompts at or above 50 KiB, and prompts that pass the low-whitespace dense-ASCII gate. That gate records the measured whitespace fraction in `budget-plan.json` and falls back conservatively for out-of-distribution near-zero-whitespace payloads; it is a heuristic token-density proxy, not a bound. Multibyte UTF-8 uses the conservative 2.0 B/tok fatal rate while persisting the provable 1.00 B/tok ceiling as advisory. The calibration basis is 882 real large Fusion prompts: Anthropic observed floor 2.047 B/tok (shipped `r=1.73`) and Codex observed floor 3.400 B/tok (shipped `r=2.89`); unknown providers and unbacked model IDs use the unbacked 1.00 B/tok floor and are surfaced in artifacts and result details.
 
 Each stage is forecast with its **real prompt builder**, rendered with empty embedded-output slots, plus the enforced output contracts for whatever that stage will embed:
 
@@ -340,11 +341,11 @@ When a workflow cannot fit, the error names the **first failing mandatory stage*
 
 Remediation is derived, not guessed: Fusion re-plans the entire workflow **with the request removed**. If it still fails, the error says plainly that shortening the request cannot help and points at starting a fresh conversation or raising the route's context window. If it then fits, the request is what determines feasibility, and the error states the exact minimum byte reduction and the maximum safe request size.
 
-Runs that do fit still emit an advisory utilization warning for any stage at or above 80% of its allowance, recorded in `budget-plan.json` and as a progress event, so a session approaching the ceiling is visible before it hard-fails. The warning never alters behaviour.
+Preflight is two-tiered: input-only forecasts are fatal (`prompt_budget_exceeded_forecast`), while worst-case downstream output reservations are warning-only and recorded in `budget-plan.json`. Exact rendered per-stage checks remain fatal (`prompt_budget_exceeded_measured`). Runs that fit still emit advisory warnings for tight utilization or reservation overage. The warning never alters behaviour.
 
 Every configured route must also satisfy a documented minimum capacity; smaller routes are rejected at configuration time with an actionable error naming the requirement, rather than being accepted and failing later at the provider. All route capacities, per-stage forecasts, headroom, utilization, the byte composition of the blocking stage, and the blockers list are persisted as `budget-plan.json`.
 
-If an input still exceeds the safe budget, Fusion fails with a typed `prompt_budget_exceeded` error naming the stage, measured bytes, measured token upper bound, allowed tokens, the limiting configured model and its context window, and concrete remediation. **Zero children are launched** when preflight rejects. Provider context-window failures remain loud child failures; there is no hidden local truncation and no silent fallback anywhere in this path.
+If an input still exceeds the safe budget, Fusion fails with `prompt_budget_exceeded_forecast` for input-only preflight or `prompt_budget_exceeded_measured` for exact rendered prompts. The error names the stage, measured bytes, measured token upper bound, allowed tokens, the limiting configured model and its context window, estimator source, and concrete remediation. **Zero children are launched** when preflight rejects. Provider context-window failures remain loud child failures; there is no hidden local truncation and no silent fallback anywhere in this path.
 
 ## Extension EventBus API
 

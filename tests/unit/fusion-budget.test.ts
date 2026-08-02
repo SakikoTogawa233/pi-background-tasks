@@ -1,11 +1,13 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
+import { fileURLToPath } from 'node:url';
 import { parseJsonText } from '../../src/core/common.js';
 import {
-  FUSION_BYTES_PER_TOKEN_DIVISOR,
+  FUSION_CALIBRATED_BYTES_PER_TOKEN,
   FUSION_CANDIDATE_MAX_OUTPUT_BYTES,
   FUSION_MIN_CANONICAL_INPUT_TOKENS,
   FUSION_MIN_CONTEXT_WINDOW_TOKENS,
@@ -14,7 +16,7 @@ import {
   FUSION_FRAMING_RESERVE_TOKENS,
   FUSION_RESERVED_OUTPUT_TOKENS,
   FUSION_SAFETY_RESERVE_TOKENS,
-  FUSION_UTILIZATION_WARNING_THRESHOLD,
+  FUSION_UTILIZATION_WARNING_THRESHOLD_BASIS_POINTS,
   FusionBudget,
   assertChildOutputWithinContract,
   fusionLimitingRoute,
@@ -22,6 +24,21 @@ import {
   fusionTokenUpperBound,
 } from '../../src/core/fusion/budget.js';
 import { FusionOrchestrator, type FusionChildRunner } from '../../src/core/fusion/orchestrator.js';
+import {
+  TOKEN_BUDGET_AFFINE_F_TOKENS,
+  TOKEN_BUDGET_CALIBRATION_CORPUS_MIN_WHITESPACE_FRACTION_X10000,
+  TOKEN_BUDGET_CONSERVATIVE_RATE_X100,
+  TOKEN_BUDGET_DENSE_ASCII_WHITESPACE_THRESHOLD_X10000,
+  TOKEN_BUDGET_FAMILY_CALIBRATIONS,
+  TOKEN_BUDGET_HAIRCUT_BASIS_POINTS,
+  TOKEN_BUDGET_LARGE_PROMPT_MIN_BYTES,
+  TOKEN_BUDGET_PROVABLE_RATE_X100,
+  estimateInputTokens,
+  knownTextSegment,
+  maxKnownTextBytesForTokens,
+  resolveTokenBudgetFamily,
+  utf8ByteClassBreakdown,
+} from '../../src/core/context/token-budget.js';
 import { defaultFusionModelConfig } from '../../src/core/fusion/config.js';
 import { buildFusionCanonicalInput } from '../../src/core/fusion/context.js';
 import { buildCandidatePrompt } from '../../src/core/fusion/prompts.js';
@@ -43,6 +60,12 @@ import type { RunPiChildOptions } from '../../src/core/fusion/pi-child.js';
 import { emptyLedger, sessionWith, userMessage } from '../helpers/fusion-canonical.js';
 
 const ledger = emptyLedger(FUSION_COMMAND_CONTEXT_POLICY_ID);
+const packageRoot = fileURLToPath(new URL('../../', import.meta.url));
+
+function ceilDiv(numerator: number, denominator: number): number {
+  if (numerator === 0) return 0;
+  return Math.floor((numerator - 1) / denominator) + 1;
+}
 
 function resolved(qualifiedId: string, contextWindow: number): ResolvedFusionModel {
   const slash = qualifiedId.indexOf('/');
@@ -104,7 +127,7 @@ function canonicalInput(text: string): FusionCanonicalInputV3 {
         tool_call_id: null,
         active_tool_call_leaf_excluded: false,
       },
-      entries: [{ kind: 'text', source_ordinal: 0, block_ordinal: 0, role: 'user', text }],
+      entries: [['t', 'u', 0, 0, text]],
       accounting: {
         message_count: 1,
         included_text_entry_count: 1,
@@ -153,15 +176,6 @@ function planEntry(
   const found = entries.find((entry) => entry.budget_stage === stage && entry.slot === slot);
   assert.ok(found, `${stage} entry must exist`);
   return found;
-}
-
-function compositionSum(parts: object): number {
-  let total = 0;
-  for (const value of Object.values(parts)) {
-    assert.equal(typeof value, 'number');
-    total += value;
-  }
-  return total;
 }
 
 function evaluation(): FusionEvaluationV1 {
@@ -252,13 +266,22 @@ function assertBudgetError(
   error: FusionError,
   stage: 'candidate' | 'evaluation' | 'evaluation_repair' | 'merge',
 ): void {
-  assert.equal(error.code, 'prompt_budget_exceeded');
+  assert.ok(
+    error.code === 'prompt_budget_exceeded_forecast' ||
+      error.code === 'prompt_budget_exceeded_measured',
+  );
   assert.equal(error.childCreated, false, 'budget rejection must not claim a child was created');
   const budget = error.budget;
   assert.ok(budget, 'budget failure must carry structured detail');
   assert.equal(budget.budget_stage, stage);
   assert.ok(budget.measured_utf8_bytes > 0);
   assert.ok(budget.measured_input_tokens_upper_bound > budget.allowed_input_tokens);
+  assert.equal(budget.required_allowed_tokens, budget.measured_input_tokens_upper_bound);
+  assert.equal(budget.calibration_version, 'pi-background-tasks.input-token-calibration.v1');
+  assert.ok(budget.rate_source.family.length > 0);
+  assert.equal(budget.backed, budget.rate_source.backed);
+  assert.equal(budget.dominant_byte_class, budget.rate_source.dominant_byte_class);
+  assert.ok(budget.route_table.length > 0);
   assert.ok(budget.allowed_input_tokens > 0);
   assert.ok(budget.limiting_model.qualified_id.length > 0);
   assert.ok(budget.limiting_model.context_window_tokens > 0);
@@ -275,19 +298,229 @@ function assertBudgetError(
 }
 
 void describe('fusion stage budgets', () => {
-  void it('derives the token bound and reserves from documented constants', () => {
-    assert.equal(fusionTokenUpperBound(0), 0);
-    assert.equal(fusionTokenUpperBound(1), 1);
-    assert.equal(fusionTokenUpperBound(2), 1);
-    assert.equal(fusionTokenUpperBound(3), 2);
-    // The divisor must stay conservative: never assume 4 bytes per token.
+  void it('ships the calibrated affine table with strict provenance guards', () => {
+    assert.equal(fusionTokenUpperBound(0), TOKEN_BUDGET_AFFINE_F_TOKENS);
+    assert.equal(FUSION_CALIBRATED_BYTES_PER_TOKEN.anthropic.rate_bytes_per_token_x100, 173);
+    assert.equal(FUSION_CALIBRATED_BYTES_PER_TOKEN['openai-codex'].rate_bytes_per_token_x100, 289);
+    assert.equal(FUSION_CALIBRATED_BYTES_PER_TOKEN.unknown.rate_bytes_per_token_x100, 100);
+    for (const [family, entry] of Object.entries(FUSION_CALIBRATED_BYTES_PER_TOKEN)) {
+      assert.equal(entry.affine_f_tokens, 512, family);
+      assert.equal(Reflect.has(entry.provenance, 'sessions'), false, family);
+      assert.equal(Reflect.has(entry.provenance, 'days'), false, family);
+      if (family !== 'unknown') {
+        assert.ok(entry.provenance.n >= 50, family);
+        assert.equal(entry.provenance.backed, true, family);
+        assert.ok(entry.provenance.observed_min_bpt_x1000 !== null, family);
+        if (entry.provenance.observed_min_bpt_x1000 !== null) {
+          const numerator = entry.provenance.observed_min_bpt_x1000 *
+            (10_000 - TOKEN_BUDGET_HAIRCUT_BASIS_POINTS);
+          assert.ok(
+            entry.rate_bytes_per_token_x100 * 100_000 <= numerator,
+            family,
+          );
+          assert.equal(
+            entry.rate_bytes_per_token_x100,
+            Math.floor(numerator / 100_000),
+            `${family} rate must be floor-rounded after the haircut`,
+          );
+        }
+      }
+    }
+    const backedRates = Object.values(FUSION_CALIBRATED_BYTES_PER_TOKEN)
+      .filter((entry) => entry.provenance.backed)
+      .map((entry) => entry.rate_bytes_per_token_x100);
+    assert.ok(FUSION_CALIBRATED_BYTES_PER_TOKEN.unknown.rate_bytes_per_token_x100 <= Math.min(...backedRates));
+    assert.equal(FUSION_CALIBRATED_BYTES_PER_TOKEN.unknown.provenance.backed, false);
     assert.ok(
-      FUSION_BYTES_PER_TOKEN_DIVISOR <= 2,
-      'bytes-per-token divisor must remain a conservative lower bound',
+      TOKEN_BUDGET_DENSE_ASCII_WHITESPACE_THRESHOLD_X10000 <
+        TOKEN_BUDGET_CALIBRATION_CORPUS_MIN_WHITESPACE_FRACTION_X10000,
+    );
+    assert.deepEqual(FUSION_CALIBRATED_BYTES_PER_TOKEN, TOKEN_BUDGET_FAMILY_CALIBRATIONS);
+  });
+
+  void it('uses additive segment accounting rather than an unsafe blended divisor', () => {
+    const estimate = estimateInputTokens({
+      family: 'openai-codex',
+      allowedInputTokens: 231_040,
+      scope: 'fusion',
+      segments: [
+        { kind: 'known_text', bytes: 7_500, multibyteBytes: 0, denseBytes: 0 },
+        { kind: 'known_text', bytes: 2_500, multibyteBytes: 2_500, denseBytes: 0 },
+      ],
+    });
+    const arithmeticBlendRateX10000 = 75 * 289 + 25 * 100;
+    const blendedTokens = ceilDiv(10_000 * 10_000, arithmeticBlendRateX10000) + 512;
+    assert.ok(estimate.tokens >= blendedTokens);
+    assert.equal(estimate.perSegment[1]?.multibyte_tokens, 1_250);
+    assert.equal(estimate.perSegment[1]?.multibyte_provable_tokens, 2_500);
+    assert.ok(estimate.advisory.input_tokens_if_multibyte_used_provable_ceiling > estimate.tokens);
+    const contract = estimateInputTokens({
+      family: 'openai-codex',
+      allowedInputTokens: 231_040,
+      scope: 'fusion',
+      segments: [{ kind: 'unknown_output_contract', bytes: 4096, denseBytes: 0 }],
+    });
+    assert.equal(contract.perSegment[0]?.unknown_output_contract_tokens, 4096);
+  });
+
+  void it('keeps adversarial forecasts at or below bytes plus F while remaining deterministic', () => {
+    const fixtures = [
+      'YWJjZA=='.repeat(1024),
+      '0123456789abcdef'.repeat(1024),
+      '漢字仮名交じり文'.repeat(1024),
+      '👩‍👩‍👧‍👦'.repeat(1024),
+      'const x={a:1,b:[2,3,4]};'.repeat(1024),
+      '!@#$%^&*()_+-=[]{}|;:,.<>?'.repeat(1024),
+    ];
+    for (const text of fixtures) {
+      const breakdown = utf8ByteClassBreakdown(text);
+      const estimate = estimateInputTokens({
+        family: 'openai-codex',
+        allowedInputTokens: 231_040,
+        scope: 'fusion',
+        segments: [
+          {
+            kind: 'known_text',
+            bytes: breakdown.bytes,
+            multibyteBytes: breakdown.multibyteBytes,
+            denseBytes: breakdown.denseBytes,
+          },
+        ],
+      });
+      assert.ok(estimate.tokens <= breakdown.bytes + TOKEN_BUDGET_AFFINE_F_TOKENS);
+    }
+  });
+
+  void it('is byte-identical across separate estimator processes', () => {
+    const script = [
+      "import { estimateInputTokens } from './src/core/context/token-budget.ts';",
+      "const result = estimateInputTokens({ family: 'openai-codex', allowedInputTokens: 231040, scope: 'fusion', segments: [{ kind: 'known_text', bytes: 290099, multibyteBytes: 0, denseBytes: 0 }] });",
+      'process.stdout.write(JSON.stringify(result));',
+    ].join('\n');
+    const cli = join(packageRoot, 'node_modules', 'tsx', 'dist', 'cli.mjs');
+    const first = spawnSync(process.execPath, [cli, '-e', script], { cwd: packageRoot, encoding: 'utf8' });
+    const second = spawnSync(process.execPath, [cli, '-e', script], { cwd: packageRoot, encoding: 'utf8' });
+    assert.equal(first.status, 0, first.stderr);
+    assert.equal(second.status, 0, second.stderr);
+    assert.equal(first.stdout, second.stdout);
+  });
+
+  void it('ceilings once per rate bucket so segmentation cannot add phantom tokens', () => {
+    const segment = {
+      kind: 'known_text' as const,
+      bytes: TOKEN_BUDGET_LARGE_PROMPT_MIN_BYTES + 1_000,
+      multibyteBytes: 0,
+      denseBytes: 0,
+      asciiWhitespaceBytes: 1_000,
+    };
+    const one = estimateInputTokens({
+      family: 'openai-codex',
+      allowedInputTokens: 231_040,
+      scope: 'fusion',
+      segments: [segment],
+    });
+    const two = estimateInputTokens({
+      family: 'openai-codex',
+      allowedInputTokens: 231_040,
+      scope: 'fusion',
+      segments: [
+        { ...segment, bytes: Math.floor(segment.bytes / 2), asciiWhitespaceBytes: 500 },
+        { ...segment, bytes: segment.bytes - Math.floor(segment.bytes / 2), asciiWhitespaceBytes: 500 },
+      ],
+    });
+    assert.equal(one.rateSource.source, 'calibrated_large_window');
+    assert.equal(two.rateSource.source, 'calibrated_large_window');
+    assert.equal(one.tokens, two.tokens);
+    assert.deepEqual(one.rate_buckets, two.rate_buckets);
+  });
+
+  void it('scope guard keeps calibrated codex rates out of small prompts and small windows', () => {
+    const smallPrompt = estimateInputTokens({
+      family: 'openai-codex',
+      allowedInputTokens: 231_040,
+      scope: 'fusion',
+      segments: [knownTextSegment('word '.repeat(400))],
+    });
+    assert.equal(smallPrompt.byte_class_breakdown.total_bytes, 2_000);
+    assert.equal(smallPrompt.rateSource.source, 'conservative_small_prompt');
+    assert.equal(smallPrompt.rateSource.effective_rate_bytes_per_token_x100, TOKEN_BUDGET_CONSERVATIVE_RATE_X100);
+
+    const edge: ResolvedFusionModels = {
+      candidates: [
+        resolved('openai-codex/gpt-5.5', FUSION_MIN_CONTEXT_WINDOW_TOKENS),
+        resolved('openai-codex/gpt-5.5', 272_000),
+        resolved('openai-codex/gpt-5.5', 272_000),
+      ],
+      evaluator: resolved('openai-codex/gpt-5.5', 272_000),
+      merger: resolved('openai-codex/gpt-5.5', 272_000),
+    };
+    const budget = new FusionBudget(edge, FUSION_COMMAND_CONTEXT_POLICY_ID);
+    const firstRoute = budget.routes[0];
+    assert.ok(firstRoute);
+    assert.equal(firstRoute.rate_source.source, 'conservative_capacity_guard');
+    assert.throws(
+      () => budget.assertStagePrompt('candidate', '', 'x'.repeat(23_674), 1),
+      (error: unknown) => error instanceof FusionError && error.code === 'prompt_budget_exceeded_measured',
     );
   });
 
-  void it('bases safety on the smallest configured route, not the largest', () => {
+  void it('falls back for low-whitespace dense ASCII before a calibrated codex under-forecast can be admitted', () => {
+    const dense = 'A'.repeat(600_000);
+    const beforeRelaxedForecast = ceilDiv(600_000 * 100, 289) + TOKEN_BUDGET_AFFINE_F_TOKENS;
+    assert.equal(beforeRelaxedForecast, 208_125);
+    const estimate = estimateInputTokens({
+      family: 'openai-codex',
+      allowedInputTokens: 231_040,
+      scope: 'fusion',
+      segments: [knownTextSegment(dense)],
+    });
+    assert.equal(estimate.rateSource.source, 'conservative_dense_ascii_whitespace_gate');
+    assert.equal(estimate.rateSource.dense_ascii_gate.measured_whitespace_fraction_x10000, 0);
+    assert.equal(estimate.rateSource.dense_ascii_gate.decision, 'conservative_fallback');
+    assert.equal(estimate.rateSource.dominant_byte_class, 'dense_ascii');
+    assert.equal(estimate.tokens, 300_512);
+    assert.ok(estimate.tokens > 231_040);
+
+    const budget = new FusionBudget(models({ small: 267_904, large: 267_904 }), FUSION_COMMAND_CONTEXT_POLICY_ID);
+    assert.throws(
+      () => budget.assertStagePrompt('candidate', '', dense, 1),
+      (error: unknown) => {
+        assert.ok(error instanceof FusionError);
+        assert.equal(error.code, 'prompt_budget_exceeded_measured');
+        assert.equal(error.budget?.rate_source.source, 'conservative_dense_ascii_whitespace_gate');
+        assert.equal(error.budget?.dominant_byte_class, 'dense_ascii');
+        return true;
+      },
+    );
+  });
+
+  void it('splits input-only fatal checks from reservation warnings', () => {
+    const budget = new FusionBudget(
+      models({ small: 267_904, large: 267_904 }),
+      FUSION_COMMAND_CONTEXT_POLICY_ID,
+    );
+    const reportedInputOnly = estimateInputTokens({
+      family: 'openai-codex',
+      allowedInputTokens: 231_040,
+      scope: 'fusion',
+      segments: [knownTextSegment('A'.repeat(290_099))],
+    });
+    assert.equal(reportedInputOnly.tokens, 145_562);
+    assert.ok(reportedInputOnly.tokens <= 231_040);
+    const warningPlan = budget.plan(canonicalInputWithPromptBytes(290_099));
+    assert.equal(warningPlan.blockers.length, 0);
+    assert.equal(warningPlan.warnings.some((entry) => entry.warning_kind === 'worst_case_reservation'), true);
+    assert.doesNotThrow(() => budget.assertPlanFits(warningPlan, 'unit-test'));
+
+    const fatalPlan = budget.plan(canonicalInputWithPromptBytes(800_000));
+    assert.ok(fatalPlan.primary_blocker);
+    assert.throws(
+      () => budget.assertPlanFits(fatalPlan, 'unit-test'),
+      (error: unknown) => error instanceof FusionError && error.code === 'prompt_budget_exceeded_forecast',
+    );
+  });
+
+  void it('bases safety on the smallest configured byte capacity, not the largest token window', () => {
     const routes = fusionRouteCapacities(models({ small: 200_000, large: 1_000_000 }));
     const limiting = fusionLimitingRoute(routes);
     assert.equal(limiting.qualified_id, 'openai-codex/gpt-5.4-mini');
@@ -313,6 +546,26 @@ void describe('fusion stage budgets', () => {
       fusionLimitingRoute(fusionRouteCapacities(evaluatorSmall)).qualified_id,
       'p/small',
     );
+  });
+
+  void it('selects the byte-capacity limiting route when token ordering flips', () => {
+    const mixed: ResolvedFusionModels = {
+      candidates: [
+        resolved('anthropic/claude-a', 400_000),
+        resolved('openai-codex/gpt-5.6-sol', 272_000),
+        resolved('openai-codex/gpt-5.6-terra', 272_000),
+      ],
+      evaluator: resolved('openai-codex/gpt-5.6-sol', 272_000),
+      merger: resolved('openai-codex/gpt-5.6-sol', 272_000),
+    };
+    const routes = fusionRouteCapacities(mixed);
+    const anthropic = routes[0];
+    const codex = routes[1];
+    assert.ok(anthropic);
+    assert.ok(codex);
+    assert.ok(anthropic.allowed_input_tokens > codex.allowed_input_tokens);
+    assert.ok(anthropic.byte_capacity_utf8_bytes < codex.byte_capacity_utf8_bytes);
+    assert.equal(fusionLimitingRoute(routes).qualified_id, 'anthropic/claude-a');
   });
 
   void it('rejects routes whose capacity is unknown or too small to hold input', () => {
@@ -341,8 +594,8 @@ void describe('fusion stage budgets', () => {
     const budget = new FusionBudget(models(), FUSION_COMMAND_CONTEXT_POLICY_ID);
     const input = canonicalInput('small');
     const plan = budget.plan(input);
-    assert.equal(plan.schema_version, 'pi-background-tasks.fusion-budget-plan.v2');
-    assert.equal(plan.policy.id, 'fusion-budget-policy-v2');
+    assert.equal(plan.schema_version, 'pi-background-tasks.fusion-budget-plan.v3');
+    assert.equal(plan.policy.id, 'fusion-budget-policy-v3');
     assert.equal(plan.stages.length, 6);
     assert.equal(planEntry(plan.stages, 'candidate', 1).route.role, 'candidate-1');
     assert.equal(planEntry(plan.stages, 'candidate', 2).route.role, 'candidate-2');
@@ -351,14 +604,20 @@ void describe('fusion stage budgets', () => {
     assert.equal(planEntry(plan.stages, 'evaluation_repair').conditional, true);
     assert.equal(planEntry(plan.stages, 'merge').route.role, 'merger');
     for (const entry of plan.stages) {
-      assert.equal(entry.forecast_input_tokens_upper_bound, fusionTokenUpperBound(entry.forecast_utf8_bytes));
+      assert.equal(entry.input_only_input_tokens_upper_bound, entry.input_only_estimate.tokens);
+      assert.equal(entry.forecast_input_tokens_upper_bound, entry.reservation_estimate.tokens);
+      assert.equal(entry.input_only_signed_headroom_tokens, entry.allowed_input_tokens - entry.input_only_input_tokens_upper_bound);
       assert.equal(entry.signed_headroom_tokens, entry.allowed_input_tokens - entry.forecast_input_tokens_upper_bound);
     }
   });
 
-  void it('accepts a safe prompt at the boundary and rejects one byte past it', () => {
+  void it('accepts a safe prompt at the affine boundary and rejects one byte past it', () => {
     const budget = new FusionBudget(models(), FUSION_COMMAND_CONTEXT_POLICY_ID);
-    const allowedBytes = budget.allowedInputTokens * FUSION_BYTES_PER_TOKEN_DIVISOR;
+    const allowedBytes = maxKnownTextBytesForTokens({
+      family: 'openai-codex',
+      allowedInputTokens: budget.allowedInputTokens,
+      scope: 'fusion',
+    });
     assert.doesNotThrow(() => {
       budget.assertStagePrompt('candidate', '', 'x'.repeat(allowedBytes), 3);
     });
@@ -366,38 +625,66 @@ void describe('fusion stage budgets', () => {
       () => {
         budget.assertStagePrompt('candidate', '', 'x'.repeat(allowedBytes + 1), 3);
       },
-      (error: unknown) => error instanceof FusionError && error.code === 'prompt_budget_exceeded',
+      (error: unknown) => error instanceof FusionError && error.code === 'prompt_budget_exceeded_measured',
     );
   });
 
   void it('counts the child system prompt as input, not free space', () => {
     const budget = new FusionBudget(models(), FUSION_COMMAND_CONTEXT_POLICY_ID);
-    const allowedBytes = budget.allowedInputTokens * FUSION_BYTES_PER_TOKEN_DIVISOR;
+    const allowedBytes = maxKnownTextBytesForTokens({
+      family: 'openai-codex',
+      allowedInputTokens: budget.allowedInputTokens,
+      scope: 'fusion',
+    });
     assert.throws(
       () => {
         budget.assertStagePrompt('candidate', 'ab', 'x'.repeat(allowedBytes - 1), 3);
       },
-      (error: unknown) => error instanceof FusionError && error.code === 'prompt_budget_exceeded',
+      (error: unknown) => error instanceof FusionError && error.code === 'prompt_budget_exceeded_measured',
     );
   });
 
-  void it('counts multi-byte UTF-8 by bytes so dense non-ASCII cannot bypass accounting', () => {
+  void it('uses conservative multibyte fatal accounting while persisting the provable advisory ceiling', () => {
+    const cjkEstimate = estimateInputTokens({
+      family: 'openai-codex',
+      allowedInputTokens: 231_040,
+      scope: 'fusion',
+      segments: [
+        {
+          kind: 'known_text',
+          bytes: 100_000,
+          multibyteBytes: 100_000,
+          denseBytes: 0,
+          asciiWhitespaceBytes: 0,
+        },
+      ],
+    });
+    assert.equal(cjkEstimate.tokens, 50_512);
+    assert.equal(cjkEstimate.advisory.input_tokens_if_multibyte_used_provable_ceiling, 100_512);
+    assert.equal(cjkEstimate.rateSource.dominant_byte_class, 'multibyte');
+
     const budget = new FusionBudget(models(), FUSION_COMMAND_CONTEXT_POLICY_ID);
-    const allowedBytes = budget.allowedInputTokens * FUSION_BYTES_PER_TOKEN_DIVISOR;
-    // Each CJK char is 3 UTF-8 bytes; string length alone would understate it.
-    const chars = Math.floor(allowedBytes / 3) + 1;
+    const variableAllowance = budget.allowedInputTokens - TOKEN_BUDGET_AFFINE_F_TOKENS;
+    const chars = Math.floor((variableAllowance * 2) / 3) + 1;
     const dense = '漢'.repeat(chars);
-    assert.ok(dense.length < allowedBytes, 'string length must be below the byte allowance');
+    const breakdown = utf8ByteClassBreakdown(dense);
+    assert.equal(breakdown.multibyteBytes, breakdown.bytes);
     assert.throws(
       () => {
         budget.assertStagePrompt('candidate', '', dense, 3);
       },
-      (error: unknown) => error instanceof FusionError && error.code === 'prompt_budget_exceeded',
+      (error: unknown) => {
+        assert.ok(error instanceof FusionError);
+        assert.equal(error.code, 'prompt_budget_exceeded_measured');
+        assert.equal(error.budget?.dominant_byte_class, 'multibyte');
+        assert.match(error.message, /multibyte UTF-8/);
+        return true;
+      },
     );
   });
 
   void it('rejects an oversized candidate stage before spawning a child', async () => {
-    const oversized = canonicalInput('u'.repeat(400_000));
+    const oversized = canonicalInput('u'.repeat(600_000));
     const outcome = await runExpectingFailure(oversized, async (options) =>
       childResult(options, 'unreachable'),
     );
@@ -409,38 +696,44 @@ void describe('fusion stage budgets', () => {
     }
   });
 
-  void it('names merge as the incident primary blocker with repair as conditional', async () => {
-    const outcome = await runExpectingFailure(
-      canonicalInputWithPromptBytes(291_748),
-      async (options) => childResult(options, 'unreachable'),
-      models({ small: 272_000, large: 272_000 }),
-    );
+  void it('allows the reported input-only incident while warning on reservation', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'pi-fusion-budget-incident-'));
+    const calls: RunPiChildOptions[] = [];
     try {
-      assertBudgetError(outcome.error, 'merge');
-      assert.equal(outcome.calls.length, 0);
-      assert.match(outcome.error.message, /Primary blocking stage: merge/);
-      assert.match(outcome.error.message, /evaluation_repair \(conditional\)/);
-      assert.match(outcome.error.message, /shortening the request cannot make this workflow fit/);
-      assert.match(outcome.error.message, /Artifact directory:/);
-      const planText = await readFile(
-        join(outcome.root, outcome.artifactDir, 'budget-plan.json'),
-        'utf8',
-      );
+      const runner: FusionChildRunner = async (options) => {
+        calls.push(options);
+        if (options.stage === 'candidate') return childResult(options, 'candidate answer');
+        if (options.stage === 'evaluation') return childResult(options, JSON.stringify(evaluation()));
+        return childResult(options, 'merged');
+      };
+      const input = canonicalInputWithPromptBytes(290_099);
+      const resolvedModels = models({ small: 267_904, large: 267_904 });
+      const result = await new FusionOrchestrator({ childRunner: runner }).run({
+        source: 'command',
+        cwd: root,
+        canonicalInput: input,
+        canonicalInputSerialized: JSON.stringify(input),
+        contextLedger: ledger,
+        config: defaultFusionModelConfig(),
+        models: resolvedModels,
+      });
+      assert.equal(result.mergedText, 'merged');
+      assert.equal(calls.length, 5);
+      const planText = await readFile(join(root, result.details.artifact_dir, 'budget-plan.json'), 'utf8');
       const plan = parseJsonText(planText);
       assert.ok(typeof plan === 'object' && plan !== null);
+      assert.equal(Reflect.get(plan, 'primary_blocker'), undefined);
       const stages = Reflect.get(plan, 'stages');
       assert.ok(Array.isArray(stages));
-      assert.equal(Reflect.get(stages[0], 'fits'), true);
-      assert.equal(Reflect.get(stages[3], 'fits'), true);
-      assert.equal(Reflect.get(Reflect.get(plan, 'primary_blocker'), 'budget_stage'), 'merge');
-      const composition = Reflect.get(plan, 'primary_blocker_composition');
-      assert.ok(typeof composition === 'object' && composition !== null);
       assert.equal(
-        compositionSum(composition),
-        Reflect.get(Reflect.get(plan, 'primary_blocker'), 'forecast_utf8_bytes'),
+        stages.some((stage) =>
+          Reflect.get(stage, 'warning_kind') === 'worst_case_reservation' ||
+          Reflect.get(stage, 'reservation_fits') === false,
+        ),
+        true,
       );
     } finally {
-      await rm(outcome.root, { recursive: true, force: true });
+      await rm(root, { recursive: true, force: true });
     }
   });
 
@@ -478,7 +771,11 @@ void describe('fusion stage budgets', () => {
     // Defence in depth layer 2: even if a response somehow reached a later stage,
     // the exact rendered prompt is re-measured before that child is created.
     const budget = new FusionBudget(models({ small: 200_000, large: 200_000 }), FUSION_COMMAND_CONTEXT_POLICY_ID);
-    const allowedBytes = budget.allowedInputTokens * FUSION_BYTES_PER_TOKEN_DIVISOR;
+    const allowedBytes = maxKnownTextBytesForTokens({
+      family: 'openai-codex',
+      allowedInputTokens: budget.allowedInputTokens,
+      scope: 'fusion',
+    });
     const oversizedPrompt = 'p'.repeat(allowedBytes + 1);
     for (const stage of ['evaluation', 'evaluation_repair', 'merge'] as const) {
       let thrown: unknown;
@@ -586,10 +883,12 @@ void describe('fusion stage budgets', () => {
     const merge = planEntry(plan.stages, 'merge');
     assert.equal(candidate.fits, true);
     assert.equal(evaluationStage.fits, true);
-    assert.equal(merge.fits, false);
-    assert.equal(repair.fits, false);
-    assert.equal(plan.primary_blocker?.budget_stage, 'merge');
-    assert.equal(plan.blockers.some((entry) => entry.budget_stage === 'evaluation_repair' && entry.conditional), true);
+    assert.equal(merge.fits, true);
+    assert.equal(repair.fits, true);
+    assert.equal(merge.reservation_fits, false);
+    assert.equal(repair.reservation_fits, false);
+    assert.equal(plan.blockers.length, 0);
+    assert.equal(plan.warnings.some((entry) => entry.warning_kind === 'worst_case_reservation'), true);
     assert.ok(
       repair.forecast_utf8_bytes >
         evaluationStage.forecast_utf8_bytes + FUSION_EVALUATION_MAX_OUTPUT_BYTES,
@@ -609,8 +908,8 @@ void describe('fusion stage budgets', () => {
     assert.equal(planEntry(plan.stages, 'evaluation').fits, true);
     assert.equal(planEntry(plan.stages, 'merge').fits, true);
     assert.equal(planEntry(plan.stages, 'evaluation_repair').fits, true);
-    assert.ok(planEntry(plan.stages, 'merge').signed_headroom_tokens > 0);
-    assert.ok(planEntry(plan.stages, 'evaluation_repair').signed_headroom_tokens > 0);
+    assert.ok(planEntry(plan.stages, 'merge').input_only_signed_headroom_tokens > 0);
+    assert.ok(planEntry(plan.stages, 'evaluation_repair').input_only_signed_headroom_tokens > 0);
     assert.ok(plan.warnings.length >= 2);
     assert.equal(
       plan.warnings.some((entry) => entry.budget_stage === 'merge'),
@@ -621,7 +920,10 @@ void describe('fusion stage budgets', () => {
       true,
     );
     for (const warning of plan.warnings) {
-      assert.ok(warning.utilization >= FUSION_UTILIZATION_WARNING_THRESHOLD);
+      assert.ok(
+        warning.utilization_basis_points >= FUSION_UTILIZATION_WARNING_THRESHOLD_BASIS_POINTS ||
+          warning.reservation_fits === false,
+      );
     }
   });
 
@@ -676,6 +978,8 @@ void describe('fusion stage budgets', () => {
       });
       assert.equal(result.mergedText, 'merged');
       assert.equal(calls.length, 5);
+      assert.equal(result.details.budget.policy_id, 'fusion-budget-policy-v3');
+      assert.equal(result.details.budget.calibration_warnings.length, 0);
 
       const planText = await readFile(
         join(root, result.details.artifact_dir, 'budget-plan.json'),
@@ -690,7 +994,7 @@ void describe('fusion stage budgets', () => {
         routes.some((route) => Reflect.get(route, 'qualified_id') === 'openai-codex/gpt-5.4-mini'),
         true,
       );
-      assert.equal(Reflect.get(plan, 'schema_version'), 'pi-background-tasks.fusion-budget-plan.v2');
+      assert.equal(Reflect.get(plan, 'schema_version'), 'pi-background-tasks.fusion-budget-plan.v3');
       const stages = Reflect.get(plan, 'stages');
       assert.ok(Array.isArray(stages));
       assert.equal(stages.length, 6);
@@ -706,8 +1010,112 @@ void describe('fusion stage budgets', () => {
     }
   });
 
+  void it('does not let an unrecognised model inherit a known provider calibration', () => {
+    const resolvedFamily = resolveTokenBudgetFamily({ provider: 'openai-codex', model: 'future-tokenizer' });
+    assert.equal(resolvedFamily.family, 'openai-codex');
+    assert.equal(resolvedFamily.backed, false);
+    assert.equal(resolvedFamily.resolution, 'known_provider_unbacked_model');
+    const unrecognised: ResolvedFusionModels = {
+      candidates: [
+        resolved('openai-codex/future-tokenizer', 400_000),
+        resolved('openai-codex/future-tokenizer', 400_000),
+        resolved('openai-codex/future-tokenizer', 400_000),
+      ],
+      evaluator: resolved('openai-codex/future-tokenizer', 400_000),
+      merger: resolved('openai-codex/future-tokenizer', 400_000),
+    };
+    const budget = new FusionBudget(unrecognised, FUSION_COMMAND_CONTEXT_POLICY_ID);
+    assert.equal(budget.routes.every((route) => route.rate_source.source === 'unbacked_model_floor'), true);
+    assert.equal(budget.routes.every((route) => route.rate_source.backed === false), true);
+    assert.equal(
+      budget.routes.every((route) => route.rate_source.effective_rate_bytes_per_token_x100 === TOKEN_BUDGET_PROVABLE_RATE_X100),
+      true,
+    );
+  });
+
+  void it('surfaces unknown provider calibration in completed result details', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'pi-fusion-budget-unknown-'));
+    try {
+      const runner: FusionChildRunner = async (options) => {
+        if (options.stage === 'candidate') return childResult(options, 'candidate answer');
+        if (options.stage === 'evaluation') return childResult(options, JSON.stringify(evaluation()));
+        return childResult(options, 'merged');
+      };
+      const unknownModels: ResolvedFusionModels = {
+        candidates: [
+          resolved('mystery/a', 400_000),
+          resolved('mystery/b', 400_000),
+          resolved('mystery/c', 400_000),
+        ],
+        evaluator: resolved('mystery/e', 400_000),
+        merger: resolved('mystery/m', 400_000),
+      };
+      const input = canonicalInput('small');
+      const result = await new FusionOrchestrator({ childRunner: runner }).run({
+        source: 'command',
+        cwd: root,
+        canonicalInput: input,
+        canonicalInputSerialized: JSON.stringify(input),
+        contextLedger: ledger,
+        config: defaultFusionModelConfig(),
+        models: unknownModels,
+      });
+      assert.equal(result.details.budget.unknown_provider_warnings.length, 5);
+      assert.equal(result.details.budget.rate_sources.every((source) => source.family === 'unknown'), true);
+      assert.match(result.details.budget.unknown_provider_warnings.join('\n'), /unknown provider/);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  void it('writes and surfaces a calibration violation without aborting success', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'pi-fusion-budget-breach-'));
+    try {
+      const events: string[] = [];
+      const runner: FusionChildRunner = async (options) => {
+        const result =
+          options.stage === 'evaluation'
+            ? childResult(options, JSON.stringify(evaluation()))
+            : options.stage === 'merge'
+              ? childResult(options, 'merged')
+              : childResult(options, 'candidate answer');
+        if (options.stage === 'candidate' && options.slot === 1) {
+          result.usage.input = 1_000_000;
+          result.usage.totalTokens = 1_000_001;
+        }
+        return result;
+      };
+      const input = canonicalInput('small');
+      const result = await new FusionOrchestrator({ childRunner: runner }).run({
+        source: 'command',
+        cwd: root,
+        canonicalInput: input,
+        canonicalInputSerialized: JSON.stringify(input),
+        contextLedger: ledger,
+        config: defaultFusionModelConfig(),
+        models: models(),
+        onProgress: (event) => {
+          if (event.type === 'calibration_warning') events.push(event.artifact);
+        },
+      });
+      assert.equal(result.mergedText, 'merged');
+      assert.equal(result.details.budget.calibration_warnings.length, 1);
+      assert.equal(events.length, 1);
+      const artifact = await readFile(
+        join(root, result.details.artifact_dir, 'candidate-1.attempt-1.calibration-violation.json'),
+        'utf8',
+      );
+      const parsed = parseJsonText(artifact);
+      assert.ok(typeof parsed === 'object' && parsed !== null);
+      assert.equal(Reflect.get(parsed, 'schema_version'), 'pi-background-tasks.fusion-calibration-violation.v1');
+      assert.equal(Reflect.get(parsed, 'billed_input_tokens'), 1_000_000);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   void it('writes the budget plan before rejecting so the decision stays auditable', async () => {
-    const oversized = canonicalInput('u'.repeat(400_000));
+    const oversized = canonicalInput('u'.repeat(600_000));
     const outcome = await runExpectingFailure(oversized, async (options) =>
       childResult(options, 'unreachable'),
     );

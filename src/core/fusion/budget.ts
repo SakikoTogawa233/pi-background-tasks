@@ -1,9 +1,17 @@
 import { createHash } from 'node:crypto';
 import {
-  BYTES_PER_TOKEN_DIVISOR,
+  TOKEN_BUDGET_AFFINE_F_TOKENS,
+  TOKEN_BUDGET_CALIBRATION_VERSION,
+  TOKEN_BUDGET_FAMILY_CALIBRATIONS,
+  TOKEN_BUDGET_LARGE_PROMPT_MIN_BYTES,
+  TOKEN_BUDGET_RATE_SCALE,
+  estimateInputTokens,
+  knownTextSegment,
+  maxKnownTextBytesForTokens,
+  resolveTokenBudgetFamily,
+  unknownOutputContractSegment,
   allowedInputTokens,
   isUsableContextWindow,
-  tokenUpperBound,
 } from '../context/token-budget.js';
 import {
   FUSION_CANDIDATE_SYSTEM_PROMPT,
@@ -20,41 +28,59 @@ import {
 } from './prompts.js';
 import {
   FUSION_BUDGET_PLAN_SCHEMA_VERSION,
+  FUSION_CALIBRATION_VIOLATION_SCHEMA_VERSION,
   FUSION_EVALUATION_SCHEMA_VERSION,
   FusionError,
   type FusionBudgetBlocker,
+  type FusionBudgetCheckKind,
+  type FusionBudgetComponentBreakdown,
+  type FusionBudgetCounterfactuals,
   type FusionBudgetEmptyRequestVerdict,
   type FusionBudgetErrorDetail,
   type FusionBudgetPlanV1,
   type FusionBudgetPolicyDescriptor,
+  type FusionBudgetRouteTableEntry,
   type FusionBudgetStage,
   type FusionBudgetStageComposition,
   type FusionBudgetWarning,
+  type FusionCalibrationViolation,
   type FusionCanonicalInputV3,
   type FusionEvaluationV1,
   type FusionRouteCapacity,
   type FusionStage,
   type FusionStageBudgetPlanEntry,
+  type FusionChildRunResult,
   type ResolvedFusionModel,
   type ResolvedFusionModels,
 } from './types.js';
 
-/**
- * Fusion's divisor is the shared package-wide constant. It is re-exported under
- * the historical Fusion name so every existing Fusion number, artifact, and test
- * reference is unchanged by the extraction.
- */
-export const FUSION_BYTES_PER_TOKEN_DIVISOR = BYTES_PER_TOKEN_DIVISOR;
+export const FUSION_CALIBRATED_BYTES_PER_TOKEN = TOKEN_BUDGET_FAMILY_CALIBRATIONS;
 
 export const FUSION_CANDIDATE_MAX_OUTPUT_BYTES = 48 * 1024;
 export const FUSION_EVALUATION_MAX_OUTPUT_BYTES = 64 * 1024;
 export const FUSION_MERGE_MAX_OUTPUT_BYTES = 64 * 1024;
 export const FUSION_DIAGNOSTICS_MAX_BYTES = 8 * 1024;
 
-export const FUSION_RESERVED_OUTPUT_TOKENS = Math.ceil(
-  FUSION_MERGE_MAX_OUTPUT_BYTES / FUSION_BYTES_PER_TOKEN_DIVISOR,
+const FUSION_OUTPUT_RESERVE_RATE_X100 = 200;
+export const FUSION_UTILIZATION_WARNING_THRESHOLD_BASIS_POINTS = 8000;
+const BASIS_POINTS_DENOMINATOR = 10_000;
+
+function ceilDiv(numerator: number, denominator: number): number {
+  if (!Number.isSafeInteger(numerator) || numerator < 0) {
+    throw new TypeError('ceilDiv numerator must be a non-negative safe integer');
+  }
+  if (!Number.isSafeInteger(denominator) || denominator <= 0) {
+    throw new TypeError('ceilDiv denominator must be a positive safe integer');
+  }
+  if (numerator === 0) return 0;
+  return Math.floor((numerator - 1) / denominator) + 1;
+}
+
+export const FUSION_RESERVED_OUTPUT_TOKENS = ceilDiv(
+  FUSION_MERGE_MAX_OUTPUT_BYTES * TOKEN_BUDGET_RATE_SCALE,
+  FUSION_OUTPUT_RESERVE_RATE_X100,
 );
-export const FUSION_FRAMING_RESERVE_TOKENS = 4_096;
+export const FUSION_FRAMING_RESERVE_TOKENS = 0;
 export const FUSION_SAFETY_RESERVE_TOKENS = 4_096;
 export const FUSION_MIN_CANONICAL_INPUT_TOKENS = 8_192;
 export const FUSION_MIN_CONTEXT_WINDOW_TOKENS =
@@ -62,11 +88,11 @@ export const FUSION_MIN_CONTEXT_WINDOW_TOKENS =
   FUSION_RESERVED_OUTPUT_TOKENS +
   FUSION_FRAMING_RESERVE_TOKENS +
   FUSION_SAFETY_RESERVE_TOKENS;
-export const FUSION_UTILIZATION_WARNING_THRESHOLD = 0.8;
 
 export const FUSION_BUDGET_POLICY: FusionBudgetPolicyDescriptor = {
-  id: 'fusion-budget-policy-v2',
-  bytes_per_token_divisor: FUSION_BYTES_PER_TOKEN_DIVISOR,
+  id: 'fusion-budget-policy-v3',
+  calibration_version: TOKEN_BUDGET_CALIBRATION_VERSION,
+  calibration_table: FUSION_CALIBRATED_BYTES_PER_TOKEN,
   reserved_output_tokens: FUSION_RESERVED_OUTPUT_TOKENS,
   framing_reserve_tokens: FUSION_FRAMING_RESERVE_TOKENS,
   safety_reserve_tokens: FUSION_SAFETY_RESERVE_TOKENS,
@@ -74,7 +100,7 @@ export const FUSION_BUDGET_POLICY: FusionBudgetPolicyDescriptor = {
   evaluation_output_contract_bytes: FUSION_EVALUATION_MAX_OUTPUT_BYTES,
   merge_output_contract_bytes: FUSION_MERGE_MAX_OUTPUT_BYTES,
   diagnostics_contract_bytes: FUSION_DIAGNOSTICS_MAX_BYTES,
-  utilization_warning_threshold: FUSION_UTILIZATION_WARNING_THRESHOLD,
+  utilization_warning_threshold_basis_points: FUSION_UTILIZATION_WARNING_THRESHOLD_BASIS_POINTS,
 };
 
 const EMPTY_REMEDIATION: readonly string[] = Object.freeze([
@@ -87,6 +113,23 @@ const REQUEST_REMEDIATION: readonly string[] = Object.freeze([
   'Provide a shorter, self-contained fusion_brainstorm prompt.',
   'Start a fresh Pi conversation, or run Fusion earlier in the session.',
   "Raise the route's context window with a larger-context model via /fusion-models.",
+]);
+
+const RESERVATION_REMEDIATION: readonly string[] = Object.freeze([
+  'Route the blocking stage to a model with larger byte capacity.',
+  'Keep producer output contracts intact; do not shrink or truncate child answers.',
+  'Inspect budget-plan.json for the advisory reservation component before retrying.',
+]);
+
+const DENSE_REMEDIATION: readonly string[] = Object.freeze([
+  'Remove or externalize low-whitespace dense ASCII payloads (base64, minified code, PEM/hex blocks), then retry.',
+  'The prompt is preserved; no content was clipped to fit.',
+]);
+
+const MULTIBYTE_REMEDIATION: readonly string[] = Object.freeze([
+  'This rejection is dominated by multibyte UTF-8 content; use a larger-context route or split the non-Latin/CJK-heavy task.',
+  'The budget plan includes the stricter multibyte advisory ceiling separately from the fatal estimate.',
+  'The prompt is preserved; no content was clipped to fit.',
 ]);
 
 const EMPTY_CANDIDATES: readonly [
@@ -151,7 +194,11 @@ interface StageForecastDraft {
 }
 
 export function fusionTokenUpperBound(utf8Bytes: number): number {
-  return tokenUpperBound(utf8Bytes);
+  return estimateInputTokens({
+    family: 'unknown',
+    scope: 'conservative',
+    segments: [{ kind: 'known_text', bytes: utf8Bytes, multibyteBytes: 0, denseBytes: 0 }],
+  }).tokens;
 }
 
 export function fusionOutputContractBytes(stage: FusionStage): number {
@@ -189,6 +236,12 @@ function requirePositiveContextWindow(model: ResolvedFusionModel, role: string):
   return value;
 }
 
+function formatRateX100(value: number): string {
+  const whole = Math.floor(value / TOKEN_BUDGET_RATE_SCALE);
+  const frac = String(value % TOKEN_BUDGET_RATE_SCALE).padStart(2, '0');
+  return `${String(whole)}.${frac}`;
+}
+
 function routeCapacity(
   model: ResolvedFusionModel,
   role: FusionRouteCapacity['role'],
@@ -205,6 +258,23 @@ function routeCapacity(
       { code: 'model_capacity_unknown', childCreated: false },
     );
   }
+  const family = resolveTokenBudgetFamily({ provider: model.provider, model: model.model });
+  const rateSource = estimateInputTokens({
+    family: family.family,
+    calibrationBacked: family.backed,
+    familyResolution: family.resolution,
+    allowedInputTokens: allowed,
+    scope: 'fusion',
+    segments: [
+      {
+        kind: 'known_text',
+        bytes: TOKEN_BUDGET_LARGE_PROMPT_MIN_BYTES,
+        multibyteBytes: 0,
+        denseBytes: 0,
+        asciiWhitespaceBytes: TOKEN_BUDGET_LARGE_PROMPT_MIN_BYTES,
+      },
+    ],
+  }).rateSource;
   return {
     role,
     provider: model.provider,
@@ -215,6 +285,11 @@ function routeCapacity(
     framing_reserve_tokens: FUSION_FRAMING_RESERVE_TOKENS,
     safety_reserve_tokens: FUSION_SAFETY_RESERVE_TOKENS,
     allowed_input_tokens: allowed,
+    family: family.family,
+    rate_source: rateSource,
+    byte_capacity_utf8_bytes: Math.floor(
+      (allowed * rateSource.effective_rate_bytes_per_token_x100) / TOKEN_BUDGET_RATE_SCALE,
+    ),
   };
 }
 
@@ -233,7 +308,12 @@ export function fusionLimitingRoute(
 ): FusionRouteCapacity {
   let limiting: FusionRouteCapacity | undefined;
   for (const route of routes) {
-    if (limiting === undefined || route.allowed_input_tokens < limiting.allowed_input_tokens) {
+    if (
+      limiting === undefined ||
+      route.byte_capacity_utf8_bytes < limiting.byte_capacity_utf8_bytes ||
+      (route.byte_capacity_utf8_bytes === limiting.byte_capacity_utf8_bytes &&
+        route.role.localeCompare(limiting.role) < 0)
+    ) {
       limiting = route;
     }
   }
@@ -266,29 +346,80 @@ function candidateRole(slot: 1 | 2 | 3): FusionRouteCapacity['role'] {
   return 'candidate-3';
 }
 
+function estimateRouteInput(
+  route: FusionRouteCapacity,
+  segments: Parameters<typeof estimateInputTokens>[0]['segments'],
+) {
+  return estimateInputTokens({
+    family: route.family,
+    calibrationBacked: route.rate_source.backed,
+    familyResolution: route.rate_source.model_resolution,
+    allowedInputTokens: route.allowed_input_tokens,
+    scope: 'fusion',
+    segments,
+  });
+}
+
+function utilizationBasisPoints(tokens: number, allowed: number): number {
+  return ceilDiv(tokens * BASIS_POINTS_DENOMINATOR, allowed);
+}
+
 function forecastEntry(draft: StageForecastDraft): FusionStageBudgetPlanEntry {
-  const forecastUtf8Bytes =
-    utf8Bytes(draft.system_prompt) +
-    utf8Bytes(draft.empty_user_prompt) +
-    draft.upstream_output_contract_bytes;
-  const tokens = fusionTokenUpperBound(forecastUtf8Bytes);
+  const inputSegments = [knownTextSegment(draft.system_prompt), knownTextSegment(draft.empty_user_prompt)];
+  const inputBytes = inputSegments.reduce((sum, segment) => sum + segment.bytes, 0);
+  const inputOnly = estimateRouteInput(draft.route, inputSegments);
+  const reservationSegments =
+    draft.upstream_output_contract_bytes === 0
+      ? inputSegments
+      : [...inputSegments, unknownOutputContractSegment(draft.upstream_output_contract_bytes)];
+  const reservation = estimateRouteInput(draft.route, reservationSegments);
+  const forecastUtf8Bytes = inputBytes + draft.upstream_output_contract_bytes;
   const entry: FusionStageBudgetPlanEntry = {
     budget_stage: draft.budget_stage,
     route: draft.route,
     conditional: draft.conditional,
+    check_kind: 'input_only_preflight',
+    input_utf8_bytes: inputBytes,
+    upstream_output_contract_bytes: draft.upstream_output_contract_bytes,
     forecast_utf8_bytes: forecastUtf8Bytes,
-    forecast_input_tokens_upper_bound: tokens,
+    input_only_input_tokens_upper_bound: inputOnly.tokens,
+    forecast_input_tokens_upper_bound: reservation.tokens,
     allowed_input_tokens: draft.route.allowed_input_tokens,
-    signed_headroom_tokens: draft.route.allowed_input_tokens - tokens,
-    utilization: tokens / draft.route.allowed_input_tokens,
-    fits: tokens <= draft.route.allowed_input_tokens,
+    input_only_signed_headroom_tokens: draft.route.allowed_input_tokens - inputOnly.tokens,
+    signed_headroom_tokens: draft.route.allowed_input_tokens - reservation.tokens,
+    input_only_utilization_basis_points: utilizationBasisPoints(
+      inputOnly.tokens,
+      draft.route.allowed_input_tokens,
+    ),
+    utilization_basis_points: utilizationBasisPoints(
+      reservation.tokens,
+      draft.route.allowed_input_tokens,
+    ),
+    input_only_estimate: inputOnly,
+    reservation_estimate: reservation,
+    fits: inputOnly.tokens <= draft.route.allowed_input_tokens,
+    reservation_fits: reservation.tokens <= draft.route.allowed_input_tokens,
   };
   if (draft.slot !== undefined) entry.slot = draft.slot;
   return entry;
 }
 
+function maxKnownTextBytes(route: FusionRouteCapacity): number {
+  return maxKnownTextBytesForTokens({
+    family: route.family,
+    calibrationBacked: route.rate_source.backed,
+    familyResolution: route.rate_source.model_resolution,
+    allowedInputTokens: route.allowed_input_tokens,
+    scope: 'fusion',
+  });
+}
+
 function blockerFromEntry(entry: FusionStageBudgetPlanEntry): FusionBudgetBlocker {
-  return { ...entry, overage_tokens: Math.max(0, -entry.signed_headroom_tokens) };
+  return {
+    ...entry,
+    overage_tokens: Math.max(0, entry.input_only_input_tokens_upper_bound - entry.allowed_input_tokens),
+    bytes_over: Math.max(0, entry.input_utf8_bytes - maxKnownTextBytes(entry.route)),
+  };
 }
 
 function blockerOrder(blocker: FusionBudgetBlocker): number {
@@ -327,7 +458,7 @@ function replaceRequestText(input: FusionCanonicalInputV3, text: string): Fusion
 function visibleTextBytes(input: FusionCanonicalInputV3): number {
   let total = 0;
   for (const entry of input.conversation_projection.entries) {
-    if (entry.kind === 'text') total += utf8Bytes(JSON.stringify(entry.text));
+    if (entry[0] === 't') total += utf8Bytes(JSON.stringify(entry[4]));
   }
   return total;
 }
@@ -335,19 +466,35 @@ function visibleTextBytes(input: FusionCanonicalInputV3): number {
 function omissionReceiptBytes(input: FusionCanonicalInputV3): number {
   let total = 0;
   for (const entry of input.conversation_projection.entries) {
-    if (entry.kind === 'omitted_activity') total += utf8Bytes(JSON.stringify(entry));
+    if (entry[0] === 'o') total += utf8Bytes(JSON.stringify(entry));
   }
   return total;
 }
 
-function warningFromEntry(entry: FusionStageBudgetPlanEntry): FusionBudgetWarning {
-  return { ...entry, threshold: FUSION_UTILIZATION_WARNING_THRESHOLD };
+function warningFromEntry(entry: FusionStageBudgetPlanEntry): FusionBudgetWarning | undefined {
+  if (!entry.fits) return undefined;
+  if (!entry.reservation_fits) {
+    return {
+      ...entry,
+      warning_kind: 'worst_case_reservation',
+      threshold_basis_points: FUSION_UTILIZATION_WARNING_THRESHOLD_BASIS_POINTS,
+    };
+  }
+  if (entry.utilization_basis_points >= FUSION_UTILIZATION_WARNING_THRESHOLD_BASIS_POINTS) {
+    return {
+      ...entry,
+      warning_kind: 'input_utilization',
+      threshold_basis_points: FUSION_UTILIZATION_WARNING_THRESHOLD_BASIS_POINTS,
+    };
+  }
+  return undefined;
 }
 
 function warningsFor(entries: readonly FusionStageBudgetPlanEntry[]): readonly FusionBudgetWarning[] {
-  return entries
-    .filter((entry) => entry.fits && entry.utilization >= FUSION_UTILIZATION_WARNING_THRESHOLD)
-    .map(warningFromEntry);
+  return entries.flatMap((entry) => {
+    const warning = warningFromEntry(entry);
+    return warning === undefined ? [] : [warning];
+  });
 }
 
 function entryLabel(entry: FusionStageBudgetPlanEntry): string {
@@ -359,7 +506,7 @@ function entryLabel(entry: FusionStageBudgetPlanEntry): string {
 function formatTable(entries: readonly FusionStageBudgetPlanEntry[]): string {
   const lines = entries.map(
     (entry) =>
-      `${entryLabel(entry)} | route=${entry.route.qualified_id} | forecast=${String(entry.forecast_input_tokens_upper_bound)} | allowed=${String(entry.allowed_input_tokens)} | headroom=${String(entry.signed_headroom_tokens)} | ${entry.fits ? 'fits' : 'over'}`,
+      `${entryLabel(entry)} | route=${entry.route.qualified_id} | input=${String(entry.input_only_input_tokens_upper_bound)} | reserved=${String(entry.forecast_input_tokens_upper_bound)} | allowed=${String(entry.allowed_input_tokens)} | input_headroom=${String(entry.input_only_signed_headroom_tokens)} | reservation_headroom=${String(entry.signed_headroom_tokens)} | ${entry.fits ? 'input-fits' : 'input-over'} | ${entry.reservation_fits ? 'reservation-fits' : 'reservation-warn'}`,
   );
   return lines.join('\n');
 }
@@ -373,6 +520,27 @@ function formatComposition(composition: FusionBudgetStageComposition): string {
     `static stage framing ${String(composition.static_stage_framing_bytes)} B`,
     `upstream output contracts ${String(composition.upstream_output_contract_bytes)} B`,
   ].join('; ');
+}
+
+function dominantRemediation(
+  verdict: FusionBudgetEmptyRequestVerdict,
+  composition: FusionBudgetStageComposition | undefined,
+  dominantByteClass: string,
+): readonly string[] {
+  if (dominantByteClass === 'dense_ascii') return DENSE_REMEDIATION;
+  if (dominantByteClass === 'multibyte') return MULTIBYTE_REMEDIATION;
+  if (composition === undefined) return remediationFor(verdict);
+  const entries = [
+    { name: 'visible', bytes: composition.visible_text_bytes },
+    { name: 'request', bytes: composition.request_bytes },
+    { name: 'reservation', bytes: composition.upstream_output_contract_bytes },
+  ].sort((left, right) => right.bytes - left.bytes);
+  const dominant = entries[0];
+  if (dominant?.name === 'reservation') return RESERVATION_REMEDIATION;
+  if (dominant?.name === 'request' && !verdict.still_fails_with_empty_request) {
+    return REQUEST_REMEDIATION;
+  }
+  return EMPTY_REMEDIATION;
 }
 
 function remediationFor(verdict: FusionBudgetEmptyRequestVerdict): readonly string[] {
@@ -395,6 +563,116 @@ function stageFromBudgetStage(stage: FusionBudgetStage): FusionStage {
   return 'evaluation';
 }
 
+function routeTable(routes: readonly FusionRouteCapacity[]): readonly FusionBudgetRouteTableEntry[] {
+  return [...routes]
+    .sort((left, right) => {
+      const byCapacity = left.byte_capacity_utf8_bytes - right.byte_capacity_utf8_bytes;
+      if (byCapacity !== 0) return byCapacity;
+      return left.role.localeCompare(right.role);
+    })
+    .map((route) => ({
+      role: route.role,
+      qualified_id: route.qualified_id,
+      allowed_input_tokens: route.allowed_input_tokens,
+      family: route.family,
+      effective_rate_bytes_per_token_x100: route.rate_source.effective_rate_bytes_per_token_x100,
+      byte_capacity_utf8_bytes: route.byte_capacity_utf8_bytes,
+      backed: route.rate_source.backed,
+    }));
+}
+
+function segmentTokensForBytes(route: FusionRouteCapacity, bytes: number): number {
+  if (bytes <= 0) return 0;
+  const estimate = estimateRouteInput(route, [
+    { kind: 'known_text', bytes, multibyteBytes: 0, denseBytes: 0 },
+  ]);
+  const segment = estimate.perSegment[0];
+  return segment === undefined ? 0 : segment.tokens;
+}
+
+function contractTokens(bytes: number): number {
+  return bytes;
+}
+
+function componentBreakdown(
+  composition: FusionBudgetStageComposition | undefined,
+  route: FusionRouteCapacity,
+): FusionBudgetComponentBreakdown {
+  const empty = {
+    visible_text_bytes: 0,
+    omission_receipt_bytes: 0,
+    projection_metadata_bytes: 0,
+    request_bytes: 0,
+    static_stage_framing_bytes: 0,
+    upstream_output_contract_bytes: 0,
+  } satisfies FusionBudgetStageComposition;
+  const item = composition ?? empty;
+  return {
+    visible_text: {
+      bytes: item.visible_text_bytes,
+      tokens: segmentTokensForBytes(route, item.visible_text_bytes),
+    },
+    omission_receipts: {
+      bytes: item.omission_receipt_bytes,
+      tokens: segmentTokensForBytes(route, item.omission_receipt_bytes),
+    },
+    projection_metadata: {
+      bytes: item.projection_metadata_bytes,
+      tokens: segmentTokensForBytes(route, item.projection_metadata_bytes),
+    },
+    request: {
+      bytes: item.request_bytes,
+      tokens: segmentTokensForBytes(route, item.request_bytes),
+    },
+    static_stage_framing: {
+      bytes: item.static_stage_framing_bytes,
+      tokens: segmentTokensForBytes(route, item.static_stage_framing_bytes),
+    },
+    upstream_output_contracts: {
+      bytes: item.upstream_output_contract_bytes,
+      tokens: contractTokens(item.upstream_output_contract_bytes),
+    },
+  };
+}
+
+function medianCounterfactual(primary: FusionBudgetBlocker): FusionBudgetCounterfactuals['at_median_rate'] {
+  if (!primary.route.rate_source.backed) {
+    return { forecast_input_tokens_upper_bound: null, signed_headroom_tokens: null, fits: null };
+  }
+  const median = primary.route.rate_source.provenance.median_bpt_x1000;
+  if (median === null) return { forecast_input_tokens_upper_bound: null, signed_headroom_tokens: null, fits: null };
+  const variableTokens = ceilDiv(primary.input_utf8_bytes * 1000, median);
+  const tokens = variableTokens + TOKEN_BUDGET_AFFINE_F_TOKENS;
+  return {
+    forecast_input_tokens_upper_bound: tokens,
+    signed_headroom_tokens: primary.allowed_input_tokens - tokens,
+    fits: tokens <= primary.allowed_input_tokens,
+  };
+}
+
+function inputCounterfactuals(
+  primary: FusionBudgetBlocker,
+  plan: FusionBudgetPlanV1,
+): FusionBudgetCounterfactuals {
+  return {
+    empty_request: plan.empty_request,
+    without_reservation: {
+      forecast_input_tokens_upper_bound: primary.input_only_input_tokens_upper_bound,
+      signed_headroom_tokens: primary.input_only_signed_headroom_tokens,
+      fits: primary.fits,
+    },
+    at_median_rate: medianCounterfactual(primary),
+  };
+}
+
+function budgetErrorCode(
+  checkKind: FusionBudgetCheckKind,
+): 'prompt_budget_exceeded_forecast' | 'prompt_budget_exceeded_measured' {
+  return checkKind === 'rendered_prompt'
+    ? 'prompt_budget_exceeded_measured'
+    : 'prompt_budget_exceeded_forecast';
+}
+
 export class FusionBudget {
   readonly routes: readonly FusionRouteCapacity[];
   readonly limiting: FusionRouteCapacity;
@@ -408,6 +686,19 @@ export class FusionBudget {
 
   get allowedInputTokens(): number {
     return this.limiting.allowed_input_tokens;
+  }
+
+  get resultRateSources() {
+    return this.routes.map((route) => route.rate_source);
+  }
+
+  get unknownProviderWarnings(): readonly string[] {
+    return this.routes.flatMap((route) => {
+      const warning = route.rate_source.warning;
+      return route.rate_source.backed || warning === null
+        ? []
+        : [`${route.qualified_id}: ${warning}`];
+    });
   }
 
   private routeForStage(stage: FusionBudgetStage, slot?: 1 | 2 | 3): FusionRouteCapacity {
@@ -528,8 +819,7 @@ export class FusionBudget {
     const emptyBlockers = selectBlockers(emptyEntries);
     let reduction = 0;
     for (const entry of entries) {
-      const byteLimit = entry.allowed_input_tokens * FUSION_BYTES_PER_TOKEN_DIVISOR;
-      reduction = Math.max(reduction, entry.forecast_utf8_bytes - byteLimit);
+      reduction = Math.max(reduction, entry.input_utf8_bytes - maxKnownTextBytes(entry.route));
     }
     reduction = Math.max(0, reduction);
     const requestBytes = utf8Bytes(input.request.text);
@@ -548,13 +838,18 @@ export class FusionBudget {
     plan: FusionBudgetPlanV1,
     artifactDir: string,
     measurementKind: FusionBudgetErrorDetail['measurement_kind'],
+    checkKind: FusionBudgetCheckKind,
   ): FusionError {
-    const remediation = remediationFor(plan.empty_request);
+    const composition = plan.primary_blocker_composition;
+    const dominantByteClass = primary.input_only_estimate.rateSource.dominant_byte_class;
+    const remediation = dominantRemediation(plan.empty_request, composition, dominantByteClass);
+    const tokensOver = primary.input_only_input_tokens_upper_bound - primary.allowed_input_tokens;
     const budget: FusionBudgetErrorDetail = {
       budget_stage: primary.budget_stage,
       measurement_kind: measurementKind,
-      measured_utf8_bytes: primary.forecast_utf8_bytes,
-      measured_input_tokens_upper_bound: primary.forecast_input_tokens_upper_bound,
+      check_kind: checkKind,
+      measured_utf8_bytes: primary.input_utf8_bytes,
+      measured_input_tokens_upper_bound: primary.input_only_input_tokens_upper_bound,
       allowed_input_tokens: primary.allowed_input_tokens,
       limiting_model: {
         provider: primary.route.provider,
@@ -562,30 +857,57 @@ export class FusionBudget {
         qualified_id: primary.route.qualified_id,
         context_window_tokens: primary.route.context_window_tokens,
       },
+      rate_source: primary.input_only_estimate.rateSource,
+      backed: primary.input_only_estimate.rateSource.backed,
+      dominant_byte_class: dominantByteClass,
+      component_breakdown: componentBreakdown(composition, primary.route),
+      byte_class_breakdown: primary.input_only_estimate.byte_class_breakdown,
+      dense_regions: [],
+      bytes_over: primary.bytes_over,
+      tokens_over: Math.max(0, tokensOver),
+      required_allowed_tokens: primary.input_only_input_tokens_upper_bound,
+      route_table: routeTable(this.routes),
+      counterfactuals: inputCounterfactuals(primary, plan),
+      stage_upstream_actuals: [],
+      policy_id: FUSION_BUDGET_POLICY.id,
+      calibration_version: TOKEN_BUDGET_CALIBRATION_VERSION,
       context_policy_id: this.contextPolicyId,
       remediation,
       blockers: plan.blockers,
       artifact_dir: artifactDir,
     };
     if (primary.slot !== undefined) budget.slot = primary.slot;
-    const composition = plan.primary_blocker_composition;
     const compositionText = composition === undefined ? 'unavailable' : formatComposition(composition);
     const additional = plan.blockers
       .filter((blocker) => blocker !== primary)
       .map((blocker) => `${entryLabel(blocker)} route=${blocker.route.qualified_id}`)
       .join('; ');
-    const overage = primary.forecast_input_tokens_upper_bound - primary.allowed_input_tokens;
+    const rateText = `${primary.route.family} ${formatRateX100(primary.input_only_estimate.rateSource.effective_rate_bytes_per_token_x100)} B/tok + ${String(primary.input_only_estimate.rateSource.affine_f_tokens)} tokens (${primary.input_only_estimate.rateSource.source}, backed=${String(primary.input_only_estimate.rateSource.backed)}, dominant=${dominantByteClass})`;
+    const sourceWarning = primary.input_only_estimate.rateSource.warning;
+    const routeWarning = sourceWarning === null ? '' : ` Rate warning: ${sourceWarning}.`;
+    const checkText =
+      checkKind === 'input_only_preflight'
+        ? 'input-only preflight forecast'
+        : 'exact rendered prompt measurement';
+    const dominantText =
+      dominantByteClass === 'multibyte'
+        ? ' Dominant byte class is multibyte UTF-8; the fatal gate uses the conservative multibyte rate and the plan separately records the provable 1.00 B/tok advisory ceiling.'
+        : dominantByteClass === 'dense_ascii'
+          ? ' Dominant byte class is dense ASCII/low-whitespace content; the whitespace gate is a heuristic token-density proxy, not a bound.'
+          : ` Dominant byte class is ${dominantByteClass}.`;
     const message =
-      `Fusion prompt budget exceeded before child creation. Primary blocking stage: ${entryLabel(primary)} on route ${primary.route.qualified_id}. ` +
-      `Forecast ${String(primary.forecast_utf8_bytes)} UTF-8 bytes (<= ${String(primary.forecast_input_tokens_upper_bound)} input tokens) against ${String(primary.allowed_input_tokens)} allowed input tokens, over by ${String(overage)} tokens. ` +
+      `Fusion prompt budget exceeded by ${checkText} before child creation. Primary blocking stage: ${entryLabel(primary)} on route ${primary.route.qualified_id}. ` +
+      `Forecast ${String(primary.input_utf8_bytes)} UTF-8 bytes (<= ${String(primary.input_only_input_tokens_upper_bound)} input tokens) against ${String(primary.allowed_input_tokens)} allowed input tokens, over by ${String(Math.max(0, tokensOver))} tokens. ` +
+      `Estimator: ${rateText}.${routeWarning}${dominantText} ` +
       `No child was created. Nothing was clipped, dropped, or substituted. Artifact directory: ${artifactDir}.\n` +
       `Per-stage forecast table:\n${formatTable(plan.stages)}\n` +
       `Primary blocker byte composition: ${compositionText}.\n` +
       `Additional blockers: ${additional.length === 0 ? 'none' : additional}.\n` +
       `${formatEmptyRequestVerdict(plan.empty_request)}\n` +
+      `Route byte-capacity order: ${routeTable(this.routes).map((route) => `${route.qualified_id}=${String(route.byte_capacity_utf8_bytes)}B`).join(', ')}.\n` +
       `Remediation: ${remediation.join(' ')}`;
     const details = {
-      code: 'prompt_budget_exceeded' as const,
+      code: budgetErrorCode(checkKind),
       childCreated: false,
       budget,
       stage: stageFromBudgetStage(primary.budget_stage),
@@ -618,7 +940,13 @@ export class FusionBudget {
 
   assertPlanFits(plan: FusionBudgetPlanV1, artifactDir: string): void {
     if (plan.primary_blocker !== undefined) {
-      throw this.failure(plan.primary_blocker, plan, artifactDir, 'stage_forecast');
+      throw this.failure(
+        plan.primary_blocker,
+        plan,
+        artifactDir,
+        'stage_forecast',
+        'input_only_preflight',
+      );
     }
   }
 
@@ -629,19 +957,29 @@ export class FusionBudget {
     slot?: 1 | 2 | 3,
   ): void {
     const route = this.routeForStage(stage, slot);
-    const forecastUtf8Bytes = utf8Bytes(systemPrompt) + utf8Bytes(userPrompt);
-    const tokens = fusionTokenUpperBound(forecastUtf8Bytes);
-    if (tokens <= route.allowed_input_tokens) return;
+    const inputSegments = [knownTextSegment(systemPrompt), knownTextSegment(userPrompt)];
+    const inputBytes = inputSegments.reduce((sum, segment) => sum + segment.bytes, 0);
+    const estimate = estimateRouteInput(route, inputSegments);
+    if (estimate.tokens <= route.allowed_input_tokens) return;
     const entry: FusionStageBudgetPlanEntry = {
       budget_stage: stage,
       route,
       conditional: stage === 'evaluation_repair',
-      forecast_utf8_bytes: forecastUtf8Bytes,
-      forecast_input_tokens_upper_bound: tokens,
+      check_kind: 'input_only_preflight',
+      input_utf8_bytes: inputBytes,
+      upstream_output_contract_bytes: 0,
+      forecast_utf8_bytes: inputBytes,
+      input_only_input_tokens_upper_bound: estimate.tokens,
+      forecast_input_tokens_upper_bound: estimate.tokens,
       allowed_input_tokens: route.allowed_input_tokens,
-      signed_headroom_tokens: route.allowed_input_tokens - tokens,
-      utilization: tokens / route.allowed_input_tokens,
+      input_only_signed_headroom_tokens: route.allowed_input_tokens - estimate.tokens,
+      signed_headroom_tokens: route.allowed_input_tokens - estimate.tokens,
+      input_only_utilization_basis_points: utilizationBasisPoints(estimate.tokens, route.allowed_input_tokens),
+      utilization_basis_points: utilizationBasisPoints(estimate.tokens, route.allowed_input_tokens),
+      input_only_estimate: estimate,
+      reservation_estimate: estimate,
       fits: false,
+      reservation_fits: false,
     };
     if (slot !== undefined) entry.slot = slot;
     const blocker = blockerFromEntry(entry);
@@ -656,12 +994,53 @@ export class FusionBudget {
         request_utf8_bytes: 0,
         still_fails_with_empty_request: true,
         shortening_request_can_help: false,
-        minimum_request_byte_reduction: forecastUtf8Bytes - route.allowed_input_tokens * FUSION_BYTES_PER_TOKEN_DIVISOR,
+        minimum_request_byte_reduction: blocker.bytes_over,
         maximum_safe_request_utf8_bytes: 0,
         blockers_with_empty_request: [blocker],
       },
       warnings: [],
     };
-    throw this.failure(blocker, plan, 'stage prompt re-measurement', 'rendered_prompt');
+    throw this.failure(blocker, plan, 'stage prompt re-measurement', 'rendered_prompt', 'rendered_prompt');
+  }
+
+  calibrationViolationForCompletedChild(
+    stage: FusionStage,
+    systemPrompt: string,
+    userPrompt: string,
+    result: FusionChildRunResult,
+    slot?: 1 | 2 | 3,
+  ): FusionCalibrationViolation | undefined {
+    const route = this.routeForStage(stage, slot);
+    const inputSegments = [knownTextSegment(systemPrompt), knownTextSegment(userPrompt)];
+    const promptUtf8Bytes = inputSegments.reduce((sum, segment) => sum + segment.bytes, 0);
+    const estimate = estimateRouteInput(route, inputSegments);
+    const billedInput = result.usage.input + result.usage.cacheRead + result.usage.cacheWrite;
+    if (billedInput <= estimate.tokens) return undefined;
+    const violation: FusionCalibrationViolation = {
+      schema_version: FUSION_CALIBRATION_VIOLATION_SCHEMA_VERSION,
+      stage,
+      attempt: result.attempt,
+      route: {
+        provider: result.provider,
+        model: result.model,
+        qualified_id: result.qualifiedId,
+      },
+      family: route.family,
+      rate_source: estimate.rateSource,
+      prompt_utf8_bytes: promptUtf8Bytes,
+      prompt_sha256: sha256Hex(`${systemPrompt}\u0000${userPrompt}`),
+      forecast_input_tokens: estimate.tokens,
+      billed_input_tokens: billedInput,
+      billed_input_breakdown: {
+        input: result.usage.input,
+        cache_read: result.usage.cacheRead,
+        cache_write: result.usage.cacheWrite,
+      },
+      under_forecast_tokens: billedInput - estimate.tokens,
+      byte_class_breakdown: estimate.byte_class_breakdown,
+      dominant_byte_class: estimate.rateSource.dominant_byte_class,
+    };
+    if (slot !== undefined) violation.slot = slot;
+    return violation;
   }
 }

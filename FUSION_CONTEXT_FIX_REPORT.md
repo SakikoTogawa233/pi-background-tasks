@@ -28,12 +28,11 @@ All three candidate prompts were byte-identical at 1,074,041 B (verified by `wc 
 Codex error: Your input exceeds the context window of this model.
 ```
 
-**Arithmetic confirmation.** Across 159 real large Fusion prompts recorded in `.pi/fusion`, the
-densest observed ratio was 3.552 bytes per reported input token. At that rate:
+**Arithmetic confirmation.** Across 882 real large Fusion prompts recorded in `.pi/fusion`, the observed floors are 2.047 B/tok for Anthropic and 3.400 B/tok for Codex. At the Codex floor:
 
 ```text
-1,074,041 B / 3.552 B/tok = 302,376 tokens  vs  272,000-token window
-=> 30,376 tokens over (1.11x)
+1,074,041 B / 3.400 B/tok = 315,895 tokens  vs  272,000-token window
+=> 43,895 tokens over (1.16x)
 ```
 
 The provider rejection is fully explained by input size alone. The orchestrator then correctly
@@ -60,7 +59,13 @@ provenance rather than conversational context. Specific recommendations adopted:
 - One-tier transform with two authority profiles rather than two different transforms for
   tool vs. command entry. Adopted.
 - Whole-DAG feasibility proof before any candidate spawns, plus exact re-measurement before each
-  later spawn. Adopted.
+  later spawn. Adopted — **with an important correction recorded later**: that re-measurement is
+  exact in *bytes* but converts them with the *same* byte-to-token function used by the forecast.
+  It therefore catches composition error (wrong bytes assembled) and unknown-output estimation
+  error, but provides **no independent check on conversion bias**. Any claim that it protects
+  against a mis-calibrated rate is false. This is why the dense-ASCII out-of-distribution gate is a
+  safety control rather than an optimisation: without it, a single wrong rate would fool both
+  layers identically.
 - Fail fast rather than auto-eliding oldest messages, since oldest-first elision is explicit but
   still semantically arbitrary and may discard the governing requirement. Adopted.
 
@@ -380,10 +385,14 @@ characters.
 ## 12. Remaining limitations
 
 1. **No exact tokenizer.** Pi exposes none per route (`estimateTokens` is itself `chars/4`), so the
-   budget uses a `ceil(bytes/2)` ceiling — strictly more conservative than the 3.552 B/tok floor
-   measured across 159 real prompts, and re-validated by exact pre-spawn measurement. A provider
-   context rejection after accepted preflight would remain a loud child failure; it is not retried
-   and no model is substituted.
+   budget uses the shared affine estimator calibrated on 882 large prompts: Anthropic floor 2.047
+   B/tok (shipped `r=1.73`) and Codex floor 3.400 B/tok (shipped `r=2.89`). Calibrated rates apply
+   only to backed exact model IDs and measured large prompts that pass the low-whitespace dense-ASCII
+   gate; the gate is a heuristic proxy, not a bound, and records its decision in `budget-plan.json`.
+   Multibyte UTF-8 uses a conservative 2.0 B/tok fatal rate while the provable 1.00 B/tok ceiling is
+   persisted as advisory. Unknown providers and unbacked model IDs use the 1.00 B/tok floor and are
+   surfaced in result details. A provider context rejection after accepted preflight would remain a
+   loud child failure; it is not retried and no model is substituted.
 2. **Minimum route capacity ≥167,936 tokens.** A consequence of uniform conservatism, surfaced as an
    actionable configuration error. Routes such as a 128k `gpt-5.3-codex-spark` cannot be configured.
 3. **Tool-only facts are unavailable** to children under both policies. Stated in the README, in the

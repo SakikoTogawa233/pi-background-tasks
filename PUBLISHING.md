@@ -1,6 +1,6 @@
 # Publishing pi-background-tasks
 
-Release checklist for npm publishing and standalone git publishing. The current release candidate is 0.7.6; version 0.7.0 introduced the Fusion public surfaces (`/fusion`, `/fusion-models`, `fusion_brainstorm`) in addition to the background-task surfaces. Do not advertise the GitHub install target until the standalone repository has the exact release commit and tag.
+Release checklist for npm publishing and standalone git publishing. The current release candidate is 0.7.7; version 0.7.0 introduced the Fusion public surfaces (`/fusion`, `/fusion-models`, `fusion_brainstorm`) in addition to the background-task surfaces. Do not advertise the GitHub install target until the standalone repository has the exact release commit and tag.
 
 ## Preconditions
 
@@ -37,8 +37,8 @@ npm publish --access public
 Pi install smoke after publish:
 
 ```bash
-PI_CODING_AGENT_DIR=$(mktemp -d) pi -e npm:pi-background-tasks@0.7.6 --offline --no-tools --no-session -p "/jobs"
-pi install npm:pi-background-tasks@0.7.6
+PI_CODING_AGENT_DIR=$(mktemp -d) pi -e npm:pi-background-tasks@0.7.7 --offline --no-tools --no-session -p "/jobs"
+pi install npm:pi-background-tasks@0.7.7
 ```
 
 ## Publish to git
@@ -51,15 +51,15 @@ git status --short --branch
 git log --oneline -3
 git remote -v
 git push origin main
-git tag v0.7.6
-git push origin v0.7.6
+git tag v0.7.7
+git push origin v0.7.7
 ```
 
 Pi install smoke after git tag, using an isolated Pi agent directory so no local checkout or user `~/.pi` state is involved:
 
 ```bash
-PI_CODING_AGENT_DIR=$(mktemp -d) pi -e git:github.com/ismailsaleekh/pi-background-tasks@v0.7.6 --offline --no-tools --no-session -p "/jobs"
-pi install git:github.com/ismailsaleekh/pi-background-tasks@v0.7.6
+PI_CODING_AGENT_DIR=$(mktemp -d) pi -e git:github.com/ismailsaleekh/pi-background-tasks@v0.7.7 --offline --no-tools --no-session -p "/jobs"
+pi install git:github.com/ismailsaleekh/pi-background-tasks@v0.7.7
 ```
 
 ## pi.dev/packages

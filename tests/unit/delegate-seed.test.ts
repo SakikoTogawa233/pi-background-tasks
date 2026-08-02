@@ -249,7 +249,7 @@ void describe('delegate seed construction', () => {
     const built = build(CONVERSATION);
     assert.equal(built.seed.schema_version, DELEGATE_SEED_SCHEMA_VERSION);
     assert.equal(built.seed.conversation_projection.policy.id, DELEGATE_CONTEXT_POLICY_ID);
-    assert.ok(!built.serialized.includes('fusion-input.v3'));
+    assert.ok(!built.serialized.includes('fusion-input.v4'));
     assert.ok(!built.serialized.includes('fusion-tool-explicit'));
   });
 

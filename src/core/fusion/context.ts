@@ -2,7 +2,9 @@ import { createHash } from 'node:crypto';
 import { canonicalJson } from '../attested-pi-run.js';
 import {
   projectVisibleConversationV2,
+  type OmittedRunCounts,
   type ProjectedConversationV2,
+  type ProjectionEntry,
 } from '../context/visible-conversation-v2.js';
 import {
   snapshotParentConversation,
@@ -25,6 +27,8 @@ import {
   type FusionContextOmissionLedgerV2,
   type FusionContextPolicyDescriptor,
   type FusionConversationProjectionV3,
+  type FusionProjectionEntry,
+  type FusionProjectionOmissionCounts,
   type FusionRequestAuthority,
   type FusionSource,
 } from './types.js';
@@ -82,25 +86,91 @@ function policyDescriptor(source: FusionSource): FusionContextPolicyDescriptor {
   };
 }
 
+function compactOmissionCounts(counts: OmittedRunCounts): FusionProjectionOmissionCounts {
+  return [
+    counts.assistant_thinking ?? 0,
+    counts.tool_calls ?? 0,
+    counts.tool_result_texts ?? 0,
+  ];
+}
+
+function expandOmissionCounts(counts: FusionProjectionOmissionCounts): OmittedRunCounts {
+  const out: OmittedRunCounts = {};
+  const [assistantThinking, toolCalls, toolResults] = counts;
+  if (assistantThinking > 0) out.assistant_thinking = assistantThinking;
+  if (toolCalls > 0) out.tool_calls = toolCalls;
+  if (toolResults > 0) out.tool_result_texts = toolResults;
+  return out;
+}
+
+export function compactFusionProjectionEntry(entry: ProjectionEntry): FusionProjectionEntry {
+  if (entry.kind === 'text') {
+    return [
+      't',
+      entry.role === 'user' ? 'u' : 'a',
+      entry.source_ordinal,
+      entry.block_ordinal,
+      entry.text,
+    ];
+  }
+  return ['o', [entry.at[0], entry.at[1]], entry.bytes, compactOmissionCounts(entry.counts)];
+}
+
+export function expandFusionProjectionEntry(entry: FusionProjectionEntry): ProjectionEntry {
+  if (entry[0] === 't') {
+    return {
+      kind: 'text',
+      source_ordinal: entry[2],
+      block_ordinal: entry[3],
+      role: entry[1] === 'u' ? 'user' : 'assistant',
+      text: entry[4],
+    };
+  }
+  return {
+    kind: 'omitted_activity',
+    at: [entry[1][0], entry[1][1]],
+    bytes: entry[2],
+    counts: expandOmissionCounts(entry[3]),
+  };
+}
+
+function compactFusionProjectionEntries(
+  entries: readonly ProjectionEntry[],
+): readonly FusionProjectionEntry[] {
+  return entries.map(compactFusionProjectionEntry);
+}
+
+function compactOmissionReceiptBytes(entries: readonly FusionProjectionEntry[]): number {
+  let total = 0;
+  for (const entry of entries) {
+    if (entry[0] === 'o') total += Buffer.byteLength(canonicalJson(entry), 'utf8');
+  }
+  return total;
+}
+
 /**
  * Seal the shared transform output into Fusion's versioned envelopes.
  *
- * Field values and construction order are preserved exactly as Fusion has always
- * emitted them. The ledger root commits only to ledger rows, so sealing under a
- * Fusion envelope cannot change it. `tests/unit/fusion-golden-bytes.test.ts`
- * proves the resulting bytes are unchanged.
+ * Fusion v4 compacts only the child-facing projection entries. Ledger rows are
+ * carried through unchanged, so the ledger root commits to exactly the same
+ * omitted payload records before and after tuple encoding. Golden tests pin the
+ * new canonical-input bytes and the unchanged ledger bytes.
  */
 function sealFusionProjection(
   projected: ProjectedConversationV2,
   source: FusionSource,
   branchFilter: FusionBranchFilterDescriptor,
 ): { projection: FusionConversationProjectionV3; ledger: FusionContextOmissionLedgerV2 } {
+  const entries = compactFusionProjectionEntries(projected.entries);
   return {
     projection: {
       policy: policyDescriptor(source),
       branch_filter: branchFilter,
-      entries: projected.entries,
-      accounting: projected.accounting,
+      entries,
+      accounting: {
+        ...projected.accounting,
+        omission_receipt_utf8_bytes: compactOmissionReceiptBytes(entries),
+      },
     },
     ledger: {
       schema_version: FUSION_CONTEXT_LEDGER_SCHEMA_VERSION,

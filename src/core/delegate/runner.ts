@@ -134,6 +134,10 @@ export async function prepareDelegateLaunch(
         model: input.route.model,
         qualifiedId: input.route.qualified_id,
       },
+      budget: {
+        family: preflight.plan.route.family,
+        rate_source: preflight.plan.route.rate_source,
+      },
       autoDeliver: input.autoDeliver,
     };
     const stdinBytes = Buffer.from(preflight.childPrompt, 'utf8');

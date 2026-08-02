@@ -80,9 +80,7 @@ function canonicalInput(text = 'hello'): FusionCanonicalInputV3 {
         tool_call_id: null,
         active_tool_call_leaf_excluded: false,
       },
-      entries: [
-        { kind: 'text', source_ordinal: 0, block_ordinal: 0, role: 'user', text },
-      ],
+      entries: [['t', 'u', 0, 0, text]],
       accounting: {
         message_count: 1,
         included_text_entry_count: 1,

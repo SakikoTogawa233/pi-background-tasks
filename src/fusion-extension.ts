@@ -150,6 +150,8 @@ function progressText(event: FusionProgressEvent): string {
     return `fusion: evaluator schema retry (${String(event.errors.length)} issue${event.errors.length === 1 ? '' : 's'})`;
   if (event.type === 'budget_warning')
     return `fusion: budget warning (${String(event.warnings.length)} stage${event.warnings.length === 1 ? '' : 's'} at or above 80%)`;
+  if (event.type === 'calibration_warning')
+    return `fusion: calibration warning (${String(event.warning.under_forecast_tokens)} tokens under forecast)`;
   if (event.type === 'merge_started') return 'fusion: merging final answer';
   if (event.type === 'completed') return 'fusion: completed';
   if (event.type === 'cancelled') return `fusion: cancelled (${event.reason})`;

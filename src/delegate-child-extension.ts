@@ -14,6 +14,7 @@ import {
 } from './core/delegate/types.js';
 import { verifyDelegateSeedBytes } from './core/delegate/seed.js';
 import { evaluateDelegateRuntimeBudget } from './core/delegate/budget.js';
+import { utf8ByteClassBreakdown } from './core/context/token-budget.js';
 import {
   buildDelegateResultPackage,
   serializeDelegateResultPackage,
@@ -207,28 +208,47 @@ function commitFileSync(absPath: string, data: Buffer): void {
   }
 }
 
-function messageContentBytes(content: unknown): number {
-  if (typeof content === 'string') return Buffer.byteLength(content, 'utf8');
-  if (!Array.isArray(content)) return 0;
-  let total = 0;
+interface ContentMeasurement {
+  bytes: number;
+  multibyteBytes: number;
+  denseBytes: 0;
+}
+
+function emptyContentMeasurement(): ContentMeasurement {
+  return { bytes: 0, multibyteBytes: 0, denseBytes: 0 };
+}
+
+function addContentMeasurement(target: ContentMeasurement, delta: ContentMeasurement): void {
+  target.bytes += delta.bytes;
+  target.multibyteBytes += delta.multibyteBytes;
+}
+
+function stringMeasurement(value: string): ContentMeasurement {
+  return utf8ByteClassBreakdown(value);
+}
+
+function messageContentMeasurement(content: unknown): ContentMeasurement {
+  if (typeof content === 'string') return stringMeasurement(content);
+  const total = emptyContentMeasurement();
+  if (!Array.isArray(content)) return total;
   for (const part of content) {
     if (typeof part !== 'object' || part === null) continue;
     const text: unknown = Reflect.get(part, 'text');
-    if (typeof text === 'string') total += Buffer.byteLength(text, 'utf8');
+    if (typeof text === 'string') addContentMeasurement(total, stringMeasurement(text));
     const thinkingText: unknown = Reflect.get(part, 'thinking');
-    if (typeof thinkingText === 'string') total += Buffer.byteLength(thinkingText, 'utf8');
+    if (typeof thinkingText === 'string') addContentMeasurement(total, stringMeasurement(thinkingText));
     const args: unknown = Reflect.get(part, 'arguments');
-    if (args !== undefined) total += Buffer.byteLength(JSON.stringify(args) ?? '', 'utf8');
+    if (args !== undefined) addContentMeasurement(total, stringMeasurement(JSON.stringify(args) ?? ''));
     const data: unknown = Reflect.get(part, 'data');
-    if (typeof data === 'string') total += Buffer.byteLength(data, 'utf8');
+    if (typeof data === 'string') addContentMeasurement(total, stringMeasurement(data));
   }
   return total;
 }
 
 /** Complete retained input measured the same way the admission plan measured the seed. */
-function retainedInputBytes(messages: readonly object[], systemPrompt: string): number {
-  let total = Buffer.byteLength(systemPrompt, 'utf8');
-  for (const message of messages) total += messageContentBytes(Reflect.get(message, 'content'));
+function retainedInputMeasurement(messages: readonly object[], systemPrompt: string): ContentMeasurement {
+  const total = stringMeasurement(systemPrompt);
+  for (const message of messages) addContentMeasurement(total, messageContentMeasurement(Reflect.get(message, 'content')));
   return total;
 }
 
@@ -438,12 +458,18 @@ export default function delegateChildExtension(pi: ExtensionAPI): void {
     // runs inside this try, and the catch latches terminal state and suppresses
     // the content rather than letting the original through.
     try {
+      const measurement = retainedInputMeasurement(event.messages, ctx.getSystemPrompt());
       const verdict = evaluateDelegateRuntimeBudget(
-        { retainedInputBytes: retainedInputBytes(event.messages, ctx.getSystemPrompt()) },
+        {
+          retainedInputBytes: measurement.bytes,
+          retainedInputMultibyteBytes: measurement.multibyteBytes,
+          retainedInputDenseBytes: measurement.denseBytes,
+        },
         seed.limits.allowed_input_tokens,
+        seed.route,
       );
       if (verdict.withinBudget) return undefined;
-      const message = `delegate child context reached ${String(verdict.measuredTokens)} input tokens against a ${String(verdict.allowedTokens)}-token allowance on route ${seed.route.qualified_id}, over by ${String(verdict.overageTokens)}`;
+      const message = `delegate child context reached ${String(verdict.measuredTokens)} input tokens against a ${String(verdict.allowedTokens)}-token allowance on route ${seed.route.qualified_id}, over by ${String(verdict.overageTokens)}; estimator family ${verdict.rateSource.family}, source ${verdict.rateSource.source}, backed=${String(verdict.backed)}, dominant_byte_class=${verdict.dominantByteClass}, rate ${String(verdict.rateSource.effective_rate_bytes_per_token_x100)}/100 B/tok + ${String(verdict.rateSource.affine_f_tokens)} tokens`;
       latch('provider_context_budget_exhausted', message);
       // Barrier one: terminate the run. Measured on Pi 0.83, this hands the
       // provider call an already-aborted signal and stops further turns.

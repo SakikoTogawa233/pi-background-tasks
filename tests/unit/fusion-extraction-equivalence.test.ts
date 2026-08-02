@@ -5,6 +5,7 @@ import { canonicalJson } from '../../src/core/attested-pi-run.js';
 import type { Message } from '@earendil-works/pi-ai';
 import {
   buildFusionCanonicalInput,
+  expandFusionProjectionEntry,
   projectFusionConversation,
 } from '../../src/core/fusion/context.js';
 import {
@@ -12,11 +13,9 @@ import {
   projectFusionConversation as projectPreExtraction,
 } from '../oracle/fusion-context-pre-extraction.js';
 import { FUSION_BRANCH_FILTER_ID, type FusionBranchFilterDescriptor } from '../../src/core/fusion/types.js';
-import { FusionBudget } from '../../src/core/fusion/budget.js';
 import { sessionWith } from '../helpers/fusion-canonical.js';
 import {
   FUSION_GOLDEN_CASES,
-  FUSION_GOLDEN_MODEL_SETS,
   type FusionGoldenCase,
 } from '../helpers/fusion-golden-corpus.js';
 
@@ -31,7 +30,21 @@ import {
  * with goldens it generated itself.
  */
 
-type Builder = typeof buildFusionCanonicalInput;
+type BuilderContext = Parameters<typeof buildFusionCanonicalInput>[0];
+type BuilderOptions = Parameters<typeof buildFusionCanonicalInput>[1];
+
+interface RenderableBuildResult {
+  input: {
+    conversation_projection: {
+      policy: { id: string };
+    };
+  };
+  serialized: string;
+  ledger: unknown;
+  transcriptLeafId: string | null;
+}
+
+type Builder = (ctx: BuilderContext, options: BuilderOptions) => RenderableBuildResult;
 
 const BRANCH_FILTER: FusionBranchFilterDescriptor = {
   id: FUSION_BRANCH_FILTER_ID,
@@ -48,7 +61,6 @@ interface Rendered {
   serialized: string;
   ledger: string;
   leafPresent: boolean;
-  plans: Record<string, string>;
 }
 
 function render(build: Builder, testCase: FusionGoldenCase): Rendered {
@@ -63,31 +75,42 @@ function render(build: Builder, testCase: FusionGoldenCase): Rendered {
     { cwd: '/tmp/project', sessionManager: session, getSystemPrompt: () => testCase.systemPrompt },
     options,
   );
-  const plans: Record<string, string> = {};
-  for (const set of FUSION_GOLDEN_MODEL_SETS) {
-    const budget = new FusionBudget(set.models, built.input.conversation_projection.policy.id);
-    plans[set.id] = canonicalJson(budget.plan(built.input));
-  }
   return {
     serialized: built.serialized,
     ledger: canonicalJson(built.ledger),
     leafPresent: built.transcriptLeafId !== null,
-    plans,
   };
 }
 
 void describe('fusion shared-projection extraction equivalence', () => {
   for (const testCase of FUSION_GOLDEN_CASES) {
-    void it(`produces identical bytes to the pre-extraction oracle: ${testCase.id}`, () => {
+    void it(`preserves oracle projection semantics under compact encoding: ${testCase.id}`, () => {
       const before = render(buildPreExtraction, testCase);
       const after = render(buildFusionCanonicalInput, testCase);
+      const beforeInput = JSON.parse(before.serialized);
+      const afterInput = JSON.parse(after.serialized);
+      const beforeProjection = beforeInput.conversation_projection;
+      const afterProjection = afterInput.conversation_projection;
 
-      assert.equal(
-        sha256(after.serialized),
-        sha256(before.serialized),
-        `canonical-input.json bytes changed for ${testCase.id}`,
+      assert.deepEqual(
+        afterProjection.entries.map(expandFusionProjectionEntry),
+        beforeProjection.entries,
+        `decoded compact entries changed projection semantics for ${testCase.id}`,
       );
-      assert.equal(after.serialized, before.serialized);
+
+      const beforeAccounting = { ...beforeProjection.accounting };
+      const afterAccounting = { ...afterProjection.accounting };
+      Reflect.deleteProperty(beforeAccounting, 'omission_receipt_utf8_bytes');
+      Reflect.deleteProperty(afterAccounting, 'omission_receipt_utf8_bytes');
+      assert.deepEqual(afterAccounting, beforeAccounting);
+      assert.ok(
+        afterProjection.accounting.omission_receipt_utf8_bytes <=
+          beforeProjection.accounting.omission_receipt_utf8_bytes,
+        `compact receipt accounting must not exceed verbose accounting for ${testCase.id}`,
+      );
+      assert.deepEqual(afterProjection.policy, beforeProjection.policy);
+      assert.deepEqual(afterProjection.branch_filter, beforeProjection.branch_filter);
+      assert.equal(afterInput.schema_version, 'pi-background-tasks.fusion-input.v4');
 
       assert.equal(
         sha256(after.ledger),
@@ -95,61 +118,22 @@ void describe('fusion shared-projection extraction equivalence', () => {
         `context-omission-ledger.json bytes changed for ${testCase.id}`,
       );
       assert.equal(after.ledger, before.ledger);
-
       assert.equal(after.leafPresent, before.leafPresent);
-
-      assert.deepEqual(Object.keys(after.plans).sort(), Object.keys(before.plans).sort());
-      for (const [id, plan] of Object.entries(after.plans)) {
-        assert.equal(plan, before.plans[id], `budget-plan.json bytes changed for ${testCase.id}/${id}`);
-      }
     });
   }
 
-  void it('produces identical numeric budget fields under Object.is, not just JSON equality', () => {
+  void it('compact canonical bytes never exceed the verbose oracle bytes', () => {
     for (const testCase of FUSION_GOLDEN_CASES) {
-      const session = sessionWith(testCase.messages);
-      const options: Parameters<Builder>[1] = {
-        source: testCase.source,
-        request: testCase.request,
-      };
-      if (testCase.toolCallId !== undefined) options.toolCallId = testCase.toolCallId;
-      if (testCase.toolName !== undefined) options.toolName = testCase.toolName;
-      const source = {
-        cwd: '/tmp/project',
-        sessionManager: session,
-        getSystemPrompt: () => testCase.systemPrompt,
-      };
-      const before = buildPreExtraction(source, options);
-      const after = buildFusionCanonicalInput(source, options);
-      for (const set of FUSION_GOLDEN_MODEL_SETS) {
-        const policyId = after.input.conversation_projection.policy.id;
-        const planBefore = new FusionBudget(set.models, policyId).plan(before.input);
-        const planAfter = new FusionBudget(set.models, policyId).plan(after.input);
-        assert.equal(planAfter.stages.length, planBefore.stages.length);
-        for (const [index, stage] of planAfter.stages.entries()) {
-          const reference = planBefore.stages[index];
-          assert.ok(reference);
-          // Object.is catches float drift that JSON rendering would hide.
-          assert.ok(
-            Object.is(stage.utilization, reference.utilization),
-            `utilization float drift for ${testCase.id}/${set.id}/${stage.budget_stage}`,
-          );
-          assert.ok(Object.is(stage.forecast_utf8_bytes, reference.forecast_utf8_bytes));
-          assert.ok(
-            Object.is(
-              stage.forecast_input_tokens_upper_bound,
-              reference.forecast_input_tokens_upper_bound,
-            ),
-          );
-          assert.ok(Object.is(stage.signed_headroom_tokens, reference.signed_headroom_tokens));
-          assert.ok(Object.is(stage.allowed_input_tokens, reference.allowed_input_tokens));
-          assert.equal(stage.fits, reference.fits);
-        }
-      }
+      const before = render(buildPreExtraction, testCase);
+      const after = render(buildFusionCanonicalInput, testCase);
+      assert.ok(
+        Buffer.byteLength(after.serialized, 'utf8') <= Buffer.byteLength(before.serialized, 'utf8'),
+        `compact canonical input grew for ${testCase.id}`,
+      );
     }
   });
 
-  void it('preserves the exact accounting record field-for-field', () => {
+  void it('preserves the exact accounting record field-for-field except compact receipt bytes', () => {
     for (const testCase of FUSION_GOLDEN_CASES) {
       const session = sessionWith(testCase.messages);
       const options: Parameters<Builder>[1] = {
@@ -170,7 +154,12 @@ void describe('fusion shared-projection extraction equivalence', () => {
         Object.keys(before.accounting).sort(),
         `accounting field set changed for ${testCase.id}`,
       );
-      assert.deepEqual(after.accounting, before.accounting);
+      const beforeAccounting = { ...before.accounting };
+      const afterAccounting = { ...after.accounting };
+      Reflect.deleteProperty(beforeAccounting, 'omission_receipt_utf8_bytes');
+      Reflect.deleteProperty(afterAccounting, 'omission_receipt_utf8_bytes');
+      assert.deepEqual(afterAccounting, beforeAccounting);
+      assert.ok(after.accounting.omission_receipt_utf8_bytes <= before.accounting.omission_receipt_utf8_bytes);
       assert.deepEqual(after.policy, before.policy);
       assert.deepEqual(after.branch_filter, before.branch_filter);
       assert.equal(

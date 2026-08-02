@@ -71,7 +71,7 @@ function policyDescriptor(): DelegateContextPolicyDescriptor {
  * Seal the shared transform under delegate's own envelope.
  *
  * Delegate never imports Fusion's canonical-input builder and never emits
- * `fusion-input.v3`. The ledger root commits only to ledger rows, so the two
+ * `fusion-input.v4`. The ledger root commits only to ledger rows, so the two
  * consumers can seal identical bodies without either affecting the other.
  */
 function sealDelegateProjection(

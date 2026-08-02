@@ -262,7 +262,7 @@ void describe('delegate mutation resistance', () => {
     );
     assert.doesNotMatch(
       seed,
-      /fusion-input\.v3/,
+      /fusion-input\.v4/,
       'delegate must not emit the Fusion input schema version',
     );
     assert.doesNotMatch(

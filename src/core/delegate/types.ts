@@ -1,5 +1,11 @@
 import type { Usage } from '@earendil-works/pi-ai';
 import type {
+  TokenBudgetByteClassBreakdown,
+  TokenBudgetDominantByteClass,
+  TokenBudgetFamily,
+  TokenBudgetRateSource,
+} from '../context/token-budget.js';
+import type {
   ContextProjectionMapEntry,
   OmittedEventRecord,
   ProjectionAccounting,
@@ -12,7 +18,7 @@ export const DELEGATE_RESULT_PACKAGE_SCHEMA_VERSION =
   'pi-background-tasks.delegate-result.v1' as const;
 export const DELEGATE_RECEIPT_SCHEMA_VERSION = 'pi-background-tasks.delegate-receipt.v1' as const;
 export const DELEGATE_BUDGET_PLAN_SCHEMA_VERSION =
-  'pi-background-tasks.delegate-budget-plan.v1' as const;
+  'pi-background-tasks.delegate-budget-plan.v2' as const;
 export const DELEGATE_MANIFEST_SCHEMA_VERSION = 'pi-background-tasks.delegate-manifest.v1' as const;
 
 /**
@@ -46,6 +52,11 @@ export interface DelegatePinnedRoute extends DelegateRoute {
   thinking_level: string;
   /** Whether the route came from the parent's current model or an explicit argument. */
   origin: 'parent_current' | 'explicit';
+}
+
+export interface DelegateBudgetRouteSource {
+  family: TokenBudgetFamily;
+  rate_source: TokenBudgetRateSource;
 }
 
 export interface DelegateContextPolicyDescriptor {
@@ -226,12 +237,24 @@ export const DELEGATE_ERROR_CODES = [
 
 export type DelegateErrorCode = (typeof DELEGATE_ERROR_CODES)[number];
 
+export interface DelegateBudgetErrorDetail {
+  measurement_kind: 'launch_admission' | 'runtime_context';
+  measured_utf8_bytes: number;
+  measured_input_tokens_upper_bound: number;
+  allowed_input_tokens: number;
+  rate_source: TokenBudgetRateSource;
+  backed: boolean;
+  dominant_byte_class: TokenBudgetDominantByteClass;
+  byte_class_breakdown: TokenBudgetByteClassBreakdown;
+}
+
 export interface DelegateErrorDetails {
   code: DelegateErrorCode;
   /** True only when an OS process was actually created. Admission failures are false. */
   childCreated?: boolean;
   taskId?: string;
   artifactDir?: string;
+  budget?: DelegateBudgetErrorDetail;
   /** What is preserved on disk despite the failure. */
   preserved?: readonly string[];
   /** Concrete operator actions. */
@@ -249,6 +272,7 @@ export class DelegateError extends Error {
   readonly childCreated: boolean;
   readonly taskId: string | undefined;
   readonly artifactDir: string | undefined;
+  readonly budget: DelegateBudgetErrorDetail | undefined;
   readonly preserved: readonly string[];
   readonly remediation: readonly string[];
 
@@ -259,6 +283,7 @@ export class DelegateError extends Error {
     this.childCreated = details.childCreated ?? false;
     this.taskId = details.taskId;
     this.artifactDir = details.artifactDir;
+    this.budget = details.budget;
     this.preserved = details.preserved ?? [];
     this.remediation = details.remediation ?? [];
   }
