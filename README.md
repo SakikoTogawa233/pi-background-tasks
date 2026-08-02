@@ -91,6 +91,8 @@ The lookup runs at most once per session on `session_start`, is time-boxed, and 
 ## LLM tools
 
 - `bg_run` — start named long-running commands without blocking the conversation.
+- `bg_delegate` — launch one background Pi agent seeded with a frozen projection of the current conversation, then return a launch receipt immediately. See [Delegated background agents](#delegated-background-agents).
+- `bg_result` — retrieve a `bg_delegate` answer, hash-verified before it is returned.
 - `bg_run_pi_attested` — opt-in structured direct-spawn Pi agent task that emits a strict local attestation sidecar after successful completion.
 - `bg_status` — inspect one task or all recent tasks.
 - `bg_logs` — read bounded task output.
@@ -103,6 +105,167 @@ Tasks marked with `isAgent: true` that launch print/json child Pi agents through
 
 `bg_run_pi_attested` is separate from `bg_run` and never accepts a shell command. It takes structured `provider`, `model`, `prompt`, optional literal extra Pi argv, and a relative `reportPath`; launches exactly one direct `pi --mode json` child; records raw Pi JSON events, separate stderr, exact argv/cwd, prompt/report hashes, observed Pi session/provider/model, and `ModelRegistry.isUsingOAuth` credential class. It forbids direct API-key/auth-file launch arguments and emits no partial attestation: failures remain ordinary failed tasks with no sidecar.
 
+
+## Delegated background agents
+
+`bg_delegate` fills the gap between `bg_run` (a background agent with a **fresh,
+empty** context) and `fusion_brainstorm` (your current context, but synchronous
+and five-model). It is one agent, one prompt, seeded with the current session's
+context, non-blocking. `bg_result` retrieves its answer safely. They ship
+together: a delegate without a safe retrieval path could not return its work.
+
+```text
+bg_delegate({ name, prompt })              → launch receipt, immediately
+  … the parent keeps working; the terminal notification wakes it …
+bg_result({ taskId })                      → hash-verified answer
+```
+
+### Context seeding
+
+The child does **not** share the parent's live session. The parent conversation
+is projected with the same frozen `visible-conversation-ledger-v2` transform
+Fusion uses (see [Conversation context policy](#conversation-context-policy)),
+frozen as an immutable seed, and the child is given its **own** `--session-id`
+and a task-owned `--session-dir`. Conceptually it has your context; physically it
+can never open or mutate the parent session.
+
+| Content | Disposition |
+|---|---|
+| User text | included verbatim, never clipped |
+| Assistant text | included verbatim, never clipped |
+| User image blocks | marker only, never raw bytes |
+| Assistant thinking | excluded; recorded as a hash-accounted omission receipt |
+| Tool-call arguments | excluded; recorded as a hash-accounted omission receipt |
+| Tool-result payloads | excluded; recorded as a hash-accounted omission receipt |
+| The in-flight `bg_delegate` call and its sibling calls | scope-excluded from the branch |
+
+The assistant message carrying the in-flight call is excluded as a whole, so when
+several `bg_delegate` calls share one assistant message **every** sibling call is
+excluded for **every** child: two delegates launched together receive identical
+projected history and neither can observe the other's arguments.
+
+The seed is canonical-JSON, SHA-256'd, and persisted. The persisted bytes are the
+exact bytes the child reads, and the child re-verifies that hash **before its
+first model call**. Repeated construction from the same session is
+byte-identical.
+
+**Documented limitation:** facts that exist only inside omitted parent tool
+output are **not** available to the child. The child is told this explicitly and
+instructed to say so plainly rather than guess. Restate any such finding in the
+`prompt`.
+
+### Route pinning
+
+The route is pinned at launch — by default the parent's current effective
+provider/model, or an explicit `route {provider, model}`. It is **never**
+substituted, never falls back, and is never retried on a different route. An
+unavailable route or one with no declared context window is a typed refusal
+before anything is created. The child additionally asserts that every assistant
+message it produced came from the pinned route; a mismatch prevents the run from
+committing an answer at all.
+
+### Inspect-only capability boundary
+
+v1 supports exactly one capability, `inspect`. The child is launched with
+`--tools read,grep,find,ls,delegate_read_artifact`, `--no-builtin-tools`, an
+explicit `--exclude-tools` denylist, and no ambient extensions, skills, prompt
+templates, themes, or context files. **The boundary is enforced by argv and the
+child's tool registry, not by prompt text.** There is no shell, no network, no
+edit/write, no recursive delegation, and no Fusion from the child. Writable
+profiles are deliberately out of scope.
+
+### Budgets, spilling, and limits
+
+Admission is checked **before** the child process, the child session, or the
+artifact directory exists, so a refusal leaves **zero** children and **zero**
+artifacts. Inside the child, every model call is measured before dispatch; a call
+that would exceed the pinned route's allowance is refused and the run terminates
+with a typed `provider_context_budget_exhausted`.
+
+A tool result larger than the per-result transcript cap is written **in full** to
+a hashed artifact and replaced in the transcript by an explicit receipt naming
+the artifact, its exact byte count, its SHA-256, and how to read a bounded range.
+The raw payload never enters the transcript and **nothing is truncated**. The
+bounded `delegate_read_artifact` tool returns exactly the requested range or
+fails; a request past end-of-file is refused rather than silently shortened.
+Turn, tool-call, aggregate-output, and wall-clock limits are enforced and
+reported.
+
+### Retrieving the answer
+
+The child commits exactly one self-contained result package by temp-write,
+`fsync`, rename, directory `fsync`. **The rename is the commit point**: a package
+present under its final name is complete, and its absence means no answer was
+accepted — whatever the process exit code was. A child that exits `0` without
+committing is a typed `child_exited_without_commit`, never a silent empty
+success. A run that degraded anything latches terminal state and **cannot**
+commit a success package, so a hash-valid answer can never be built on silently
+mutilated context.
+
+`bg_result` verifies the package identity, seed hash, route, every per-block
+SHA-256, and the aggregate SHA-256 before returning a single byte, and returns
+bytes from the buffer it verified. A running task returns a typed *not ready*
+result and **never blocks or polls**. An answer over the inline cap degrades to
+an artifact reference **explicitly**; requesting `delivery:"inline"` for it is a
+typed `result_too_large_for_inline` failure naming the artifact. It is **never**
+truncated to fit. `autoDeliver` (`never` | `when_small` | `always`) defaults to
+`never`: completion notifications carry metadata, and the answer is fetched
+deliberately with `bg_result`.
+
+### Failure taxonomy
+
+Every delegate failure is typed and states what happened, what was preserved, and
+what the operator can do. Admission codes
+(`delegate_hook_contract_unsupported`, `delegate_isolation_unsupported`,
+`route_unresolved`, `route_capacity_unknown`, `seed_projection_failed`,
+`seed_budget_exceeded`, `seed_persist_failed`, `invalid_arguments`) always report
+`childCreated: false`. Execution and integrity codes include `child_spawn_failed`,
+`child_timeout`, `child_cancelled`, `child_turn_limit`, `child_tool_call_limit`,
+`child_exited_without_commit`, `provider_context_budget_exhausted`,
+`aggregate_tool_output_cap`, `child_result_invalid`,
+`child_result_encoding_invalid`, `route_attestation_missing`, `route_mismatch`,
+`seed_hash_mismatch`, `answer_hash_mismatch`, `artifact_spill_failed`, and
+`artifact_read_failed`. Retrieval states are `result_not_ready`,
+`result_unavailable`, `result_too_large_for_inline`, and `task_unknown`.
+
+Usage that the provider did not report is recorded as explicitly `unavailable`,
+never as zero.
+
+### Proven Pi hook contract
+
+The child-side guard depends on runtime Pi behaviour, which is **proven by
+execution** rather than read from type declarations. The
+`npm run test:hook-contract` gate drives a real Pi agent loop and records what it
+observed. On Pi 0.83 it establishes that `context` fires once before every model
+call in extension load order and that returned messages reach the provider; that
+**throwing** from a `context` handler does **not** block the call (Pi catches it
+and dispatches anyway); that `ctx.abort()` does not skip the provider call site
+but hands it an already-aborted signal and terminates the run; and that
+`tool_result` fires before the result enters the transcript, chains in load order,
+and preserves tool-call id, role, and error flag across replacement.
+
+Because neither a throw nor an abort is a hard admission gate on its own, the
+guard uses abort as the barrier **and** removes the oversized content from the
+outgoing message set, so the request cannot carry it even if a provider ignored
+the aborted signal. If a Pi build cannot provide the required guarantees,
+`bg_delegate` refuses to spawn with a typed
+`delegate_hook_contract_unsupported`; the guard is never weakened to fit.
+
+Delegate artifacts are written under:
+
+```text
+.pi/delegate/<session-id>-<pid>/<task-id>/
+```
+
+Each run contains `seed.json`, `child-prompt.txt` (the exact bytes handed to the
+child over stdin, never a shell or positional argument),
+`context-omission-ledger.json`, `budget-plan.json`, `manifest.json`, the
+task-owned `child-session/`, any `spill/` artifacts, `result.json` once the child
+commits, and `outcome.json` once the parent adjudicates the run.
+
+`result.json` is written by the **child** and `outcome.json` by the **parent**, so
+neither writer can claim a state it did not observe. `manifest.state` records only
+what the parent knew at launch and is never used to decide success.
 
 ## Fusion workflow
 

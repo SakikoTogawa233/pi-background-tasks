@@ -24,7 +24,38 @@ npm run test:sdk
 npm run test:rpc
 npm run test:component
 npm run test:package
+npm run test:hook-contract
 ```
+
+`npm run test:hook-contract` is the **Pi hook characterisation gate**. It drives a
+real Pi agent loop against a deterministic scripted provider and records what Pi's
+`context` and `tool_result` hooks actually do, because the `bg_delegate` child-side
+guard depends on that behaviour and it must be proven by execution rather than read
+from type declarations.
+
+The observed guarantees are written to
+`tests/scripted-provider/pi-hook-contract-evidence.json` and shipped as
+`src/core/delegate/hook-contract-evidence.json`. A package test asserts the two are
+byte-identical, so the runtime gate and the gate that proved it cannot drift apart.
+If the evidence file already exists, the gate **compares** against it rather than
+rewriting it: a change in Pi's hook behaviour fails loudly and forces a deliberate
+re-review of the child guard instead of silently regenerating.
+
+On Pi 0.83 the gate establishes, by execution:
+
+| Question | Observed |
+|---|---|
+| Does `context` fire before every model call? | yes, once per call, in extension load order |
+| Do messages returned from `context` reach the provider? | yes |
+| Does **throwing** in `context` prevent the provider call? | **no** — Pi catches it and dispatches anyway |
+| Does `ctx.abort()` prevent it? | it does not skip the call site, but the call receives an already-aborted signal and the run terminates |
+| Does `tool_result` fire before the transcript entry, and can a handler replace it? | yes, chained in load order; the replacement reaches the provider and the original does not |
+| Do tool-call id, role, and `isError` survive replacement? | yes |
+
+Because neither a throw nor an abort is a hard admission gate on its own, the child
+guard uses abort as the barrier **and** removes the oversized content from the
+outgoing message set. A Pi build that cannot provide the required guarantees causes
+`bg_delegate` to refuse to spawn with a typed `delegate_hook_contract_unsupported`.
 
 Full interactive gate:
 
@@ -57,6 +88,69 @@ Current smoke is `tsx scripts/smoke.ts`. It creates a temporary Pi agent/session
 - the measured candidate, evaluator, evaluation-repair, and merger prompt sizes against the allowed input budget, using the largest real candidate answer (45,434 B) and evaluator output (54,829 B) observed in `.pi/fusion`.
 
 It performs no inference and spawns no child, so it is safe to run offline and costs nothing. It exits non-zero if any stage would exceed the budget.
+
+### Fusion byte-immutability gates
+
+Two unit gates protect Fusion's persisted artifact bytes, which are a frozen format:
+
+- `tests/unit/fusion-golden-bytes.test.ts` renders an exhaustive 28-case differential
+  corpus (empty conversations, run-boundary and image-coalescing branches, unknown
+  blocks, tool-name ordering, `compactCounts` combinations, UTF-8 and lone-surrogate
+  content, every budget stage across three route sets) and compares the raw bytes
+  against `tests/fixtures/fusion-golden-bytes.json`. The golden file is never
+  auto-updated once it exists.
+- `tests/unit/fusion-extraction-equivalence.test.ts` compares the current
+  implementation against `tests/oracle/fusion-context-pre-extraction.ts`, a verbatim
+  copy of the projection engine as it existed before the shared transform was
+  extracted. This is an **independent oracle**, so equivalence is proven rather than
+  merely self-consistent, including `Object.is` comparison of budget floats and exact
+  error-message parity.
+
+### Delegate gates
+
+- `tests/unit/delegate-seed.test.ts` — verbatim visible text, thinking/tool-payload
+  exclusion, marker-only images, sibling-batch exclusion, byte-identical construction
+  across repeated builds and separate processes, and receive-side seed verification.
+- `tests/unit/delegate-budget.test.ts` — reserve arithmetic, boundary accept/reject,
+  and the total runtime governor.
+- `tests/unit/delegate-result-package.test.ts` — hash verification, strict base64,
+  encoding refusal for lone surrogates, route-mismatch and missing-attestation
+  detection, and explicitly unavailable usage.
+- `tests/unit/delegate-artifacts.test.ts` — spill/receipt coordinates under
+  out-of-order completion, aggregate caps, exact bounded range reads, and terminal
+  evaluation including a zero-exit child that never committed.
+- `tests/unit/delegate-launch.test.ts` — route pinning without substitution, argv-level
+  isolation, the hook-contract gate, and the property that a refused launch creates
+  **zero** children and **zero** artifacts.
+- `tests/scripted-provider/delegate-child-guard.test.ts` — the child guard inside a
+  real Pi agent loop: a 2 MB tool result spilled to a hashed artifact with the payload
+  kept out of the transcript, a blocked over-budget model call, exact bounded range
+  reads, route-drift refusal, and turn-limit enforcement.
+- `tests/sdk/delegate-sdk.test.ts` — the full public loop through the shipped
+  entrypoint with a fake child `pi`: launch receipt, projected context actually
+  reaching the child, child session isolation, not-ready retrieval, corruption
+  detection, and oversized answers degrading to an artifact reference without
+  truncation.
+- `tests/package/delegate-mutation-guard.test.ts` — fails if silent truncation, a
+  silent fallback, a route substitution, an unbounded inline answer, a dropped
+  preflight, a synthesized zero usage, a fail-open guard hook, or an undelivered
+  seed is reintroduced. Verified by actually mutating the source: disabling the
+  spill makes two behavioural tests fail.
+
+### Live subscription evidence run
+
+`npx tsx scripts/delegate-live-run.ts` is a release-time evidence harness. It
+builds a genuinely large parent session (43 visible text entries plus 120 omitted
+tool events withholding ~162 KB of tool-result payload), launches **one** real
+child `pi` on the parent's current **subscription OAuth** route with no API-key
+argument, and asserts that the child produced a hash-verified answer that used
+**both** its read-only file tools and the projected conversation. It also asserts
+the omitted payload never appears in the seed or the child prompt.
+
+It is not part of the default gate because it performs real inference. It caught
+two defects that no offline gate did: a child that verified its seed file but was
+never handed a prompt, and a budget that measured the seed instead of the prompt
+actually sent. Both are now pinned by unit and mutation-guard tests.
 
 Smoke proves loadability only; completion requires `npm run test`, `npm run test:full`, `npm run pack:dry-run`, and the release-only compatibility gate when preparing a release.
 

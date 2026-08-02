@@ -333,13 +333,35 @@ void describe('package', () => {
       'src/core/fusion/budget.ts',
       'src/fusion-extension.ts',
       'src/fusion-child-extension.ts',
+      'src/core/context/visible-conversation-v2.ts',
+      'src/core/context/parent-snapshot.ts',
+      'src/core/context/token-budget.ts',
+      'src/core/delegate/types.ts',
+      'src/core/delegate/seed.ts',
+      'src/core/delegate/budget.ts',
+      'src/core/delegate/launch.ts',
+      'src/core/delegate/runner.ts',
+      'src/core/delegate/artifacts.ts',
+      'src/core/delegate/result-package.ts',
+      'src/core/delegate/hook-contract.ts',
+      'src/core/delegate/hook-contract-evidence.json',
+      'src/delegate-extension.ts',
+      'src/delegate-child-extension.ts',
       'extensions/background-tasks.ts',
       'extensions/fusion-child.ts',
+      'extensions/delegate-child.ts',
     ])
       assert.ok(existsSync(new URL(f, root)), f);
 
     const extensionSource = await text('src/extension.ts');
     assert.match(extensionSource, /registerFusionExtension\(pi\)/);
+    assert.match(extensionSource, /registerDelegateExtension\(pi, \{/);
+    assert.match(p.scripts['test:hook-contract'] ?? '', /pi-hook-contract/);
+    assert.match(
+      p.scripts['test'] ?? '',
+      /test:hook-contract/,
+      'the default gate must include the Pi hook characterisation gate',
+    );
     const readme = await text('README.md');
     const plan = await text('TEST_PLAN.md');
     for (const surface of [
@@ -352,6 +374,8 @@ void describe('package', () => {
       '/bg-clear',
       '/bg-update',
       'bg_run',
+      'bg_delegate',
+      'bg_result',
       'bg_run_pi_attested',
       'bg_status',
       'bg_logs',
@@ -456,6 +480,13 @@ void describe('package', () => {
     const budget = await text('src/core/fusion/budget.ts');
     const orchestratorText = await text('src/core/fusion/orchestrator.ts');
     const orchestratorSource = () => orchestratorText;
+    // The projection transform and the size arithmetic are shared with
+    // bg_delegate, so the guard follows the real implementation instead of only
+    // the Fusion facade. Scanning the facade alone would let a truncation or
+    // fallback shape be reintroduced one module away and go unnoticed.
+    const transform = await text('src/core/context/visible-conversation-v2.ts');
+    const parentSnapshot = await text('src/core/context/parent-snapshot.ts');
+    const tokenBudget = await text('src/core/context/token-budget.ts');
 
     // No clipping of retained conversational text. Scan code only: comments
     // legitimately discuss truncation in order to forbid it.
@@ -468,6 +499,9 @@ void describe('package', () => {
     for (const [label, source] of [
       ['context', codeOnly(context)],
       ['budget', codeOnly(budget)],
+      ['visible-conversation-v2', codeOnly(transform)],
+      ['parent-snapshot', codeOnly(parentSnapshot)],
+      ['token-budget', codeOnly(tokenBudget)],
     ] as const) {
       assert.doesNotMatch(source, /\.slice\(/, `${label} must not clip retained content`);
       assert.doesNotMatch(source, /\.substring\(/, `${label} must not clip retained content`);
@@ -498,8 +532,31 @@ void describe('package', () => {
     assert.doesNotMatch(budget, /Math\.max\([^)]*allowed_input_tokens/);
     assert.match(budget, /fusionLimitingRoute/);
 
-    // The conservative divisor must not drift to the 4-bytes-per-token assumption.
-    assert.match(budget, /FUSION_BYTES_PER_TOKEN_DIVISOR = 2/);
+    // The conservative divisor must not drift to the 4-bytes-per-token
+    // assumption. It now lives in the shared module and Fusion re-exports it, so
+    // both the definition and the binding are pinned; neither can drift alone.
+    assert.match(tokenBudget, /BYTES_PER_TOKEN_DIVISOR = 2\b/);
+    assert.match(budget, /FUSION_BYTES_PER_TOKEN_DIVISOR = BYTES_PER_TOKEN_DIVISOR/);
+    assert.doesNotMatch(
+      tokenBudget,
+      /BYTES_PER_TOKEN_DIVISOR = (?!2\b)/,
+      'the shared bytes-per-token divisor must remain exactly 2',
+    );
+    // The shared arithmetic must stay a ceiling and must never clamp an
+    // unusable route into a usable-looking one.
+    assert.match(tokenBudget, /Math\.ceil\(utf8Bytes \/ BYTES_PER_TOKEN_DIVISOR\)/);
+    assert.doesNotMatch(tokenBudget, /Math\.max\(/, 'shared budget arithmetic must not clamp');
+    assert.doesNotMatch(tokenBudget, /Math\.min\(/, 'shared budget arithmetic must not clamp');
+
+    // The shared transform must remain knob-free: a consumer must not be able to
+    // ask it for a weaker disclosure policy.
+    assert.match(transform, /export function projectVisibleConversationV2\(\s*messages/);
+    assert.doesNotMatch(
+      transform,
+      /projectVisibleConversationV2\([^)]*(?:options|policy|flags|config)/,
+      'the shared transform must not accept behavioural options',
+    );
+    assert.match(transform, /throw unsupportedBlock\(/);
 
     // Every budget stage must be guarded in the orchestrator before spawning.
     const orchestrator = orchestratorSource();

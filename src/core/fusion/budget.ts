@@ -1,5 +1,11 @@
 import { createHash } from 'node:crypto';
 import {
+  BYTES_PER_TOKEN_DIVISOR,
+  allowedInputTokens,
+  isUsableContextWindow,
+  tokenUpperBound,
+} from '../context/token-budget.js';
+import {
   FUSION_CANDIDATE_SYSTEM_PROMPT,
   FUSION_EVALUATION_REPAIR_SYSTEM_PROMPT,
   FUSION_EVALUATOR_SYSTEM_PROMPT,
@@ -33,7 +39,12 @@ import {
   type ResolvedFusionModels,
 } from './types.js';
 
-export const FUSION_BYTES_PER_TOKEN_DIVISOR = 2;
+/**
+ * Fusion's divisor is the shared package-wide constant. It is re-exported under
+ * the historical Fusion name so every existing Fusion number, artifact, and test
+ * reference is unchanged by the extraction.
+ */
+export const FUSION_BYTES_PER_TOKEN_DIVISOR = BYTES_PER_TOKEN_DIVISOR;
 
 export const FUSION_CANDIDATE_MAX_OUTPUT_BYTES = 48 * 1024;
 export const FUSION_EVALUATION_MAX_OUTPUT_BYTES = 64 * 1024;
@@ -140,7 +151,7 @@ interface StageForecastDraft {
 }
 
 export function fusionTokenUpperBound(utf8Bytes: number): number {
-  return Math.ceil(utf8Bytes / FUSION_BYTES_PER_TOKEN_DIVISOR);
+  return tokenUpperBound(utf8Bytes);
 }
 
 export function fusionOutputContractBytes(stage: FusionStage): number {
@@ -169,7 +180,7 @@ function sha256Hex(value: string): string {
 
 function requirePositiveContextWindow(model: ResolvedFusionModel, role: string): number {
   const value = model.contextWindow;
-  if (!Number.isFinite(value) || !Number.isInteger(value) || value <= 0) {
+  if (!isUsableContextWindow(value)) {
     throw new FusionError(
       `fusion ${role} route ${model.qualifiedId} has no usable context window capacity`,
       { code: 'model_capacity_unknown', childCreated: false },
@@ -183,11 +194,11 @@ function routeCapacity(
   role: FusionRouteCapacity['role'],
 ): FusionRouteCapacity {
   const contextWindow = requirePositiveContextWindow(model, role);
-  const allowed =
-    contextWindow -
-    FUSION_RESERVED_OUTPUT_TOKENS -
-    FUSION_FRAMING_RESERVE_TOKENS -
-    FUSION_SAFETY_RESERVE_TOKENS;
+  const allowed = allowedInputTokens(contextWindow, {
+    reservedOutputTokens: FUSION_RESERVED_OUTPUT_TOKENS,
+    framingReserveTokens: FUSION_FRAMING_RESERVE_TOKENS,
+    safetyReserveTokens: FUSION_SAFETY_RESERVE_TOKENS,
+  });
   if (allowed < FUSION_MIN_CANONICAL_INPUT_TOKENS) {
     throw new FusionError(
       `fusion ${role} route ${model.qualifiedId} has a ${String(contextWindow)}-token context window, but Fusion requires at least ${String(FUSION_MIN_CONTEXT_WINDOW_TOKENS)} tokens per configured route: ${String(FUSION_RESERVED_OUTPUT_TOKENS)} output + ${String(FUSION_FRAMING_RESERVE_TOKENS)} framing + ${String(FUSION_SAFETY_RESERVE_TOKENS)} safety + ${String(FUSION_MIN_CANONICAL_INPUT_TOKENS)} usable input. Choose a larger-context model for this slot with /fusion-models.`,

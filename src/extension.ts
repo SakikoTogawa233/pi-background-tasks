@@ -47,6 +47,7 @@ import {
   type TaskManagerResult,
 } from './ui/background-tasks-manager.js';
 import { registerFusionExtension } from './fusion-extension.js';
+import { registerDelegateExtension } from './delegate-extension.js';
 
 /**
  * Project-local Pi background task manager.
@@ -230,6 +231,15 @@ export default function backgroundTasksExtension(pi: ExtensionAPI): void {
     registry,
     getContext: () => currentCtx,
     isShuttingDown: () => registry.isShuttingDown(),
+  });
+
+  registerDelegateExtension(pi, {
+    startDelegateTask: async (ctx, options) => {
+      currentCtx = ctx;
+      return registry.startDelegateTask(ctx, options);
+    },
+    snapshot: (task) => registry.snapshot(task),
+    resolveTask: (idOrPrefix) => registry.resolveTask(idOrPrefix),
   });
 
   function unseenFinishedTasks(): BgTask[] {

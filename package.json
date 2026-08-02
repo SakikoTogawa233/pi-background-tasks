@@ -45,7 +45,7 @@
     "test:rpc": "tsx --test tests/rpc/**/*.test.ts",
     "test:component": "tsx --test tests/component/**/*.test.ts",
     "test:package": "tsx --test tests/package/**/*.test.ts",
-    "test": "npm run typecheck && npm run test:type-safety && npm run test:unit && npm run test:sdk && npm run test:rpc && npm run test:component && npm run test:package",
+    "test": "npm run typecheck && npm run test:type-safety && npm run test:unit && npm run test:sdk && npm run test:rpc && npm run test:component && npm run test:package && npm run test:hook-contract",
     "test:pty": "tsx --test tests/pty/**/*.test.ts",
     "test:windows": "tsx --test tests/windows/**/*.test.ts",
     "test:agent-loop": "tsx --test --test-concurrency=1 tests/scripted-provider/**/*.test.ts",
@@ -55,7 +55,8 @@
     "pack:dry-run": "npm pack --dry-run",
     "lint": "cd ../.. && npm run quality:ts:lint",
     "format:check": "cd ../.. && npm run quality:ts:format",
-    "test:compat": "tsx scripts/test-compat.ts"
+    "test:compat": "tsx scripts/test-compat.ts",
+    "test:hook-contract": "tsx --test --test-concurrency=1 tests/scripted-provider/pi-hook-contract.test.ts"
   },
   "pi": {
     "extensions": [
