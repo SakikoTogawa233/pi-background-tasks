@@ -396,9 +396,16 @@ void describe('fusion SDK integration', { concurrency: false }, () => {
       assert.ok(fusionTool);
       assert.equal(Reflect.get(fusionTool.parameters, 'additionalProperties'), false);
       assert.ok(fusionTool.prepareArguments);
+      // The closed-schema guarantee still holds; the message now also names the optional
+      // capability parameter added alongside prompt.
       assert.throws(
         () => fusionTool.prepareArguments?.({ prompt: 'x', extra: true }),
-        /only prompt/,
+        /must contain prompt and optional capability only/,
+      );
+      // An unknown capability must fail loudly rather than silently defaulting to reason.
+      assert.throws(
+        () => fusionTool.prepareArguments?.({ prompt: 'x', capability: 'research' }),
+        /allowed values: reason, inspect/,
       );
       const commandNames = h.session.extensionRunner
         .getRegisteredCommands()

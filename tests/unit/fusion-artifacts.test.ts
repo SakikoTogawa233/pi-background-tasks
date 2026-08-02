@@ -7,10 +7,11 @@ import { tmpdir } from 'node:os';
 import { parseJsonText } from '../../src/core/common.js';
 import { FusionArtifactStore } from '../../src/core/fusion/artifacts.js';
 import { defaultFusionModelConfig } from '../../src/core/fusion/config.js';
-import type {
-  FusionChildRunResult,
-  ResolvedFusionModel,
-  ResolvedFusionModels,
+import {
+  FUSION_TOOL_CALL_LOG_SCHEMA_VERSION,
+  type FusionChildRunResult,
+  type ResolvedFusionModel,
+  type ResolvedFusionModels,
 } from '../../src/core/fusion/types.js';
 
 function resolved(qualifiedId: string): ResolvedFusionModel {
@@ -85,6 +86,7 @@ void describe('fusion artifacts', () => {
         source: 'command',
         config: defaultFusionModelConfig(),
         models: models(),
+        capabilities: { candidate: 'inspect', evaluation: 'reason', merge: 'reason' },
         now: () => new Date('2026-01-01T00:00:00.000Z'),
       });
       // Normalize separators: the artifact dir uses native path separators, so
@@ -111,12 +113,19 @@ void describe('fusion artifacts', () => {
         await readFile(join(store.artifactDirAbs, 'manifest.json'), 'utf8'),
       );
       assert.equal(field(manifest, 'state'), 'candidates_running');
+      assert.deepEqual(field(manifest, 'capabilities'), {
+        candidate: 'inspect',
+        evaluation: 'reason',
+        merge: 'reason',
+      });
       const attempts = field(manifest, 'attempts');
       assert.ok(Array.isArray(attempts));
       assert.equal(attempts.length, 1);
       const firstAttempt = attempts[0];
       assert.ok(typeof firstAttempt === 'object' && firstAttempt !== null);
       assert.equal(field(firstAttempt, 'response_path'), 'candidate-1.attempt-1.response.md');
+      assert.equal(field(firstAttempt, 'tool_calls_path'), undefined);
+      assert.equal(field(firstAttempt, 'tool_calls'), undefined);
       assert.equal(field(firstAttempt, 'provider'), 'p');
       assert.equal(field(firstAttempt, 'qualifiedId'), 'p/a');
       const usageRecord = field(firstAttempt, 'usage');
@@ -136,6 +145,73 @@ void describe('fusion artifacts', () => {
       const artifacts = field(manifest, 'artifacts');
       assert.ok(typeof artifacts === 'object' && artifacts !== null);
       assert.ok(Reflect.has(artifacts, 'canonical-input.json'));
+      assert.equal(Reflect.has(artifacts, 'candidate-1.attempt-1.tool-calls.jsonl'), false);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  void it('records completed child tool-call logs and summaries on attempts', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'pi-fusion-artifacts-tools-'));
+    try {
+      const store = await FusionArtifactStore.create({
+        cwd: root,
+        runId: 'f00000000000000000000000000000001',
+        source: 'command',
+        config: defaultFusionModelConfig(),
+        models: models(),
+        capabilities: { candidate: 'inspect', evaluation: 'reason', merge: 'reason' },
+      });
+      const result = childResult('candidate', 'answer');
+      const logText =
+        `${JSON.stringify({
+          schema_version: FUSION_TOOL_CALL_LOG_SCHEMA_VERSION,
+          ordinal: 0,
+          tool_name: 'read',
+          arguments_sha256: 'a'.repeat(64),
+          arguments_bytes: 17,
+          result_bytes: 23,
+          result_sha256: 'b'.repeat(64),
+          status: 'ok',
+          duration_ms: 4,
+        })}\n` +
+        `${JSON.stringify({
+          schema_version: FUSION_TOOL_CALL_LOG_SCHEMA_VERSION,
+          ordinal: 1,
+          tool_name: 'grep',
+          arguments_sha256: 'c'.repeat(64),
+          arguments_bytes: 19,
+          result_bytes: 29,
+          result_sha256: 'd'.repeat(64),
+          status: 'error',
+          duration_ms: 8,
+        })}\n`;
+      result.toolCallTrace = {
+        bytes: Buffer.from(logText, 'utf8'),
+        records: [],
+        summary: { count: 2, total_result_bytes: 52, trace_complete: true },
+      };
+      await store.recordChildAttempt({ result, prompt: 'prompt', responseKind: 'md' });
+      assert.equal(
+        await readFile(join(store.artifactDirAbs, 'candidate-1.attempt-1.tool-calls.jsonl'), 'utf8'),
+        logText,
+      );
+      const manifest = parseManifest(
+        await readFile(join(store.artifactDirAbs, 'manifest.json'), 'utf8'),
+      );
+      const attempts = field(manifest, 'attempts');
+      assert.ok(Array.isArray(attempts));
+      const firstAttempt = attempts[0];
+      assert.ok(typeof firstAttempt === 'object' && firstAttempt !== null);
+      assert.equal(field(firstAttempt, 'tool_calls_path'), 'candidate-1.attempt-1.tool-calls.jsonl');
+      assert.deepEqual(field(firstAttempt, 'tool_calls'), {
+        count: 2,
+        total_result_bytes: 52,
+        trace_complete: true,
+      });
+      const artifacts = field(manifest, 'artifacts');
+      assert.ok(typeof artifacts === 'object' && artifacts !== null);
+      assert.ok(Reflect.has(artifacts, 'candidate-1.attempt-1.tool-calls.jsonl'));
     } finally {
       await rm(root, { recursive: true, force: true });
     }

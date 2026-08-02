@@ -2,7 +2,7 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { existsSync } from 'node:fs';
-import { readFile, writeFile } from 'node:fs/promises';
+import { readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import {
   FUSION_GOLDEN_CASES,
@@ -30,10 +30,10 @@ function sha256(value: string): string {
 void describe('fusion artifact byte immutability', () => {
   void it('matches the committed golden corpus byte-for-byte', async () => {
     const serialized = serializeFusionGoldenCorpus();
-    if (!existsSync(goldenPath)) {
-      await writeFile(goldenPath, serialized, 'utf8');
-      return;
-    }
+    assert.ok(
+      existsSync(goldenPath),
+      'committed Fusion golden fixture is required; it is never auto-generated. Restore it from git history or follow the reviewed migration procedure.',
+    );
     const committed = await readFile(goldenPath, 'utf8');
     assert.equal(
       sha256(serialized),

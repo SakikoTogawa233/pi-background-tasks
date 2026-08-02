@@ -1,6 +1,6 @@
 {
   "name": "pi-background-tasks",
-  "version": "0.7.7",
+  "version": "0.7.8",
   "description": "Pi extension package for background shell tasks plus five-model fusion brainstorming: bg_run tools, /bg commands, /fusion, fusion_brainstorm, model selector UI, bounded logs, kill/timeout safety, and completion wakeups.",
   "type": "module",
   "license": "ISC",

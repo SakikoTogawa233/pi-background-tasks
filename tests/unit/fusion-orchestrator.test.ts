@@ -7,6 +7,10 @@ import { parseJsonText } from '../../src/core/common.js';
 import { FusionOrchestrator, type FusionChildRunner } from '../../src/core/fusion/orchestrator.js';
 import { defaultFusionModelConfig } from '../../src/core/fusion/config.js';
 import {
+  FUSION_CANDIDATE_INSPECT_SYSTEM_PROMPT,
+  FUSION_CANDIDATE_SYSTEM_PROMPT,
+} from '../../src/core/fusion/prompts.js';
+import {
   FUSION_COMMAND_CONTEXT_POLICY_ID,
   FUSION_CONTEXT_TRANSFORM_ID,
   FUSION_EVALUATION_SCHEMA_VERSION,
@@ -20,7 +24,11 @@ import {
   type ResolvedFusionModel,
   type ResolvedFusionModels,
 } from '../../src/core/fusion/types.js';
-import { FusionChildRunError, type RunPiChildOptions } from '../../src/core/fusion/pi-child.js';
+import {
+  FusionChildRunError,
+  buildFusionPiChildArgv,
+  type RunPiChildOptions,
+} from '../../src/core/fusion/pi-child.js';
 import { emptyLedger } from '../helpers/fusion-canonical.js';
 
 const ledger: FusionContextOmissionLedgerV2 = emptyLedger(FUSION_COMMAND_CONTEXT_POLICY_ID);
@@ -443,6 +451,73 @@ void describe('fusion orchestrator', () => {
         await readFile(join(root, result.details.artifact_dir, 'merged.md'), 'utf8'),
         'merged final',
       );
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  void it('keeps evaluator and merger reasoning-only when candidates inspect', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'pi-fusion-orchestrator-capability-'));
+    try {
+      const calls: RunPiChildOptions[] = [];
+      const runner: FusionChildRunner = async (options) => {
+        calls.push(options);
+        if (options.stage === 'evaluation')
+          return childResult(options, JSON.stringify(evaluation()));
+        if (options.stage === 'merge') return childResult(options, 'merged final');
+        return childResult(options, `candidate-${String(options.slot)}`);
+      };
+      const orchestrator = new FusionOrchestrator({
+        childRunner: runner,
+        randomBytes: () => Buffer.from([0, 0, 0, 0]),
+      });
+      const canonical = canonicalInput();
+      await orchestrator.run({
+        source: 'tool',
+        cwd: root,
+        canonicalInput: canonical,
+        canonicalInputSerialized: JSON.stringify(canonical),
+        contextLedger: ledger,
+        config: defaultFusionModelConfig(),
+        models: models(),
+        candidateCapability: 'inspect',
+      });
+      const candidateCalls = calls.filter((call) => call.stage === 'candidate');
+      assert.deepEqual(
+        candidateCalls.map((call) => call.capability),
+        ['inspect', 'inspect', 'inspect'],
+      );
+      assert.deepEqual(
+        candidateCalls.map((call) => call.systemPrompt),
+        [
+          FUSION_CANDIDATE_INSPECT_SYSTEM_PROMPT,
+          FUSION_CANDIDATE_INSPECT_SYSTEM_PROMPT,
+          FUSION_CANDIDATE_INSPECT_SYSTEM_PROMPT,
+        ],
+      );
+      assert.notEqual(candidateCalls[0]?.systemPrompt, FUSION_CANDIDATE_SYSTEM_PROMPT);
+      for (const [index, call] of candidateCalls.entries()) {
+        assert.match(
+          (call.toolCallLogPath ?? '').replaceAll('\\', '/'),
+          new RegExp(`candidate-${String(index + 1)}\\.attempt-1\\.tool-calls\\.jsonl$`),
+        );
+      }
+      const evaluationCalls = calls.filter((call) => call.stage === 'evaluation');
+      const mergeCalls = calls.filter((call) => call.stage === 'merge');
+      assert.deepEqual(evaluationCalls.map((call) => call.capability), ['reason']);
+      assert.deepEqual(mergeCalls.map((call) => call.capability), ['reason']);
+      assert.deepEqual(evaluationCalls.map((call) => call.toolCallLogPath), [undefined]);
+      assert.deepEqual(mergeCalls.map((call) => call.toolCallLogPath), [undefined]);
+      for (const call of [...evaluationCalls, ...mergeCalls]) {
+        const argv = buildFusionPiChildArgv(
+          call.model,
+          call.systemPrompt,
+          'extension.js',
+          call.capability,
+        );
+        assert.ok(argv.includes('--no-tools'));
+        assert.equal(argv.includes('--no-builtin-tools'), false);
+      }
     } finally {
       await rm(root, { recursive: true, force: true });
     }

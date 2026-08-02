@@ -15,6 +15,7 @@ import {
   type FusionBudgetPlanV1,
   type FusionCalibrationViolation,
   type FusionCandidateId,
+  type FusionCapability,
   type FusionContextOmissionLedgerV2,
   type FusionChildRunResult,
   type FusionModelConfigV1,
@@ -43,6 +44,11 @@ interface MutableFusionArtifactManifest {
     merger: string;
     thinking_level: string;
   };
+  capabilities: {
+    candidate: FusionCapability;
+    evaluation: FusionCapability;
+    merge: FusionCapability;
+  };
   usage: FusionUsage;
   attempts: FusionAttemptArtifactRecord[];
   artifacts: Record<string, FusionArtifactRef>;
@@ -57,6 +63,11 @@ export interface CreateFusionArtifactStoreOptions {
   source: FusionSource;
   config: FusionModelConfigV1;
   models: ResolvedFusionModels;
+  capabilities?: {
+    candidate: FusionCapability;
+    evaluation: FusionCapability;
+    merge: FusionCapability;
+  };
   now?: () => Date;
 }
 
@@ -156,6 +167,7 @@ function publicManifest(manifest: MutableFusionArtifactManifest): FusionArtifact
     cwd: manifest.cwd,
     config: manifest.config,
     models: manifest.models,
+    capabilities: manifest.capabilities,
     usage: cloneFusionUsage(manifest.usage),
     attempts: [...manifest.attempts],
     artifacts: { ...manifest.artifacts },
@@ -224,6 +236,11 @@ export class FusionArtifactStore {
       cwd: options.cwd,
       config: options.config,
       models: modelsForManifest(options.models),
+      capabilities: options.capabilities ?? {
+        candidate: 'reason',
+        evaluation: 'reason',
+        merge: 'reason',
+      },
       usage: cloneFusionUsage(EMPTY_FUSION_USAGE),
       attempts: [],
       artifacts: {},
@@ -248,6 +265,10 @@ export class FusionArtifactStore {
 
   get artifactDirAbs(): string {
     return this.runDirAbs;
+  }
+
+  childToolCallLogPath(stage: FusionStage, slot: 1 | 2 | 3 | undefined, attempt: number): string {
+    return this.artifactPath(`${attemptPrefix(stage, slot, attempt)}.tool-calls.jsonl`);
   }
 
   snapshot(): FusionArtifactManifest {
@@ -338,6 +359,10 @@ export class FusionArtifactStore {
       responseName(prefix, input.responseKind),
       input.result.text,
     );
+    const toolCallsRef =
+      input.result.toolCallTrace === undefined
+        ? undefined
+        : await this.writeArtifact(`${prefix}.tool-calls.jsonl`, input.result.toolCallTrace.bytes);
     await this.updateManifest((manifest) => {
       const record: FusionAttemptArtifactRecord = {
         stage: input.result.stage,
@@ -352,6 +377,10 @@ export class FusionArtifactStore {
         qualifiedId: input.result.qualifiedId,
         usage: cloneFusionUsage(input.result.usage),
       };
+      if (toolCallsRef !== undefined && input.result.toolCallTrace !== undefined) {
+        record.tool_calls_path = toolCallsRef.path;
+        record.tool_calls = { ...input.result.toolCallTrace.summary };
+      }
       if (input.result.slot !== undefined) record.slot = input.result.slot;
       manifest.attempts.push(record);
     });

@@ -25,9 +25,12 @@ import {
 import type { JsonObject } from './core/common.js';
 import { FusionOrchestrator } from './core/fusion/orchestrator.js';
 import {
+  FUSION_CAPABILITY_VALUES,
+  FUSION_DEFAULT_CAPABILITY,
   FUSION_RESULT_SCHEMA_VERSION,
   FusionError,
   cloneFusionUsage,
+  type FusionCapability,
   type FusionModelConfigV1,
   type FusionModelSelection,
   type FusionProgressEvent,
@@ -73,6 +76,7 @@ interface FusionRunRequest {
   source: 'command' | 'tool';
   ctx: ExtensionContext;
   request: string;
+  capability?: FusionCapability | undefined;
   signal?: AbortSignal | undefined;
   toolCallId?: string | undefined;
   onProgress?: ((event: FusionProgressEvent) => void) | undefined;
@@ -84,9 +88,15 @@ interface FusionRequestDetails {
   source: 'command';
 }
 
-const FusionBrainstormParams = Type.Object(
+export const FusionBrainstormParams = Type.Object(
   {
     prompt: Type.String({ description: 'Prompt to run through the five-model fusion workflow.' }),
+    capability: Type.Optional(
+      Type.Union([Type.Literal('reason'), Type.Literal('inspect')], {
+        description:
+          "Optional candidate-child capability: 'reason' uses no tools; 'inspect' enables read-only file inspection.",
+      }),
+    ),
   },
   { additionalProperties: false },
 );
@@ -278,13 +288,30 @@ function normalizeToolPrompt(value: unknown): string {
   return prompt;
 }
 
-function prepareFusionArguments(args: unknown): FusionBrainstormParamsValue {
+function normalizeFusionCapability(value: unknown): FusionCapability {
+  if (value === undefined) return FUSION_DEFAULT_CAPABILITY;
+  if (typeof value !== 'string') {
+    throw new Error(
+      `fusion_brainstorm capability must be one of: ${FUSION_CAPABILITY_VALUES.join(', ')}`,
+    );
+  }
+  if (FUSION_CAPABILITY_VALUES.includes(value as FusionCapability)) return value as FusionCapability;
+  throw new Error(
+    `fusion_brainstorm capability ${JSON.stringify(value)} is not supported; allowed values: ${FUSION_CAPABILITY_VALUES.join(', ')}`,
+  );
+}
+
+export function prepareFusionArguments(args: unknown): FusionBrainstormParamsValue {
   if (!isRecord(args)) throw new Error('fusion_brainstorm arguments must be an object');
   const keys = Object.keys(args);
-  if (keys.length !== 1 || keys[0] !== 'prompt') {
-    throw new Error('fusion_brainstorm arguments must contain only prompt');
+  const unknown = keys.filter((key) => key !== 'prompt' && key !== 'capability');
+  if (unknown.length > 0 || !keys.includes('prompt')) {
+    throw new Error('fusion_brainstorm arguments must contain prompt and optional capability only');
   }
-  return { prompt: normalizeToolPrompt(args['prompt']) };
+  return {
+    prompt: normalizeToolPrompt(args['prompt']),
+    capability: normalizeFusionCapability(args['capability']),
+  };
 }
 
 function linkSignal(source: AbortSignal | undefined, target: AbortController): () => void {
@@ -367,6 +394,7 @@ export function registerFusionExtension(pi: ExtensionAPI): void {
         contextLedger: built.ledger,
         config: loaded.config,
         models,
+        candidateCapability: request.capability ?? FUSION_DEFAULT_CAPABILITY,
         signal: controller.signal,
         onProgress: request.onProgress,
       });
@@ -554,12 +582,13 @@ export function registerFusionExtension(pi: ExtensionAPI): void {
   pi.registerTool<typeof FusionBrainstormParams, FusionToolDetails>({
     name: FUSION_BRAINSTORM_TOOL_NAME,
     label: 'Fusion Brainstorm',
-    description: 'Run a five-model fusion workflow for a prompt and return the merged answer.',
+    description:
+      "Run a five-model fusion workflow for a prompt and return the merged answer. Optional capability:'inspect' lets candidate children use read-only file tools.",
     promptSnippet:
       'Use fusion_brainstorm to get a merged answer from the five-model fusion workflow',
     promptGuidelines: [
-      'fusion_brainstorm is always available; call fusion_brainstorm({prompt}) whenever a merged multi-model answer would help.',
-      'fusion_brainstorm has no eligibility, quota, routine, or justification gate; provide only the prompt string.',
+      "fusion_brainstorm is always available; call fusion_brainstorm({prompt}) for no-tool reasoning or fusion_brainstorm({prompt, capability:'inspect'}) when candidate children need read-only file inspection.",
+      "Use capability:'inspect' only when the answer benefits from reading/searching/listing repository files; evaluator and merger remain no-tools by policy.",
     ],
     parameters: FusionBrainstormParams,
     prepareArguments: prepareFusionArguments,
@@ -571,6 +600,7 @@ export function registerFusionExtension(pi: ExtensionAPI): void {
           source: 'tool',
           ctx,
           request: prompt,
+          capability: params.capability ?? FUSION_DEFAULT_CAPABILITY,
           signal,
           toolCallId,
           onProgress: (event) => {

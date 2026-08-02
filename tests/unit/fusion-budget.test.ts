@@ -41,7 +41,11 @@ import {
 } from '../../src/core/context/token-budget.js';
 import { defaultFusionModelConfig } from '../../src/core/fusion/config.js';
 import { buildFusionCanonicalInput } from '../../src/core/fusion/context.js';
-import { buildCandidatePrompt } from '../../src/core/fusion/prompts.js';
+import {
+  FUSION_CANDIDATE_INSPECT_SYSTEM_PROMPT,
+  FUSION_CANDIDATE_SYSTEM_PROMPT,
+  buildCandidatePrompt,
+} from '../../src/core/fusion/prompts.js';
 import {
   FUSION_COMMAND_CONTEXT_POLICY_ID,
   FUSION_CONTEXT_TRANSFORM_ID,
@@ -897,6 +901,21 @@ void describe('fusion stage budgets', () => {
     assert.ok(
       repair.forecast_utf8_bytes - merge.forecast_utf8_bytes >= FUSION_DIAGNOSTICS_MAX_BYTES,
     );
+  });
+
+  void it('forecasts inspect candidate stages with the inspect system prompt bytes', () => {
+    const input = canonicalInput('specific repository fact requested');
+    const reasonBudget = new FusionBudget(models(), FUSION_COMMAND_CONTEXT_POLICY_ID, 'reason');
+    const inspectBudget = new FusionBudget(models(), FUSION_COMMAND_CONTEXT_POLICY_ID, 'inspect');
+    const reasonCandidate = planEntry(reasonBudget.plan(input).stages, 'candidate', 1);
+    const inspectCandidate = planEntry(inspectBudget.plan(input).stages, 'candidate', 1);
+    const expectedDelta =
+      Buffer.byteLength(FUSION_CANDIDATE_INSPECT_SYSTEM_PROMPT, 'utf8') -
+      Buffer.byteLength(FUSION_CANDIDATE_SYSTEM_PROMPT, 'utf8');
+    assert.notEqual(FUSION_CANDIDATE_INSPECT_SYSTEM_PROMPT, FUSION_CANDIDATE_SYSTEM_PROMPT);
+    assert.match(FUSION_CANDIDATE_INSPECT_SYSTEM_PROMPT, /read-only tools: read, grep, find, ls/);
+    assert.equal(inspectCandidate.input_utf8_bytes - reasonCandidate.input_utf8_bytes, expectedDelta);
+    assert.notEqual(inspectCandidate.input_utf8_bytes, reasonCandidate.input_utf8_bytes);
   });
 
   void it('reproduces the compact incident plan as fitting with utilization warnings', () => {

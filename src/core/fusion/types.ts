@@ -19,6 +19,7 @@ export const FUSION_CONTEXT_LEDGER_SCHEMA_VERSION = 'pi-background-tasks.fusion-
 export const FUSION_BUDGET_PLAN_SCHEMA_VERSION = 'pi-background-tasks.fusion-budget-plan.v3';
 export const FUSION_CALIBRATION_VIOLATION_SCHEMA_VERSION =
   'pi-background-tasks.fusion-calibration-violation.v1';
+export const FUSION_TOOL_CALL_LOG_SCHEMA_VERSION = 'pi-background-tasks.fusion-tool-call.v1';
 
 /**
  * Conversation-projection transform shared by every Fusion entry point.
@@ -42,6 +43,26 @@ export type FusionCandidateId = (typeof FUSION_CANDIDATE_IDS)[number];
 
 export const FUSION_STAGE_VALUES = ['candidate', 'evaluation', 'merge'] as const;
 export type FusionStage = (typeof FUSION_STAGE_VALUES)[number];
+
+export const FUSION_CAPABILITY_VALUES = Object.freeze(['reason', 'inspect'] as const);
+export type FusionCapability = (typeof FUSION_CAPABILITY_VALUES)[number];
+export const FUSION_DEFAULT_CAPABILITY: FusionCapability = 'reason';
+
+export const FUSION_INSPECT_TOOLS = Object.freeze(['read', 'grep', 'find', 'ls'] as const);
+
+export const FUSION_FORBIDDEN_TOOLS = Object.freeze([
+  'bash',
+  'edit',
+  'write',
+  'fusion_brainstorm',
+  'bg_delegate',
+  'bg_result',
+  'bg_run',
+  'bg_kill',
+  'bg_status',
+  'bg_logs',
+  'bg_run_pi_attested',
+] as const);
 
 /**
  * Prompt-expansion stages guarded by deterministic size accounting. `evaluation`
@@ -541,6 +562,32 @@ export interface FusionChildUsage extends FusionUsage {
   qualifiedId: string;
 }
 
+export type FusionToolCallLogStatus = 'ok' | 'error';
+
+export interface FusionToolCallLogRecord {
+  schema_version: typeof FUSION_TOOL_CALL_LOG_SCHEMA_VERSION;
+  ordinal: number;
+  tool_name: string;
+  arguments_sha256: string;
+  arguments_bytes: number;
+  result_bytes: number;
+  result_sha256: string;
+  status: FusionToolCallLogStatus;
+  duration_ms: number;
+}
+
+export interface FusionToolCallLogSummary {
+  count: number;
+  total_result_bytes: number;
+  trace_complete: boolean;
+}
+
+export interface FusionToolCallTrace {
+  bytes: Buffer;
+  records: readonly FusionToolCallLogRecord[];
+  summary: FusionToolCallLogSummary;
+}
+
 export interface FusionChildRunResult {
   stage: FusionStage;
   slot?: 1 | 2 | 3;
@@ -554,6 +601,7 @@ export interface FusionChildRunResult {
   stderr: Buffer;
   exitCode: number;
   signal: NodeJS.Signals | null;
+  toolCallTrace?: FusionToolCallTrace;
 }
 
 export interface FusionAttemptArtifactRecord {
@@ -566,6 +614,8 @@ export interface FusionAttemptArtifactRecord {
   stderr_path?: string;
   response_path?: string;
   partial_response_path?: string;
+  tool_calls_path?: string;
+  tool_calls?: FusionToolCallLogSummary;
   provider?: string;
   model?: string;
   qualifiedId?: string;
@@ -593,6 +643,11 @@ export interface FusionArtifactManifest {
     evaluator: string;
     merger: string;
     thinking_level: string;
+  };
+  capabilities: {
+    candidate: FusionCapability;
+    evaluation: FusionCapability;
+    merge: FusionCapability;
   };
   usage: FusionUsage;
   attempts: readonly FusionAttemptArtifactRecord[];

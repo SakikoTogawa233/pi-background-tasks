@@ -14,7 +14,6 @@ import {
   isUsableContextWindow,
 } from '../context/token-budget.js';
 import {
-  FUSION_CANDIDATE_SYSTEM_PROMPT,
   FUSION_EVALUATION_REPAIR_SYSTEM_PROMPT,
   FUSION_EVALUATOR_SYSTEM_PROMPT,
   FUSION_MERGER_SYSTEM_PROMPT,
@@ -24,12 +23,14 @@ import {
   buildEvaluationRepairPrompt,
   buildMergeInput,
   buildMergePrompt,
+  fusionCandidateSystemPrompt,
   type AnonymousFusionCandidate,
 } from './prompts.js';
 import {
   FUSION_BUDGET_PLAN_SCHEMA_VERSION,
   FUSION_CALIBRATION_VIOLATION_SCHEMA_VERSION,
   FUSION_EVALUATION_SCHEMA_VERSION,
+  FUSION_DEFAULT_CAPABILITY,
   FusionError,
   type FusionBudgetBlocker,
   type FusionBudgetCheckKind,
@@ -45,6 +46,7 @@ import {
   type FusionBudgetWarning,
   type FusionCalibrationViolation,
   type FusionCanonicalInputV3,
+  type FusionCapability,
   type FusionEvaluationV1,
   type FusionRouteCapacity,
   type FusionStage,
@@ -677,11 +679,17 @@ export class FusionBudget {
   readonly routes: readonly FusionRouteCapacity[];
   readonly limiting: FusionRouteCapacity;
   private readonly contextPolicyId: string;
+  private readonly candidateCapability: FusionCapability;
 
-  constructor(models: ResolvedFusionModels, contextPolicyId: string) {
+  constructor(
+    models: ResolvedFusionModels,
+    contextPolicyId: string,
+    candidateCapability: FusionCapability = FUSION_DEFAULT_CAPABILITY,
+  ) {
     this.routes = fusionRouteCapacities(models);
     this.limiting = fusionLimitingRoute(this.routes);
     this.contextPolicyId = contextPolicyId;
+    this.candidateCapability = candidateCapability;
   }
 
   get allowedInputTokens(): number {
@@ -708,6 +716,7 @@ export class FusionBudget {
   }
 
   private drafts(input: FusionCanonicalInputV3): readonly StageForecastDraft[] {
+    const candidateSystemPrompt = fusionCandidateSystemPrompt(this.candidateCapability);
     const candidatePrompt = buildCandidatePrompt(input);
     const blindInput = buildBlindEvaluationInput(input, EMPTY_CANDIDATES);
     const evaluationPrompt = buildEvaluationPrompt(blindInput);
@@ -724,7 +733,7 @@ export class FusionBudget {
         slot: 1,
         route: this.routeForStage('candidate', 1),
         conditional: false,
-        system_prompt: FUSION_CANDIDATE_SYSTEM_PROMPT,
+        system_prompt: candidateSystemPrompt,
         empty_user_prompt: candidatePrompt,
         upstream_output_contract_bytes: 0,
       },
@@ -733,7 +742,7 @@ export class FusionBudget {
         slot: 2,
         route: this.routeForStage('candidate', 2),
         conditional: false,
-        system_prompt: FUSION_CANDIDATE_SYSTEM_PROMPT,
+        system_prompt: candidateSystemPrompt,
         empty_user_prompt: candidatePrompt,
         upstream_output_contract_bytes: 0,
       },
@@ -742,7 +751,7 @@ export class FusionBudget {
         slot: 3,
         route: this.routeForStage('candidate', 3),
         conditional: false,
-        system_prompt: FUSION_CANDIDATE_SYSTEM_PROMPT,
+        system_prompt: candidateSystemPrompt,
         empty_user_prompt: candidatePrompt,
         upstream_output_contract_bytes: 0,
       },

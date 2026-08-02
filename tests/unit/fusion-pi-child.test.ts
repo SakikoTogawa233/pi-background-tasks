@@ -1,21 +1,32 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import type { SpawnOptions } from 'node:child_process';
 import {
   FusionChildRunError,
   FusionPiCompactResultParser,
+  assertFusionToolPolicyDisjoint,
   buildFusionPiChildArgv,
   fusionPiChildEnv,
   parseFusionChildStderr,
+  parseFusionToolCallLog,
   runPiChild,
   type FusionChildProcess,
   type FusionChildSpawn,
 } from '../../src/core/fusion/pi-child.js';
 import type { Usage } from '@earendil-works/pi-ai';
-import type { ResolvedFusionModel } from '../../src/core/fusion/types.js';
 import {
+  FUSION_FORBIDDEN_TOOLS,
+  FUSION_INSPECT_TOOLS,
+  FUSION_TOOL_CALL_LOG_SCHEMA_VERSION,
+  type ResolvedFusionModel,
+} from '../../src/core/fusion/types.js';
+import fusionChildExtension, {
   FUSION_CHILD_RESULT_PREFIX,
+  FUSION_TOOL_CALL_LOG_PATH_ENV,
   buildFusionChildResultMetadata,
 } from '../../src/fusion-child-extension.js';
 
@@ -122,7 +133,7 @@ function compactMetadata(provider = 'openai-codex', model = 'gpt-5.5'): string {
       provider,
       model,
       text: 'draft',
-      stopReason: 'length',
+      stopReason: 'toolUse',
       usage: {
         input: 1,
         output: 2,
@@ -149,8 +160,38 @@ function compactMetadata(provider = 'openai-codex', model = 'gpt-5.5'): string {
   );
 }
 
+function piUsage(input: number, output: number, totalTokens = input + output): Usage {
+  return {
+    input,
+    output,
+    cacheRead: 0,
+    cacheWrite: 0,
+    totalTokens,
+    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+  };
+}
+
+function toolLogLine(ordinal: number, overrides: Record<string, unknown> = {}): string {
+  return `${JSON.stringify({
+    schema_version: FUSION_TOOL_CALL_LOG_SCHEMA_VERSION,
+    ordinal,
+    tool_name: 'read',
+    arguments_sha256: 'a'.repeat(64),
+    arguments_bytes: 10,
+    result_bytes: 20,
+    result_sha256: 'b'.repeat(64),
+    status: 'ok',
+    duration_ms: 5,
+    ...overrides,
+  })}\n`;
+}
+
 async function tick(): Promise<void> {
   await new Promise<void>((resolve) => setImmediate(resolve));
+}
+
+async function delay(ms: number): Promise<void> {
+  await new Promise<void>((resolve) => setTimeout(resolve, ms));
 }
 
 void describe('fusion Pi child runner', () => {
@@ -229,7 +270,165 @@ void describe('fusion Pi child runner', () => {
     assert.equal(env['PI_SESSION_ID'], undefined);
     assert.equal(env['PI_MODEL'], undefined);
     assert.equal(env['OPENAI_API_KEY'], 'kept');
+    assert.equal(env[FUSION_TOOL_CALL_LOG_PATH_ENV], undefined);
     assert.equal(env['PI_SKIP_VERSION_CHECK'], '1');
+  });
+
+  void it('keeps the fusion tool-call log env var through child env scrubbing', () => {
+    const env = fusionPiChildEnv({
+      PI_SESSION_ID: 'old',
+      [FUSION_TOOL_CALL_LOG_PATH_ENV]: '/tmp/fusion-tools.jsonl',
+    });
+    assert.equal(env['PI_SESSION_ID'], undefined);
+    assert.equal(env[FUSION_TOOL_CALL_LOG_PATH_ENV], '/tmp/fusion-tools.jsonl');
+  });
+
+  void it('builds byte-identical reasoning argv with no tools', () => {
+    assert.deepEqual(buildFusionPiChildArgv(resolvedModel(), 'system', 'extension.js', 'reason'), [
+      '--mode',
+      'text',
+      '--no-session',
+      '--no-tools',
+      '--no-extensions',
+      '--no-skills',
+      '--no-prompt-templates',
+      '--no-themes',
+      '--no-context-files',
+      '--extension',
+      'extension.js',
+      '--provider',
+      'openai-codex',
+      '--model',
+      'gpt-5.5',
+      '--thinking',
+      'high',
+      '--system-prompt',
+      'system',
+    ]);
+  });
+
+  void it('builds inspect argv with exact read-only allowlist and denylist', () => {
+    const argv = buildFusionPiChildArgv(resolvedModel(), 'system', 'extension.js', 'inspect');
+    assert.equal(argv.includes('--no-tools'), false);
+    assert.deepEqual(argv.slice(0, 11), [
+      '--mode',
+      'text',
+      '--no-session',
+      '--no-builtin-tools',
+      '--tools',
+      FUSION_INSPECT_TOOLS.join(','),
+      '--exclude-tools',
+      FUSION_FORBIDDEN_TOOLS.join(','),
+      '--no-extensions',
+      '--no-skills',
+      '--no-prompt-templates',
+    ]);
+  });
+
+  void it('rejects fusion tool policy intersections loudly', () => {
+    assert.throws(
+      () => assertFusionToolPolicyDisjoint(['read', 'bash'], ['bash']),
+      /forbidden tool bash/,
+    );
+  });
+
+  void it('round-trips and summarizes a complete 3-call tool log', () => {
+    const trace = parseFusionToolCallLog(
+      Buffer.from(
+        toolLogLine(0, { result_bytes: 7 }) +
+          toolLogLine(1, { result_bytes: 11, status: 'error' }) +
+          toolLogLine(2, { result_bytes: 13 }),
+        'utf8',
+      ),
+    );
+    assert.equal(trace.records.length, 3);
+    assert.deepEqual(trace.summary, {
+      count: 3,
+      total_result_bytes: 31,
+      trace_complete: true,
+    });
+  });
+
+  void it('rejects a trailing partial tool-log line loudly', () => {
+    assert.throws(
+      () => parseFusionToolCallLog(Buffer.from(`${toolLogLine(0)}{"schema_version"`, 'utf8')),
+      /trailing partial line/,
+    );
+  });
+
+  void it('rejects tool-log ordinal gaps loudly', () => {
+    assert.throws(
+      () => parseFusionToolCallLog(Buffer.from(toolLogLine(0) + toolLogLine(2), 'utf8')),
+      /ordinal gap: expected 1, observed 2/,
+    );
+  });
+
+  void it('rejects duplicate tool-log ordinals loudly', () => {
+    assert.throws(
+      () => parseFusionToolCallLog(Buffer.from(toolLogLine(0) + toolLogLine(0), 'utf8')),
+      /duplicate ordinal 0/,
+    );
+  });
+
+  void it('rejects wrong tool-log schema versions loudly', () => {
+    assert.throws(
+      () =>
+        parseFusionToolCallLog(
+          Buffer.from(toolLogLine(0, { schema_version: 'wrong.schema' }), 'utf8'),
+        ),
+      /schema_version mismatch/,
+    );
+  });
+
+  void it('logs completed tool calls without raw arguments or results', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'pi-fusion-tool-log-extension-'));
+    const oldPath = process.env[FUSION_TOOL_CALL_LOG_PATH_ENV];
+    try {
+      const logPath = join(root, 'tool-calls.jsonl');
+      process.env[FUSION_TOOL_CALL_LOG_PATH_ENV] = logPath;
+      // Minimal structurally-typed stub. `ExtensionAPI['on']` is a large overload set, so a
+      // local recorder interface is declared instead of double-asserting the whole API: the
+      // child extension only ever calls `pi.on(name, handler)`.
+      type FusionChildPi = Parameters<typeof fusionChildExtension>[0];
+      type RecordedHandler = (event: Record<string, unknown>) => unknown;
+      interface HandlerRecorder {
+        on(event: string, handler: RecordedHandler): void;
+      }
+      const handlers = new Map<string, RecordedHandler[]>();
+      const recorder: HandlerRecorder = {
+        on(event, handler) {
+          const existing = handlers.get(event) ?? [];
+          existing.push(handler);
+          handlers.set(event, existing);
+        },
+      };
+      fusionChildExtension(recorder as HandlerRecorder & FusionChildPi);
+      const toolCall = handlers.get('tool_call')?.[0];
+      const toolResult = handlers.get('tool_result')?.[0];
+      assert.ok(toolCall);
+      assert.ok(toolResult);
+      const secret = 'SECRET_TOKEN_SHOULD_NOT_BE_IN_LOG';
+      toolCall({ toolCallId: 'call-1', toolName: 'read', input: { path: secret } });
+      toolResult({
+        toolCallId: 'call-1',
+        toolName: 'read',
+        input: { path: secret },
+        content: [{ type: 'text', text: `file contents ${secret}` }],
+        details: { echoed: secret },
+        isError: false,
+        usage: piUsage(0, 0),
+      });
+      const bytes = await readFile(logPath);
+      assert.doesNotMatch(bytes.toString('utf8'), new RegExp(secret));
+      const trace = parseFusionToolCallLog(bytes);
+      assert.equal(trace.summary.count, 1);
+      assert.equal(trace.records[0]?.tool_name, 'read');
+      assert.equal(trace.records[0]?.status, 'ok');
+    } finally {
+      if (oldPath === undefined) delete process.env[FUSION_TOOL_CALL_LOG_PATH_ENV];
+      else process.env[FUSION_TOOL_CALL_LOG_PATH_ENV] = oldPath;
+      await rm(root, { recursive: true, force: true });
+    }
   });
 
   void it('keeps reasoning and full response text out of compact child metadata', () => {
@@ -282,6 +481,7 @@ void describe('fusion Pi child runner', () => {
     assert.deepEqual(record.options.stdio, ['pipe', 'pipe', 'pipe']);
     assert.equal(record.options.env?.['PI_SESSION_FILE'], undefined);
     assert.equal(record.options.env?.['ANTHROPIC_API_KEY'], 'kept');
+    assert.equal(record.options.env?.[FUSION_TOOL_CALL_LOG_PATH_ENV], undefined);
     assert.equal(
       Buffer.concat(child.stdin.chunks).toString('utf8'),
       'large prompt with U+2028 \u2028 and U+2029 \u2029',
@@ -311,6 +511,209 @@ void describe('fusion Pi child runner', () => {
     assert.equal(result.stderr.toString('utf8'), 'diagnostic');
     assert.equal(result.events.toString('utf8').split('\n').filter(Boolean).length, 2);
     assert.doesNotMatch(result.events.toString('utf8'), /final héllo/);
+  });
+
+  void it('passes the tool-call log env var only for inspect children', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'pi-fusion-tool-log-env-'));
+    try {
+      const child = new FakeChild(778);
+      const harness = makeSpawn(child);
+      const logPath = join(root, 'candidate-1.attempt-1.tool-calls.jsonl');
+      const run = runPiChild({
+        stage: 'candidate',
+        slot: 1,
+        attempt: 1,
+        cwd: root,
+        model: resolvedModel(),
+        capability: 'inspect',
+        toolCallLogPath: logPath,
+        systemPrompt: 'system prompt',
+        userPrompt: 'prompt',
+        spawn: harness.spawn,
+        platform: 'linux',
+      });
+      await tick();
+      const record = harness.records[0];
+      assert.ok(record);
+      assert.equal(record.options.env?.[FUSION_TOOL_CALL_LOG_PATH_ENV], logPath);
+      // The real child extension creates this file at startup before tools can run. This
+      // fake child never loads the extension, so the empty-but-present log is written here
+      // to model a genuine zero-tool-call inspect run. An ABSENT file is a different case
+      // and must fail loudly - covered by the missing-log test below.
+      await writeFile(logPath, '');
+      child.stdout.emitData(Buffer.from('final héllo\n', 'utf8'));
+      child.stderr.emitData(compactMetadata());
+      child.close(0, null);
+      const result = await run;
+      assert.deepEqual(result.toolCallTrace?.summary, {
+        count: 0,
+        total_result_bytes: 0,
+        trace_complete: true,
+      });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  void it('fails inspect children loudly when their tool-call log was never created', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'pi-fusion-tool-log-missing-'));
+    try {
+      const child = new FakeChild(781);
+      const harness = makeSpawn(child);
+      // Deliberately never create the log: this models a child whose audit trail was never
+      // established. It must be distinguishable from a child that legitimately made zero
+      // tool calls, otherwise an unrecorded run could report success.
+      const logPath = join(root, 'candidate-1.attempt-1.tool-calls.jsonl');
+      const run = runPiChild({
+        stage: 'candidate',
+        slot: 1,
+        attempt: 1,
+        cwd: root,
+        model: resolvedModel(),
+        capability: 'inspect',
+        toolCallLogPath: logPath,
+        systemPrompt: 'system prompt',
+        userPrompt: 'prompt',
+        spawn: harness.spawn,
+        platform: 'linux',
+      });
+      await tick();
+      child.stdout.emitData(Buffer.from('final héllo\n', 'utf8'));
+      child.stderr.emitData(compactMetadata());
+      child.close(0, null);
+      await assert.rejects(run, (error: unknown) => {
+        assert.ok(error instanceof FusionChildRunError);
+        assert.equal(error.code, 'child_event_invalid');
+        assert.match(error.message, /never initialized its audit trail/);
+        return true;
+      });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  void it('fails inspect children loudly when their tool-call log is partial', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'pi-fusion-tool-log-partial-'));
+    try {
+      const child = new FakeChild(779);
+      const harness = makeSpawn(child);
+      const logPath = join(root, 'candidate-1.attempt-1.tool-calls.jsonl');
+      const run = runPiChild({
+        stage: 'candidate',
+        slot: 1,
+        attempt: 1,
+        cwd: root,
+        model: resolvedModel(),
+        capability: 'inspect',
+        toolCallLogPath: logPath,
+        systemPrompt: 'system prompt',
+        userPrompt: 'prompt',
+        spawn: harness.spawn,
+        platform: 'linux',
+      });
+      await tick();
+      await writeFile(logPath, `${toolLogLine(0)}{"schema_version"`, 'utf8');
+      child.stdout.emitData(Buffer.from('final héllo\n', 'utf8'));
+      child.stderr.emitData(compactMetadata());
+      child.close(0, null);
+      await assert.rejects(run, (error: unknown) => {
+        assert.ok(error instanceof FusionChildRunError);
+        assert.equal(error.code, 'child_event_invalid');
+        assert.match(error.message, /tool-call log invalid: .*trailing partial line/);
+        return true;
+      });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  void it('fails stalled children with child_timeout and terminates them', async () => {
+    const child = new FakeChild(515);
+    const harness = makeSpawn(child);
+    const run = runPiChild({
+      stage: 'candidate',
+      slot: 1,
+      attempt: 1,
+      cwd: '/tmp/project',
+      model: resolvedModel(),
+      systemPrompt: 'system',
+      userPrompt: 'prompt',
+      spawn: harness.spawn,
+      platform: 'win32',
+      idleTimeoutMs: 20,
+      timeoutMs: 1000,
+      killGraceMs: 10,
+      sigkillWaitMs: 10,
+    });
+    await assert.rejects(run, (error: unknown) => {
+      assert.ok(error instanceof FusionChildRunError);
+      assert.equal(error.code, 'child_timeout');
+      assert.match(error.message, /Pi child produced no output for 20ms \(stalled\)/);
+      assert.doesNotMatch(error.message, /timed out after 1000ms/);
+      return true;
+    });
+    assert.deepEqual(child.killCalls, ['SIGTERM', 'SIGKILL']);
+  });
+
+  void it('resets the stalled-child watchdog on stderr activity and completes successfully', async () => {
+    const child = new FakeChild(516);
+    const harness = makeSpawn(child);
+    const run = runPiChild({
+      stage: 'candidate',
+      slot: 2,
+      attempt: 1,
+      cwd: '/tmp/project',
+      model: resolvedModel(),
+      systemPrompt: 'system',
+      userPrompt: 'prompt',
+      spawn: harness.spawn,
+      platform: 'win32',
+      idleTimeoutMs: 60,
+      timeoutMs: 1000,
+      killGraceMs: 10,
+      sigkillWaitMs: 10,
+    });
+    await tick();
+    await delay(30);
+    child.stderr.emitData('diagnostic one\n');
+    await delay(30);
+    child.stderr.emitData('diagnostic two\n');
+    await delay(30);
+    child.stdout.emitData('final héllo\n');
+    child.stderr.emitData(compactMetadata());
+    child.close(0, null);
+
+    const result = await run;
+    assert.equal(result.text, 'final héllo');
+    assert.equal(result.stderr.toString('utf8'), 'diagnostic one\ndiagnostic two\n');
+    assert.deepEqual(child.killCalls, []);
+  });
+
+  void it('keeps the absolute timeout distinct from the stalled-child watchdog', async () => {
+    const child = new FakeChild(517);
+    const harness = makeSpawn(child);
+    const run = runPiChild({
+      stage: 'merge',
+      attempt: 1,
+      cwd: '/tmp/project',
+      model: resolvedModel(),
+      systemPrompt: 'system',
+      userPrompt: 'prompt',
+      spawn: harness.spawn,
+      platform: 'win32',
+      idleTimeoutMs: 1000,
+      timeoutMs: 20,
+      killGraceMs: 10,
+      sigkillWaitMs: 10,
+    });
+    await assert.rejects(run, (error: unknown) => {
+      assert.ok(error instanceof FusionChildRunError);
+      assert.equal(error.code, 'child_timeout');
+      assert.match(error.message, /Pi child timed out after 20ms/);
+      assert.doesNotMatch(error.message, /stalled/);
+      return true;
+    });
+    assert.deepEqual(child.killCalls, ['SIGTERM', 'SIGKILL']);
   });
 
   void it('launches Windows Pi through Node and preserves adversarial argv without a shell', async () => {
@@ -477,6 +880,91 @@ void describe('fusion Pi child runner', () => {
       assert.equal(error.code, 'child_cancelled');
       return true;
     });
+  });
+
+  void it('accepts a multi-message tool loop and sums usage across all records', () => {
+    const stderr = Buffer.from(
+      compactFrame({
+        provider: 'p',
+        model: 'm',
+        text: 'tool request 1',
+        stopReason: 'toolUse',
+        usage: piUsage(1, 2, 3),
+      }) +
+        compactFrame({
+          provider: 'p',
+          model: 'm',
+          text: 'tool request 2',
+          stopReason: 'toolUse',
+          usage: piUsage(4, 5, 9),
+        }) +
+        compactFrame({
+          provider: 'p',
+          model: 'm',
+          text: 'final answer',
+          stopReason: 'stop',
+          usage: piUsage(6, 7, 13),
+        }),
+      'utf8',
+    );
+
+    const parsed = new FusionPiCompactResultParser('p', 'm').finish(
+      Buffer.from('final answer\n', 'utf8'),
+      stderr,
+    );
+
+    assert.equal(parsed.text, 'final answer');
+    assert.equal(parsed.usage.input, 11);
+    assert.equal(parsed.usage.output, 14);
+    assert.equal(parsed.usage.totalTokens, 25);
+  });
+
+  void it('rejects invalid transcript stop reasons loudly', () => {
+    const parser = new FusionPiCompactResultParser('p', 'm');
+    const frame = (stopReason: string, text = stopReason): string =>
+      compactFrame({
+        provider: 'p',
+        model: 'm',
+        text,
+        stopReason,
+        usage: piUsage(1, 1, 2),
+      });
+    const finish = (frames: string): void => {
+      parser.finish(Buffer.from('final\n', 'utf8'), Buffer.from(frames, 'utf8'));
+    };
+
+    assert.throws(
+      () => finish(frame('stop', 'early') + frame('stop', 'final')),
+      /non-final record 0 stop reason is not toolUse: stop/,
+    );
+    assert.throws(
+      () => finish(frame('length', 'early') + frame('stop', 'final')),
+      /non-final record 0 stop reason is not toolUse: length .*truncated/,
+    );
+    assert.throws(
+      () => finish(frame('toolUse', 'early') + frame('toolUse', 'final')),
+      /final stop reason is not stop: toolUse/,
+    );
+    assert.throws(
+      () => finish(frame('error', 'early') + frame('stop', 'final')),
+      /non-final record 0 stop reason is not toolUse: error .*error stop/,
+    );
+    assert.throws(
+      () => finish(frame('toolUse', 'early') + frame('error', 'final')),
+      /final stop reason is not stop: error \(Pi reported an error stop\)/,
+    );
+    assert.throws(
+      () => finish(frame('aborted', 'early') + frame('stop', 'final')),
+      /non-final record 0 stop reason is not toolUse: aborted .*aborted stop/,
+    );
+    assert.throws(
+      () => finish(frame('toolUse', 'early') + frame('aborted', 'final')),
+      /final stop reason is not stop: aborted \(Pi reported an aborted stop\)/,
+    );
+    assert.throws(
+      () => finish(frame('pending', 'early') + frame('stop', 'final')),
+      /non-final record 0 stop reason is not toolUse: pending .*pending stop/,
+    );
   });
 
   void it('reconstructs multiple print-mode text blocks without compacting the final answer', () => {

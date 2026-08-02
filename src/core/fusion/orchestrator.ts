@@ -13,7 +13,6 @@ import {
 } from './evaluation.js';
 import { FusionChildRunError, runPiChild, type RunPiChildOptions } from './pi-child.js';
 import {
-  FUSION_CANDIDATE_SYSTEM_PROMPT,
   FUSION_EVALUATION_REPAIR_SYSTEM_PROMPT,
   FUSION_EVALUATOR_SYSTEM_PROMPT,
   FUSION_MERGER_SYSTEM_PROMPT,
@@ -23,14 +22,17 @@ import {
   buildEvaluationRepairPrompt,
   buildMergeInput,
   buildMergePrompt,
+  fusionCandidateSystemPrompt,
   type AnonymousFusionCandidate,
 } from './prompts.js';
 import {
+  FUSION_DEFAULT_CAPABILITY,
   FUSION_RESULT_SCHEMA_VERSION,
   FusionError,
   addFusionUsage,
   createEmptyFusionUsage,
   type FusionCalibrationViolation,
+  type FusionCapability,
   type FusionCanonicalInputV3,
   type FusionCandidateId,
   type FusionContextOmissionLedgerV2,
@@ -62,6 +64,7 @@ export interface FusionWorkflowInput {
   contextLedger: FusionContextOmissionLedgerV2;
   config: FusionModelConfigV1;
   models: ResolvedFusionModels;
+  candidateCapability?: FusionCapability | undefined;
   signal?: AbortSignal | undefined;
   onProgress?: FusionProgressSink | undefined;
 }
@@ -179,21 +182,25 @@ function childOptions(
   model: ResolvedFusionModel,
   stage: FusionStage,
   attempt: number,
+  capability: FusionCapability,
   systemPrompt: string,
   userPrompt: string,
   signal: AbortSignal,
   slot?: CandidateSlot,
+  toolCallLogPath?: string,
 ): RunPiChildOptions {
   const out: RunPiChildOptions = {
     stage,
     attempt,
     cwd: input.cwd,
     model,
+    capability,
     systemPrompt,
     userPrompt,
     signal,
   };
   if (slot !== undefined) out.slot = slot;
+  if (toolCallLogPath !== undefined) out.toolCallLogPath = toolCallLogPath;
   return out;
 }
 
@@ -329,6 +336,11 @@ export class FusionOrchestrator {
       source: input.source,
       config: input.config,
       models: input.models,
+      capabilities: {
+        candidate: input.candidateCapability ?? FUSION_DEFAULT_CAPABILITY,
+        evaluation: FUSION_DEFAULT_CAPABILITY,
+        merge: FUSION_DEFAULT_CAPABILITY,
+      },
     };
     if (input.sessionId !== undefined) storeOptions.sessionId = input.sessionId;
     if (this.now !== undefined) storeOptions.now = this.now;
@@ -344,6 +356,7 @@ export class FusionOrchestrator {
       const budget = new FusionBudget(
         input.models,
         input.canonicalInput.conversation_projection.policy.id,
+        input.candidateCapability ?? FUSION_DEFAULT_CAPABILITY,
       );
       const budgetPlan = budget.plan(input.canonicalInput);
       await store.writeBudgetPlan(budgetPlan);
@@ -401,6 +414,8 @@ export class FusionOrchestrator {
         FUSION_MERGER_SYSTEM_PROMPT,
         mergePrompt,
         input.signal ?? new AbortController().signal,
+        // Stage policy, not caller input: evaluator and merger are always reasoning-only.
+        FUSION_DEFAULT_CAPABILITY,
         undefined,
         'md',
       );
@@ -485,9 +500,11 @@ export class FusionOrchestrator {
     const abortListener = () => controller.abort();
     input.signal?.addEventListener('abort', abortListener, { once: true });
     if (input.signal?.aborted) controller.abort();
+    const candidateCapability = input.candidateCapability ?? FUSION_DEFAULT_CAPABILITY;
+    const systemPrompt = fusionCandidateSystemPrompt(candidateCapability);
     const prompt = buildCandidatePrompt(input.canonicalInput);
     for (const slot of [1, 2, 3] as const) {
-      budget.assertStagePrompt('candidate', FUSION_CANDIDATE_SYSTEM_PROMPT, prompt, slot);
+      budget.assertStagePrompt('candidate', systemPrompt, prompt, slot);
     }
     let primaryError: unknown;
     let completed = 0;
@@ -507,9 +524,10 @@ export class FusionOrchestrator {
           usage,
           model,
           'candidate',
-          FUSION_CANDIDATE_SYSTEM_PROMPT,
+          systemPrompt,
           prompt,
           controller.signal,
+          candidateCapability,
           slot,
           'md',
         ).then(async (result) => {
@@ -520,7 +538,7 @@ export class FusionOrchestrator {
             budget,
             calibrationWarnings,
             'candidate',
-            FUSION_CANDIDATE_SYSTEM_PROMPT,
+            systemPrompt,
             prompt,
             result,
             slot,
@@ -633,6 +651,8 @@ export class FusionOrchestrator {
       systemPrompt,
       prompt,
       input.signal ?? new AbortController().signal,
+      // Stage policy, not caller input: evaluator and merger are always reasoning-only.
+      FUSION_DEFAULT_CAPABILITY,
       undefined,
       'txt',
       attempt,
@@ -700,6 +720,7 @@ export class FusionOrchestrator {
     systemPrompt: string,
     userPrompt: string,
     signal: AbortSignal,
+    capability: FusionCapability,
     slot: CandidateSlot | undefined,
     responseKind: 'md' | 'txt',
     fixedAttempt?: 1 | 2,
@@ -709,9 +730,24 @@ export class FusionOrchestrator {
       if (stage === 'candidate' && slot !== undefined) {
         input.onProgress?.({ type: 'candidate_started', slot, attempt: logicalAttempt });
       }
+      const toolCallLogPath =
+        capability === 'inspect'
+          ? store.childToolCallLogPath(stage, slot, logicalAttempt)
+          : undefined;
       try {
         return await this.childRunner(
-          childOptions(input, model, stage, logicalAttempt, systemPrompt, userPrompt, signal, slot),
+          childOptions(
+            input,
+            model,
+            stage,
+            logicalAttempt,
+            capability,
+            systemPrompt,
+            userPrompt,
+            signal,
+            slot,
+            toolCallLogPath,
+          ),
         );
       } catch (error) {
         if (!signal.aborted && retryableSpawn(error, launchTry) && launchTry === 1) continue;

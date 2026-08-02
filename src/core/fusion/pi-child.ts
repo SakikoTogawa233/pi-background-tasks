@@ -1,21 +1,30 @@
 import { spawn as nodeSpawn, type SpawnOptions } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { existsSync } from 'node:fs';
+import { lstat, readFile } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
   FUSION_CHILD_RESULT_PREFIX,
   FUSION_CHILD_RESULT_SCHEMA_VERSION,
+  FUSION_TOOL_CALL_LOG_PATH_ENV,
   type FusionChildResultMetadata,
 } from '../../fusion-child-extension.js';
 import {
+  FUSION_DEFAULT_CAPABILITY,
+  FUSION_FORBIDDEN_TOOLS,
+  FUSION_INSPECT_TOOLS,
+  FUSION_TOOL_CALL_LOG_SCHEMA_VERSION,
   FusionError,
   addFusionUsage,
   cloneFusionUsage,
   createEmptyFusionUsage,
+  type FusionCapability,
   type FusionChildRunResult,
   type FusionErrorDetails,
   type FusionStage,
+  type FusionToolCallLogRecord,
+  type FusionToolCallTrace,
   type FusionUsage,
   type ResolvedFusionModel,
 } from './types.js';
@@ -31,6 +40,18 @@ import {
 export const FUSION_CHILD_STDOUT_LIMIT_BYTES = 32 * 1024 * 1024;
 export const FUSION_CHILD_STDERR_LIMIT_BYTES = 4 * 1024 * 1024;
 export const FUSION_CHILD_TIMEOUT_MS = 30 * 60 * 1000;
+/**
+ * Stale-action watchdog threshold.
+ *
+ * Activity is one stdout or stderr byte from the child. The child extension emits its
+ * compact metadata frame only at `message_end`, and Pi text mode writes stdout only for
+ * the final assistant message, so a single slow model turn is genuinely silent on both
+ * streams. The threshold must therefore exceed the longest plausible single turn, not the
+ * longest plausible tool call: a value tuned to tool latency would kill healthy children
+ * mid-reasoning. 900s stays well inside the 30-minute absolute cap while leaving a wide
+ * margin over observed turn latency.
+ */
+export const FUSION_CHILD_IDLE_TIMEOUT_MS = 15 * 60 * 1000;
 export const FUSION_CHILD_KILL_GRACE_MS = 3000;
 export const FUSION_CHILD_SIGKILL_WAIT_MS = 5000;
 
@@ -86,6 +107,7 @@ export interface RunPiChildOptions {
   attempt: number;
   cwd: string;
   model: ResolvedFusionModel;
+  capability?: FusionCapability | undefined;
   systemPrompt: string;
   userPrompt: string;
   signal?: AbortSignal | undefined;
@@ -97,9 +119,11 @@ export interface RunPiChildOptions {
   childExtensionPath?: string | undefined;
   stderrLimitBytes?: number | undefined;
   timeoutMs?: number | undefined;
+  idleTimeoutMs?: number | undefined;
   killGraceMs?: number | undefined;
   sigkillWaitMs?: number | undefined;
   piLaunchDependencies?: PiLaunchDependencies | undefined;
+  toolCallLogPath?: string | undefined;
 }
 
 interface CloseRecord {
@@ -114,6 +138,7 @@ interface ProcessState {
   termTimer: NodeJS.Timeout | undefined;
   waitTimer: NodeJS.Timeout | undefined;
   timeoutTimer: NodeJS.Timeout | undefined;
+  idleTimer: NodeJS.Timeout | undefined;
   settled: boolean;
 }
 
@@ -186,16 +211,49 @@ export function resolveFusionChildExtensionPath(
   return candidate;
 }
 
+export function assertFusionToolPolicyDisjoint(
+  allowlist: readonly string[] = FUSION_INSPECT_TOOLS,
+  denylist: readonly string[] = FUSION_FORBIDDEN_TOOLS,
+): void {
+  for (const forbidden of denylist) {
+    if (allowlist.includes(forbidden)) {
+      throw new FusionError(
+        `fusion inspect capability would enable the forbidden tool ${forbidden}`,
+        { code: 'orchestration_failed', childCreated: false },
+      );
+    }
+  }
+}
+
+function fusionToolArgv(capability: FusionCapability): string[] {
+  assertFusionToolPolicyDisjoint();
+  if (capability === 'reason') return ['--no-tools'];
+  if (capability === 'inspect') {
+    return [
+      '--no-builtin-tools',
+      '--tools',
+      FUSION_INSPECT_TOOLS.join(','),
+      '--exclude-tools',
+      FUSION_FORBIDDEN_TOOLS.join(','),
+    ];
+  }
+  throw new FusionError(`fusion capability ${String(capability)} is not supported`, {
+    code: 'orchestration_failed',
+    childCreated: false,
+  });
+}
+
 export function buildFusionPiChildArgv(
   model: ResolvedFusionModel,
   systemPrompt: string,
   childExtensionPath = resolveFusionChildExtensionPath(),
+  capability: FusionCapability = FUSION_DEFAULT_CAPABILITY,
 ): string[] {
   return [
     '--mode',
     'text',
     '--no-session',
-    '--no-tools',
+    ...fusionToolArgv(capability),
     '--no-extensions',
     '--no-skills',
     '--no-prompt-templates',
@@ -371,6 +429,124 @@ export function parseFusionChildStderr(stderr: Buffer): ParsedFusionChildStderr 
   return { records, events, diagnostics: Buffer.concat(diagnostics) };
 }
 
+function parseToolCallLogRecord(value: unknown, label: string): FusionToolCallLogRecord {
+  const record = assertClosedRecord(
+    value,
+    [
+      'schema_version',
+      'ordinal',
+      'tool_name',
+      'arguments_sha256',
+      'arguments_bytes',
+      'result_bytes',
+      'result_sha256',
+      'status',
+      'duration_ms',
+    ],
+    label,
+  );
+  if (record['schema_version'] !== FUSION_TOOL_CALL_LOG_SCHEMA_VERSION) {
+    throw new Error(`${label}.schema_version mismatch`);
+  }
+  const status = record['status'];
+  if (status !== 'ok' && status !== 'error') throw new Error(`${label}.status is invalid`);
+  return {
+    schema_version: FUSION_TOOL_CALL_LOG_SCHEMA_VERSION,
+    ordinal: requireUsageInteger(record, 'ordinal', label),
+    tool_name: requireNonBlankString(record, 'tool_name', label),
+    arguments_sha256: requireSha256(record, 'arguments_sha256', label),
+    arguments_bytes: requireUsageInteger(record, 'arguments_bytes', label),
+    result_bytes: requireUsageInteger(record, 'result_bytes', label),
+    result_sha256: requireSha256(record, 'result_sha256', label),
+    status,
+    duration_ms: requireUsageInteger(record, 'duration_ms', label),
+  };
+}
+
+export function parseFusionToolCallLog(bytes: Buffer): FusionToolCallTrace {
+  if (bytes.length === 0) {
+    return {
+      bytes,
+      records: [],
+      summary: { count: 0, total_result_bytes: 0, trace_complete: true },
+    };
+  }
+  if (bytes.at(-1) !== 10) {
+    throw new Error('fusion tool-call log has trailing partial line');
+  }
+  const text = bytes.toString('utf8');
+  if (!Buffer.from(text, 'utf8').equals(bytes)) {
+    throw new Error('fusion tool-call log is not valid UTF-8');
+  }
+  const lines = text.split('\n');
+  lines.pop();
+  const records = lines.map((line, index) => {
+    let parsed: unknown;
+    try {
+      parsed = parseJsonText(line);
+    } catch (error) {
+      throw new Error(
+        `fusion tool-call log line ${String(index)} is invalid JSON: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+    return parseToolCallLogRecord(parsed, `fusion tool-call log line ${String(index)}`);
+  });
+  const seen = new Set<number>();
+  for (const [index, record] of records.entries()) {
+    if (seen.has(record.ordinal)) {
+      throw new Error(`fusion tool-call log duplicate ordinal ${String(record.ordinal)}`);
+    }
+    seen.add(record.ordinal);
+    if (record.ordinal !== index) {
+      throw new Error(
+        `fusion tool-call log ordinal gap: expected ${String(index)}, observed ${String(record.ordinal)}`,
+      );
+    }
+  }
+  return {
+    bytes,
+    records,
+    summary: {
+      count: records.length,
+      total_result_bytes: records.reduce((sum, record) => sum + record.result_bytes, 0),
+      trace_complete: true,
+    },
+  };
+}
+
+function isNotFound(error: unknown): boolean {
+  return isJsonObject(error) && error['code'] === 'ENOENT';
+}
+
+async function readFusionToolCallLog(path: string): Promise<FusionToolCallTrace> {
+  let bytes: Buffer;
+  try {
+    bytes = await readFile(path);
+  } catch (error) {
+    // The child extension creates this file before tools can run, so a missing file
+    // means the audit trail was never established - not that zero tools were used. Those
+    // must stay distinguishable: silently accepting absence would let a run whose activity
+    // was never recorded report success, defeating the purpose of the log.
+    if (isNotFound(error)) {
+      throw new Error(
+        `fusion tool-call log is missing at ${path}; the inspect child never initialized its audit trail`,
+      );
+    }
+    throw error;
+  }
+  // The audit trail must be a real file inside the run directory. A symlink here would let
+  // anything able to pre-create the path redirect the parent's read elsewhere, so the type
+  // is checked explicitly rather than trusting the 0700 run directory alone. lstat does not
+  // follow the link, so a symlinked path is rejected instead of silently resolved.
+  const stats = await lstat(path);
+  if (!stats.isFile()) {
+    throw new Error(
+      `fusion tool-call log at ${path} is not a regular file; refusing to trust a redirected audit trail`,
+    );
+  }
+  return parseFusionToolCallLog(bytes);
+}
+
 function sha256Buffer(bytes: Buffer): string {
   return createHash('sha256').update(bytes).digest('hex');
 }
@@ -436,8 +612,7 @@ export class FusionPiCompactResultParser {
     const final = parsed.records.at(-1);
     if (final === undefined) throw new Error('Pi child emitted no compact result metadata');
     for (const record of parsed.records) this.assertModel(record);
-    if (final.stop_reason !== 'stop')
-      throw new Error(`Pi final stop reason is not stop: ${final.stop_reason}`);
+    this.assertTranscriptStopReasons(parsed.records);
     const observed = this.observedFromRecords(parsed.records);
     return {
       text: reconstructFinalText(response, final),
@@ -455,6 +630,43 @@ export class FusionPiCompactResultParser {
       throw new Error(
         `Pi assistant model mismatch: expected ${this.expectedProvider}/${this.expectedModel}, observed ${record.provider}/${record.model}`,
       );
+    }
+  }
+
+  private assertTranscriptStopReasons(records: readonly FusionChildResultMetadata[]): void {
+    for (const [index, record] of records.entries()) {
+      const isFinal = index === records.length - 1;
+      if (isFinal) {
+        if (record.stop_reason !== 'stop') {
+          throw new Error(this.stopReasonError('final', 'stop', record.stop_reason, true));
+        }
+      } else if (record.stop_reason !== 'toolUse') {
+        throw new Error(
+          this.stopReasonError(`non-final record ${index}`, 'toolUse', record.stop_reason, true),
+        );
+      }
+    }
+  }
+
+  private stopReasonError(
+    position: string,
+    expected: string,
+    observed: string,
+    includeStopDetail: boolean,
+  ): string {
+    const prefix = `Pi ${position} stop reason is not ${expected}: ${observed}`;
+    if (!includeStopDetail) return prefix;
+    switch (observed) {
+      case 'length':
+        return `${prefix} (model output was truncated)`;
+      case 'error':
+        return `${prefix} (Pi reported an error stop)`;
+      case 'aborted':
+        return `${prefix} (Pi reported an aborted stop)`;
+      case 'pending':
+        return `${prefix} (Pi reported a pending stop)`;
+      default:
+        return prefix;
     }
   }
 
@@ -542,8 +754,8 @@ function defaultSpawn(command: string, args: string[], options: SpawnOptions): F
 /**
  * Termination timers must keep the event loop alive.
  *
- * The SIGTERM grace, SIGKILL wait, and overall timeout timers are the only
- * things that settle the run promise when a child stops emitting events. An
+ * The SIGTERM grace, SIGKILL wait, overall timeout, and idle timeout timers
+ * are the only things that settle the run promise when a child stops emitting events. An
  * unref'd timer lets the loop drain first, leaving the promise pending forever
  * ("Promise resolution is still pending but the event loop has already
  * resolved"). Every timer stored here is cleared in the `finally` of
@@ -646,9 +858,11 @@ function cleanupTimers(state: ProcessState): void {
   if (state.termTimer !== undefined) clearTimeout(state.termTimer);
   if (state.waitTimer !== undefined) clearTimeout(state.waitTimer);
   if (state.timeoutTimer !== undefined) clearTimeout(state.timeoutTimer);
+  if (state.idleTimer !== undefined) clearTimeout(state.idleTimer);
   state.termTimer = undefined;
   state.waitTimer = undefined;
   state.timeoutTimer = undefined;
+  state.idleTimer = undefined;
 }
 
 async function writePromptToStdin(child: FusionChildProcess, prompt: string): Promise<void> {
@@ -692,16 +906,31 @@ export async function runPiChild(options: RunPiChildOptions): Promise<FusionChil
   const spawnImpl = options.spawn ?? defaultSpawn;
   const killProcess = options.killProcess ?? process.kill.bind(process);
   const platform = options.platform ?? process.platform;
+  const capability = options.capability ?? FUSION_DEFAULT_CAPABILITY;
   const env = fusionPiChildEnv(options.env ?? process.env);
+  if (capability === 'inspect') {
+    if (options.toolCallLogPath === undefined) {
+      throw childError(
+        'fusion inspect child requires a tool-call log path',
+        'orchestration_failed',
+        options,
+        false,
+        false,
+      );
+    }
+    env[FUSION_TOOL_CALL_LOG_PATH_ENV] = options.toolCallLogPath;
+  }
   const stdoutLimit = options.stdoutLimitBytes ?? FUSION_CHILD_STDOUT_LIMIT_BYTES;
   const stderrLimit = options.stderrLimitBytes ?? FUSION_CHILD_STDERR_LIMIT_BYTES;
   const timeoutMs = options.timeoutMs ?? FUSION_CHILD_TIMEOUT_MS;
+  const idleTimeoutMs = options.idleTimeoutMs ?? FUSION_CHILD_IDLE_TIMEOUT_MS;
   const killGraceMs = options.killGraceMs ?? FUSION_CHILD_KILL_GRACE_MS;
   const sigkillWaitMs = options.sigkillWaitMs ?? FUSION_CHILD_SIGKILL_WAIT_MS;
   const argv = buildFusionPiChildArgv(
     options.model,
     options.systemPrompt,
     options.childExtensionPath ?? resolveFusionChildExtensionPath(),
+    capability,
   );
   const parser = new FusionPiCompactResultParser(options.model.provider, options.model.model);
   const stdoutChunks: Buffer[] = [];
@@ -715,6 +944,7 @@ export async function runPiChild(options: RunPiChildOptions): Promise<FusionChil
     termTimer: undefined,
     waitTimer: undefined,
     timeoutTimer: undefined,
+    idleTimer: undefined,
     settled: false,
   };
 
@@ -754,6 +984,23 @@ export async function runPiChild(options: RunPiChildOptions): Promise<FusionChil
     };
   });
 
+  const resetIdleTimer = () => {
+    if (state.settled) return;
+    if (state.idleTimer !== undefined) clearTimeout(state.idleTimer);
+    state.idleTimer = trackTimer(
+      setTimeout(() => {
+        if (state.settled) return;
+        if (state.primaryError === undefined) {
+          state.primaryError = childError(
+            `Pi child produced no output for ${String(idleTimeoutMs)}ms (stalled)`,
+            'child_timeout',
+            options,
+          );
+        }
+        terminateChild(child, state, platform, killProcess, killGraceMs, sigkillWaitMs, settleClose);
+      }, idleTimeoutMs),
+    );
+  };
   const abortListener = () => {
     if (state.settled) return;
     if (state.primaryError === undefined) {
@@ -762,6 +1009,7 @@ export async function runPiChild(options: RunPiChildOptions): Promise<FusionChil
     terminateChild(child, state, platform, killProcess, killGraceMs, sigkillWaitMs, settleClose);
   };
   const stdoutListener = (data: Buffer | string) => {
+    resetIdleTimer();
     const chunk = Buffer.isBuffer(data) ? data : Buffer.from(data, 'utf8');
     const appended = appendCapped(stdoutChunks, stdoutBytes, chunk, stdoutLimit);
     stdoutBytes = appended.bytes;
@@ -775,6 +1023,7 @@ export async function runPiChild(options: RunPiChildOptions): Promise<FusionChil
     }
   };
   const stderrListener = (data: Buffer | string) => {
+    resetIdleTimer();
     const chunk = Buffer.isBuffer(data) ? data : Buffer.from(data, 'utf8');
     const appended = appendCapped(stderrChunks, stderrBytes, chunk, stderrLimit);
     stderrBytes = appended.bytes;
@@ -812,6 +1061,7 @@ export async function runPiChild(options: RunPiChildOptions): Promise<FusionChil
   child.once('close', closeListener);
   options.signal?.addEventListener('abort', abortListener, { once: true });
   if (options.signal?.aborted) abortListener();
+  resetIdleTimer();
   state.timeoutTimer = trackTimer(
     setTimeout(() => {
       if (state.primaryError === undefined) {
@@ -900,6 +1150,40 @@ export async function runPiChild(options: RunPiChildOptions): Promise<FusionChil
         observed,
       );
     }
+    let toolCallTrace: FusionToolCallTrace | undefined;
+    if (capability === 'inspect') {
+      // The launch path above refuses to spawn an inspect child without a log path, so
+      // this is unreachable. Assert rather than defaulting: a `?? ''` here would silently
+      // read an empty path if that guard were ever refactored away, turning a missing
+      // audit trail into a successful run.
+      const logPath = options.toolCallLogPath;
+      if (logPath === undefined) {
+        throw childError(
+          'fusion inspect child completed without a tool-call log path',
+          'orchestration_failed',
+          options,
+        );
+      }
+      try {
+        toolCallTrace = await readFusionToolCallLog(logPath);
+      } catch (error) {
+        throw new FusionChildRunError(
+          withCleanupErrors(
+            childError(
+              `Pi child tool-call log invalid: ${error instanceof Error ? error.message : String(error)}`,
+              'child_event_invalid',
+              options,
+            ),
+            state.cleanupErrors,
+          ),
+          compactEvents,
+          response,
+          diagnostics,
+          close,
+          observed,
+        );
+      }
+    }
     const result: FusionChildRunResult = {
       stage: options.stage,
       attempt: options.attempt,
@@ -914,6 +1198,7 @@ export async function runPiChild(options: RunPiChildOptions): Promise<FusionChil
       signal: close.signal,
     };
     if (options.slot !== undefined) result.slot = options.slot;
+    if (toolCallTrace !== undefined) result.toolCallTrace = toolCallTrace;
     return result;
   } finally {
     cleanupTimers(state);

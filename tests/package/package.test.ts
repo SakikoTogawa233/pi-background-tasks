@@ -7,6 +7,7 @@ import { dirname, join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { parseJsonText } from '../../src/core/common.js';
+import { prepareFusionArguments } from '../../src/fusion-extension.js';
 
 // npm ships as npm.cmd on Windows, and spawnSync with shell:false does not
 // consult PATHEXT, so spawning the bare name yields status null with no child.
@@ -409,6 +410,104 @@ void describe('package', () => {
         `TEST_PLAN missing ${surface}`,
       );
     }
+  });
+
+  void it('validates fusion_brainstorm capability arguments loudly', () => {
+    assert.deepEqual(prepareFusionArguments({ prompt: ' hello ' }), {
+      prompt: 'hello',
+      capability: 'reason',
+    });
+    assert.deepEqual(prepareFusionArguments({ prompt: 'hello', capability: 'inspect' }), {
+      prompt: 'hello',
+      capability: 'inspect',
+    });
+    assert.throws(
+      () => prepareFusionArguments({ prompt: 'hello', capability: 'research' }),
+      /allowed values: reason, inspect/,
+    );
+    assert.throws(
+      () => prepareFusionArguments({ prompt: 'hello', capability: 'bogus' }),
+      /allowed values: reason, inspect/,
+    );
+    assert.throws(
+      () => prepareFusionArguments({ prompt: 'hello', extra: true }),
+      /prompt and optional capability only/,
+    );
+  });
+
+  void it('Fusion candidate tool policy cannot be weakened', async () => {
+    const types = await text('src/core/fusion/types.ts');
+    // The read-only allowlist is exactly Pi's read-only built-in subset. Any addition
+    // here grants fusion children a new capability and must be a deliberate, reviewed
+    // change - not an incidental edit.
+    assert.match(
+      types,
+      /FUSION_INSPECT_TOOLS\s*=\s*Object\.freeze\(\[\s*'read',\s*'grep',\s*'find',\s*'ls',?\s*\]/,
+      'fusion inspect allowlist must remain exactly read, grep, find, ls',
+    );
+    // Every tool that would grant shell access, mutation, recursion, or background
+    // spawning must stay denied. Removing even one entry is a security regression.
+    for (const forbidden of [
+      'bash',
+      'edit',
+      'write',
+      'fusion_brainstorm',
+      'bg_delegate',
+      'bg_result',
+      'bg_run',
+      'bg_kill',
+      'bg_status',
+      'bg_logs',
+      'bg_run_pi_attested',
+    ]) {
+      assert.match(
+        types,
+        new RegExp(`FUSION_FORBIDDEN_TOOLS[\\s\\S]*?'${forbidden}'[\\s\\S]*?\\]`),
+        `FUSION_FORBIDDEN_TOOLS must continue to deny ${forbidden}`,
+      );
+    }
+    // The default capability must stay the least-privileged one. A default of 'inspect'
+    // would silently grant filesystem access to every existing caller.
+    assert.match(
+      types,
+      /FUSION_DEFAULT_CAPABILITY:\s*FusionCapability\s*=\s*'reason'/,
+      'fusion default capability must remain the no-tools reason profile',
+    );
+  });
+
+  void it('Fusion evaluator and merger can never receive caller-selected tools', async () => {
+    const orchestrator = await text('src/core/fusion/orchestrator.ts');
+    // Stage policy, not caller input. The evaluation and merge child launches must pass
+    // the hardcoded default capability literal; the caller-supplied capability must never
+    // appear in runEvaluationAttempt() or the merge launch. Assert on the launch regions
+    // rather than a global occurrence count, so legitimate uses (manifest record, budget
+    // forecast, candidate launch) can grow without silently disabling this guard.
+    const evaluationRegion = orchestrator.slice(
+      orchestrator.indexOf('private async runEvaluationAttempt('),
+    );
+    assert.ok(evaluationRegion.length > 0, 'runEvaluationAttempt must exist');
+    assert.doesNotMatch(
+      evaluationRegion.slice(0, 2000),
+      /input\.candidateCapability/,
+      'the evaluation stage must never receive the caller-selected capability',
+    );
+    // Both non-candidate launch sites annotate the invariant and pass the literal default.
+    const stagePolicyComments =
+      orchestrator.match(/Stage policy, not caller input/g) ?? [];
+    assert.equal(
+      stagePolicyComments.length,
+      2,
+      'evaluation and merge launches must each document the stage-policy invariant',
+    );
+  });
+
+  void it('Fusion golden byte gate has no fixture generation path', async () => {
+    const goldenTest = await text('tests/unit/fusion-golden-bytes.test.ts');
+    assert.doesNotMatch(
+      goldenTest,
+      /writeFile/,
+      'fusion golden byte gate must not auto-generate committed fixtures',
+    );
   });
 
   void it('fusion production code avoids direct completion APIs and local adapters', async () => {
