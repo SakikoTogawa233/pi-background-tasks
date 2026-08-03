@@ -444,6 +444,10 @@ void describe('package', () => {
   void it('validates fusion_brainstorm capability arguments loudly', () => {
     assert.deepEqual(prepareFusionArguments({ prompt: ' hello ' }), {
       prompt: 'hello',
+      capability: 'inspect',
+    });
+    assert.deepEqual(prepareFusionArguments({ prompt: 'hello', capability: 'reason' }), {
+      prompt: 'hello',
       capability: 'reason',
     });
     assert.deepEqual(prepareFusionArguments({ prompt: 'hello', capability: 'inspect' }), {
@@ -505,12 +509,22 @@ void describe('package', () => {
       /FUSION_WEB_FETCH_TOOL_NAME\s*=\s*'fusion_web_fetch'/,
       'fusion_web_fetch must be the package-owned research tool name',
     );
-    // The default capability must stay the least-privileged one. A default of 'inspect'
-    // would silently grant filesystem access to every existing caller.
+    // Brainstorm defaults to bounded read-only inspection, while every adjudication
+    // stage and low-level omitted-capability child remains explicitly no-tools.
     assert.match(
       types,
-      /FUSION_DEFAULT_CAPABILITY:\s*FusionCapability\s*=\s*'reason'/,
-      'fusion default capability must remain the no-tools reason profile',
+      /FUSION_BRAINSTORM_DEFAULT_CAPABILITY:\s*FusionCapability\s*=\s*'inspect'/,
+      'fusion brainstorm must default candidate children to inspect',
+    );
+    assert.match(
+      types,
+      /FUSION_DEFAULT_CAPABILITY:\s*FusionCapability\s*=\s*FUSION_BRAINSTORM_DEFAULT_CAPABILITY/,
+      'legacy default export must remain a compatibility alias for the brainstorm default',
+    );
+    assert.match(
+      types,
+      /FUSION_NO_TOOLS_CAPABILITY:\s*FusionCapability\s*=\s*'reason'/,
+      'fusion no-tools stage policy must remain reason',
     );
   });
 
@@ -534,7 +548,7 @@ void describe('package', () => {
   void it('Fusion evaluator and merger can never receive caller-selected tools', async () => {
     const orchestrator = await text('src/core/fusion/orchestrator.ts');
     // Stage policy, not caller input. The evaluation and merge child launches must pass
-    // the hardcoded default capability literal; the caller-supplied capability must never
+    // the hardcoded no-tools capability; the caller-supplied capability must never
     // appear in runEvaluationAttempt() or the merge launch. Assert on the launch regions
     // rather than a global occurrence count, so legitimate uses (manifest record, budget
     // forecast, candidate launch) can grow without silently disabling this guard.
@@ -547,7 +561,12 @@ void describe('package', () => {
       /input\.candidateCapability/,
       'the evaluation stage must never receive the caller-selected capability',
     );
-    // Both non-candidate launch sites annotate the invariant and pass the literal default.
+    assert.match(
+      orchestrator,
+      /evaluation:\s*FUSION_NO_TOOLS_CAPABILITY,[\s\S]*?merge:\s*FUSION_NO_TOOLS_CAPABILITY/,
+      'manifest capabilities must keep evaluator and merger no-tools',
+    );
+    // Both non-candidate launch sites annotate the invariant and pass the no-tools constant.
     const stagePolicyComments =
       orchestrator.match(/Stage policy, not caller input/g) ?? [];
     assert.equal(

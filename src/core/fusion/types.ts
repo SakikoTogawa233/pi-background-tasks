@@ -46,7 +46,15 @@ export type FusionStage = (typeof FUSION_STAGE_VALUES)[number];
 
 export const FUSION_CAPABILITY_VALUES = Object.freeze(['reason', 'inspect', 'research'] as const);
 export type FusionCapability = (typeof FUSION_CAPABILITY_VALUES)[number];
-export const FUSION_DEFAULT_CAPABILITY: FusionCapability = 'reason';
+
+/** Default capability for caller-selectable brainstorm candidate children. */
+export const FUSION_BRAINSTORM_DEFAULT_CAPABILITY: FusionCapability = 'inspect';
+
+/** @deprecated Use `FUSION_BRAINSTORM_DEFAULT_CAPABILITY` for explicit semantics. */
+export const FUSION_DEFAULT_CAPABILITY: FusionCapability = FUSION_BRAINSTORM_DEFAULT_CAPABILITY;
+
+/** Fixed no-tools capability for evaluator, repair, merger, and low-level child defaults. */
+export const FUSION_NO_TOOLS_CAPABILITY: FusionCapability = 'reason';
 
 export const FUSION_WEB_FETCH_TOOL_NAME = 'fusion_web_fetch' as const;
 export const FUSION_INSPECT_TOOLS = Object.freeze(['read', 'grep', 'find', 'ls'] as const);
@@ -62,10 +70,9 @@ export type FusionWorkflowId = (typeof FUSION_WORKFLOW_IDS)[number];
 /**
  * The single capability the validate workflow ever runs candidates with.
  *
- * Deliberately separate from `FUSION_DEFAULT_CAPABILITY`, which must stay the
- * least-privileged `reason` profile for brainstorm. A validator that cannot read
- * the code it is judging produces opinion rather than validation, so this is a
- * fixed workflow policy and not a default a caller may override.
+ * Deliberately separate from the caller-selectable brainstorm default. Although
+ * both workflows currently give candidates read-only inspection, validation pins
+ * that capability as fixed policy rather than exposing a caller override.
  */
 export const FUSION_VALIDATE_CAPABILITY: FusionCapability = 'inspect';
 

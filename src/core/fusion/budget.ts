@@ -26,8 +26,8 @@ import { FUSION_BRAINSTORM_WORKFLOW, type FusionWorkflowProfile } from './workfl
 import {
   FUSION_BUDGET_PLAN_SCHEMA_VERSION,
   FUSION_CALIBRATION_VIOLATION_SCHEMA_VERSION,
+  FUSION_BRAINSTORM_DEFAULT_CAPABILITY,
   FUSION_EVALUATION_SCHEMA_VERSION,
-  FUSION_DEFAULT_CAPABILITY,
   FusionError,
   type FusionBudgetBlocker,
   type FusionBudgetCheckKind,
@@ -682,7 +682,7 @@ export class FusionBudget {
   constructor(
     models: ResolvedFusionModels,
     contextPolicyId: string,
-    candidateCapability: FusionCapability = FUSION_DEFAULT_CAPABILITY,
+    candidateCapability: FusionCapability = FUSION_BRAINSTORM_DEFAULT_CAPABILITY,
     profile: FusionWorkflowProfile = FUSION_BRAINSTORM_WORKFLOW,
   ) {
     this.routes = fusionRouteCapacities(models);

@@ -27,7 +27,7 @@ import {
   type FusionWorkflowProfile,
 } from './workflows.js';
 import {
-  FUSION_DEFAULT_CAPABILITY,
+  FUSION_NO_TOOLS_CAPABILITY,
   FUSION_RESULT_SCHEMA_VERSION,
   FusionError,
   addFusionUsage,
@@ -347,8 +347,8 @@ export class FusionOrchestrator {
       models: input.models,
       capabilities: {
         candidate: candidateCapability,
-        evaluation: FUSION_DEFAULT_CAPABILITY,
-        merge: FUSION_DEFAULT_CAPABILITY,
+        evaluation: FUSION_NO_TOOLS_CAPABILITY,
+        merge: FUSION_NO_TOOLS_CAPABILITY,
       },
     };
     if (input.sessionId !== undefined) storeOptions.sessionId = input.sessionId;
@@ -428,7 +428,7 @@ export class FusionOrchestrator {
         mergePrompt,
         input.signal ?? new AbortController().signal,
         // Stage policy, not caller input: evaluator and merger are always reasoning-only.
-        FUSION_DEFAULT_CAPABILITY,
+        FUSION_NO_TOOLS_CAPABILITY,
         undefined,
         'md',
       );
@@ -671,7 +671,7 @@ export class FusionOrchestrator {
       prompt,
       input.signal ?? new AbortController().signal,
       // Stage policy, not caller input: evaluator and merger are always reasoning-only.
-      FUSION_DEFAULT_CAPABILITY,
+      FUSION_NO_TOOLS_CAPABILITY,
       undefined,
       'txt',
       attempt,

@@ -455,12 +455,44 @@ async function smokeVersion(version: string, tarballPath: string): Promise<void>
       env,
     );
     const childCalls = await readFile(fake.logPath, 'utf8');
-    const childCallCount =
-      childCalls.trim().length === 0 ? 0 : childCalls.trim().split('\n').length;
-    if (childCallCount !== 5)
+    const childCallRecords =
+      childCalls.trim().length === 0
+        ? []
+        : childCalls
+            .trim()
+            .split('\n')
+            .map((line) => parseJsonText(line));
+    if (childCallRecords.length !== 5)
       throw new Error(
-        `Fusion compatibility expected five child calls for ${version}, saw ${String(childCallCount)}`,
+        `Fusion compatibility expected five child calls for ${version}, saw ${String(childCallRecords.length)}`,
       );
+    const candidates = childCallRecords.filter(
+      (record) => isRecord(record) && record['stage'] === 'candidate',
+    );
+    const adjudicators = childCallRecords.filter(
+      (record) => isRecord(record) && record['stage'] !== 'candidate',
+    );
+    if (candidates.length !== 3 || adjudicators.length !== 2)
+      throw new Error(`Fusion compatibility stage split drifted for ${version}`);
+    for (const record of candidates) {
+      if (!isRecord(record) || !Array.isArray(record['args']))
+        throw new Error(`Fusion compatibility candidate argv missing for ${version}`);
+      const args = record['args'];
+      if (
+        args.includes('--no-tools') ||
+        !args.includes('--no-builtin-tools') ||
+        args[args.indexOf('--tools') + 1] !== 'read,grep,find,ls'
+      )
+        throw new Error(`Fusion compatibility default candidate is not inspect for ${version}`);
+    }
+    for (const record of adjudicators) {
+      if (
+        !isRecord(record) ||
+        !Array.isArray(record['args']) ||
+        !record['args'].includes('--no-tools')
+      )
+        throw new Error(`Fusion compatibility adjudicator is not no-tools for ${version}`);
+    }
     await runRpcPromptUntil(
       process.execPath,
       [

@@ -3,7 +3,7 @@ import { buildFusionCanonicalInput } from '../../src/core/fusion/context.js';
 import { FusionBudget } from '../../src/core/fusion/budget.js';
 import { canonicalJson } from '../../src/core/attested-pi-run.js';
 import {
-  FUSION_DEFAULT_CAPABILITY,
+  FUSION_BRAINSTORM_DEFAULT_CAPABILITY,
   FUSION_VALIDATE_CAPABILITY,
   type FusionCapability,
   type FusionSource,
@@ -407,7 +407,7 @@ export interface FusionGoldenRecord {
 export function computeFusionGoldenRecord(
   testCase: FusionGoldenCase,
   profile: FusionWorkflowProfile = FUSION_BRAINSTORM_WORKFLOW,
-  candidateCapability: FusionCapability = FUSION_DEFAULT_CAPABILITY,
+  candidateCapability: FusionCapability = FUSION_BRAINSTORM_DEFAULT_CAPABILITY,
 ): FusionGoldenRecord {
   const session = sessionWith(testCase.messages);
   const options: Parameters<typeof buildFusionCanonicalInput>[1] = {

@@ -31,8 +31,8 @@ import {
 import type { JsonObject } from './core/common.js';
 import { FusionOrchestrator } from './core/fusion/orchestrator.js';
 import {
+  FUSION_BRAINSTORM_DEFAULT_CAPABILITY,
   FUSION_CAPABILITY_VALUES,
-  FUSION_DEFAULT_CAPABILITY,
   FUSION_RESULT_SCHEMA_VERSION,
   FusionError,
   cloneFusionUsage,
@@ -101,7 +101,7 @@ export const FusionBrainstormParams = Type.Object(
     capability: Type.Optional(
       Type.Union([Type.Literal('reason'), Type.Literal('inspect'), Type.Literal('research')], {
         description:
-          "Optional candidate-child capability: 'reason' uses no tools; 'inspect' enables read-only file inspection; 'research' enables read-only file inspection plus fusion_web_fetch.",
+          "Optional candidate-child capability. Defaults to 'inspect' for read-only file inspection; 'reason' uses no tools; 'research' adds fusion_web_fetch.",
       }),
     ),
   },
@@ -304,7 +304,7 @@ function normalizeToolPrompt(value: unknown): string {
 }
 
 function normalizeFusionCapability(value: unknown): FusionCapability {
-  if (value === undefined) return FUSION_DEFAULT_CAPABILITY;
+  if (value === undefined) return FUSION_BRAINSTORM_DEFAULT_CAPABILITY;
   if (typeof value !== 'string') {
     throw new Error(
       `fusion_brainstorm capability must be one of: ${FUSION_CAPABILITY_VALUES.join(', ')}`,
@@ -634,12 +634,12 @@ export function registerFusionExtension(pi: ExtensionAPI): void {
     name: FUSION_BRAINSTORM_TOOL_NAME,
     label: 'Fusion Brainstorm',
     description:
-      "Run a five-model fusion workflow for a prompt and return the merged answer. Optional capability:'inspect' lets candidate children use read-only file tools; capability:'research' also enables fusion_web_fetch.",
+      "Run a five-model fusion workflow for a prompt and return the merged answer. Candidate children default to read-only inspect; capability:'reason' disables tools and capability:'research' also enables fusion_web_fetch.",
     promptSnippet:
       'Use fusion_brainstorm to get a merged answer from the five-model fusion workflow',
     promptGuidelines: [
-      "fusion_brainstorm is always available; call fusion_brainstorm({prompt}) for no-tool reasoning, fusion_brainstorm({prompt, capability:'inspect'}) when candidate children need read-only file inspection, or fusion_brainstorm({prompt, capability:'research'}) when they also need to fetch a specific public URL.",
-      "Use capability:'inspect' only when the answer benefits from reading/searching/listing repository files; use capability:'research' only when public web fetching is required. Evaluator and merger remain no-tools by policy.",
+      "fusion_brainstorm is always available; call fusion_brainstorm({prompt}) for read-only repository inspection, fusion_brainstorm({prompt, capability:'reason'}) for no-tool reasoning, or fusion_brainstorm({prompt, capability:'research'}) when candidates also need to fetch a specific public URL.",
+      "The default inspect capability gives candidate children read/search/list tools only; use capability:'reason' when repository inspection is unnecessary and capability:'research' only when public web fetching is required. Evaluator and merger remain no-tools by policy.",
     ],
     parameters: FusionBrainstormParams,
     prepareArguments: prepareFusionArguments,
@@ -651,7 +651,7 @@ export function registerFusionExtension(pi: ExtensionAPI): void {
           source: 'tool',
           ctx,
           request: prompt,
-          capability: params.capability ?? FUSION_DEFAULT_CAPABILITY,
+          capability: params.capability ?? FUSION_BRAINSTORM_DEFAULT_CAPABILITY,
           signal,
           toolCallId,
           onProgress: (event) => {

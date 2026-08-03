@@ -272,8 +272,10 @@ void describe('fusion RPC integration', () => {
       assert.ok(isRecord(request), 'canonical request must be an object');
       assert.equal(request['text'], 'rpc prompt with separators \u2028 and \u2029 kept');
       assert.equal(request['authority'], 'directive_over_projected_conversation');
+      assert.equal(candidate.args.includes('--no-tools'), false);
+      assert.ok(candidate.args.includes('--no-builtin-tools'));
+      assert.equal(candidate.args[candidate.args.indexOf('--tools') + 1], 'read,grep,find,ls');
       for (const flag of [
-        '--no-tools',
         '--no-extensions',
         '--no-skills',
         '--no-prompt-templates',
@@ -281,6 +283,9 @@ void describe('fusion RPC integration', () => {
         '--no-session',
       ]) {
         assert.ok(candidate.args.includes(flag), flag);
+      }
+      for (const call of calls.filter((item) => item.stage !== 'candidate')) {
+        assert.ok(call.args.includes('--no-tools'), `${call.stage} must run with --no-tools`);
       }
     });
   });

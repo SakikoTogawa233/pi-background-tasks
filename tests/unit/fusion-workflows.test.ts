@@ -21,7 +21,8 @@ import {
   fusionValidateCandidateSystemPrompt,
 } from '../../src/core/fusion/prompts.js';
 import {
-  FUSION_DEFAULT_CAPABILITY,
+  FUSION_BRAINSTORM_DEFAULT_CAPABILITY,
+  FUSION_NO_TOOLS_CAPABILITY,
   FUSION_VALIDATE_CAPABILITY,
   FUSION_WORKFLOW_IDS,
 } from '../../src/core/fusion/types.js';
@@ -37,7 +38,11 @@ void describe('fusion workflow profiles', () => {
     assert.equal(FUSION_BRAINSTORM_WORKFLOW.runIdPrefix, 'f');
     assert.equal(FUSION_BRAINSTORM_WORKFLOW.capabilityPolicy, 'caller_selected');
     assert.equal(FUSION_BRAINSTORM_WORKFLOW.fixedCapability, undefined);
-    assert.equal(FUSION_BRAINSTORM_WORKFLOW.defaultCapability, FUSION_DEFAULT_CAPABILITY);
+    assert.equal(
+      FUSION_BRAINSTORM_WORKFLOW.defaultCapability,
+      FUSION_BRAINSTORM_DEFAULT_CAPABILITY,
+    );
+    assert.equal(FUSION_BRAINSTORM_WORKFLOW.defaultCapability, 'inspect');
     assert.equal(FUSION_BRAINSTORM_WORKFLOW.evaluatorSystemPrompt, FUSION_EVALUATOR_SYSTEM_PROMPT);
     assert.equal(
       FUSION_BRAINSTORM_WORKFLOW.evaluationRepairSystemPrompt,
@@ -95,7 +100,8 @@ void describe('fusion workflow profiles', () => {
     // read the code it is judging, so an accepted downgrade would turn validation
     // into unverified opinion while still reporting success.
     assert.equal(FUSION_VALIDATE_CAPABILITY, 'inspect');
-    assert.notEqual(FUSION_VALIDATE_CAPABILITY, FUSION_DEFAULT_CAPABILITY);
+    assert.equal(FUSION_BRAINSTORM_DEFAULT_CAPABILITY, 'inspect');
+    assert.equal(FUSION_NO_TOOLS_CAPABILITY, 'reason');
     assert.throws(
       () => fusionValidateCandidateSystemPrompt('reason'),
       /always run with the inspect capability; received reason/,
@@ -172,7 +178,7 @@ void describe('fusion workflow profiles', () => {
   void it('resolves capability under each workflow policy', () => {
     assert.equal(
       resolveWorkflowCapability(FUSION_BRAINSTORM_WORKFLOW, undefined),
-      FUSION_DEFAULT_CAPABILITY,
+      FUSION_BRAINSTORM_DEFAULT_CAPABILITY,
     );
     assert.equal(resolveWorkflowCapability(FUSION_BRAINSTORM_WORKFLOW, 'inspect'), 'inspect');
     assert.equal(

@@ -13,8 +13,8 @@ import {
   type FusionChildResultMetadata,
 } from '../../fusion-child-extension.js';
 import {
-  FUSION_DEFAULT_CAPABILITY,
   FUSION_FORBIDDEN_TOOLS,
+  FUSION_NO_TOOLS_CAPABILITY,
   FUSION_INSPECT_TOOLS,
   FUSION_TOOL_CALL_LOG_SCHEMA_VERSION,
   FUSION_WEB_FETCH_TOOL_NAME,
@@ -387,7 +387,7 @@ export function buildFusionPiChildArgv(
   model: ResolvedFusionModel,
   systemPrompt: string,
   childExtensionPath = resolveFusionChildExtensionPath(),
-  capability: FusionCapability = FUSION_DEFAULT_CAPABILITY,
+  capability: FusionCapability = FUSION_NO_TOOLS_CAPABILITY,
   resolveSanitizer: () => string = resolveAnthropicSanitizerExtensionPath,
 ): string[] {
   const extensionArgs = fusionChildExtensionPaths(
@@ -1085,7 +1085,7 @@ export async function runPiChild(options: RunPiChildOptions): Promise<FusionChil
   const spawnImpl = options.spawn ?? defaultSpawn;
   const killProcess = options.killProcess ?? process.kill.bind(process);
   const platform = options.platform ?? process.platform;
-  const capability = options.capability ?? FUSION_DEFAULT_CAPABILITY;
+  const capability = options.capability ?? FUSION_NO_TOOLS_CAPABILITY;
   const env = fusionPiChildEnv(options.env ?? process.env);
   if (capability !== 'reason') {
     if (options.toolCallLogPath === undefined) {

@@ -9,7 +9,7 @@ import {
   fusionValidateCandidateSystemPrompt,
 } from './prompts.js';
 import {
-  FUSION_DEFAULT_CAPABILITY,
+  FUSION_BRAINSTORM_DEFAULT_CAPABILITY,
   FUSION_VALIDATE_CAPABILITY,
   FusionError,
   type FusionCapability,
@@ -22,8 +22,8 @@ export const FUSION_VALIDATE_TOOL_NAME = 'fusion_validate';
 /**
  * How a workflow decides which capability its candidate children run with.
  *
- * `caller_selected` lets the tool schema offer a capability argument and defaults
- * to the least-privileged profile. `fixed` pins one capability for every run and
+ * `caller_selected` lets the tool schema offer a capability argument and applies
+ * the workflow's documented default. `fixed` pins one capability for every run and
  * makes each other value a loud orchestration failure rather than a silent
  * downgrade.
  */
@@ -60,7 +60,7 @@ export const FUSION_BRAINSTORM_WORKFLOW: FusionWorkflowProfile = Object.freeze({
   runIdPrefix: 'f',
   capabilityPolicy: 'caller_selected',
   fixedCapability: undefined,
-  defaultCapability: FUSION_DEFAULT_CAPABILITY,
+  defaultCapability: FUSION_BRAINSTORM_DEFAULT_CAPABILITY,
   candidateSystemPrompt: fusionCandidateSystemPrompt,
   evaluatorSystemPrompt: FUSION_EVALUATOR_SYSTEM_PROMPT,
   evaluationRepairSystemPrompt: FUSION_EVALUATION_REPAIR_SYSTEM_PROMPT,

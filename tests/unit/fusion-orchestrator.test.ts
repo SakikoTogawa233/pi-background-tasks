@@ -7,6 +7,7 @@ import { parseJsonText } from '../../src/core/common.js';
 import { FusionOrchestrator, type FusionChildRunner } from '../../src/core/fusion/orchestrator.js';
 import { defaultFusionModelConfig } from '../../src/core/fusion/config.js';
 import {
+  FUSION_CANDIDATE_INSPECT_SYSTEM_PROMPT,
   FUSION_CANDIDATE_RESEARCH_SYSTEM_PROMPT,
   FUSION_CANDIDATE_SYSTEM_PROMPT,
 } from '../../src/core/fusion/prompts.js';
@@ -431,6 +432,22 @@ void describe('fusion orchestrator', () => {
       assert.equal(calls[3]?.stage, 'evaluation');
       assert.equal(calls[4]?.attempt, 2);
       assert.equal(calls[5]?.stage, 'merge');
+      const defaultCandidates = calls.filter((call) => call.stage === 'candidate');
+      assert.deepEqual(
+        defaultCandidates.map((call) => call.capability),
+        ['inspect', 'inspect', 'inspect'],
+      );
+      for (const [index, call] of defaultCandidates.entries()) {
+        assert.equal(call.systemPrompt, FUSION_CANDIDATE_INSPECT_SYSTEM_PROMPT);
+        assert.match(
+          (call.toolCallLogPath ?? '').replaceAll('\\', '/'),
+          new RegExp(`candidate-${String(index + 1)}\\.attempt-1\\.tool-calls\\.jsonl$`),
+        );
+      }
+      assert.deepEqual(
+        calls.filter((call) => call.stage !== 'candidate').map((call) => call.capability),
+        ['reason', 'reason', 'reason'],
+      );
       const candidatePrompts = calls
         .filter((call) => call.stage === 'candidate')
         .map((call) => call.userPrompt);

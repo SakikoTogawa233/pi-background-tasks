@@ -1,7 +1,7 @@
 import { afterEach, describe, it, type TestContext } from 'node:test';
 import assert from 'node:assert/strict';
 import { existsSync, realpathSync } from 'node:fs';
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import type { AssistantMessage, UserMessage } from '@earendil-works/pi-ai';
@@ -404,9 +404,12 @@ void describe('fusion SDK integration', { concurrency: false }, () => {
         () => fusionTool.prepareArguments?.({ prompt: 'x', extra: true }),
         /must contain prompt and optional capability only/,
       );
-      // 'research' became a supported capability, so it must now be accepted here. The
-      // boundary this test defends is that an UNKNOWN capability still fails loudly rather
-      // than silently defaulting to reason.
+      assert.deepEqual(fusionTool.prepareArguments?.({ prompt: 'x' }), {
+        prompt: 'x',
+        capability: 'inspect',
+      });
+      // 'research' remains supported. An unknown capability must fail loudly rather
+      // than silently defaulting to inspect.
       assert.deepEqual(fusionTool.prepareArguments?.({ prompt: 'x', capability: 'research' }), {
         prompt: 'x',
         capability: 'research',
@@ -441,11 +444,21 @@ void describe('fusion SDK integration', { concurrency: false }, () => {
       assert.equal(calls.filter((call) => call.stage === 'candidate').length, 3);
       assert.equal(calls.filter((call) => call.stage === 'evaluation').length, 1);
       assert.equal(calls.filter((call) => call.stage === 'merge').length, 1);
+      const candidateCalls = calls.filter((call) => call.stage === 'candidate');
+      const adjudicationCalls = calls.filter((call) => call.stage !== 'candidate');
+      for (const call of candidateCalls) {
+        assert.equal(call.args.includes('--no-tools'), false);
+        assert.ok(call.args.includes('--no-builtin-tools'));
+        assert.equal(call.args[call.args.indexOf('--tools') + 1], 'read,grep,find,ls');
+      }
+      for (const call of adjudicationCalls) {
+        assert.ok(call.args.includes('--no-tools'), `${call.stage} must run with --no-tools`);
+        assert.equal(call.args.includes('--no-builtin-tools'), false);
+      }
       for (const call of calls) {
         for (const flag of [
           '--mode',
           '--no-session',
-          '--no-tools',
           '--no-extensions',
           '--no-skills',
           '--no-prompt-templates',
@@ -502,6 +515,42 @@ void describe('fusion SDK integration', { concurrency: false }, () => {
         statuses.some((status) => /candidates 3\/3 complete|merging final answer/.test(status)),
       );
       assert.equal(assistantMessageCount(h.session), 0);
+    } finally {
+      await disposeHarness(h);
+    }
+  });
+
+  void it('preserves explicit reason as a host-level no-tools compatibility path', async (t) => {
+    if (skipWin32FusionChildPathFixture(t)) return;
+    const h = await harness();
+    try {
+      const tool = h.session.getToolDefinition('fusion_brainstorm');
+      assert.ok(tool, 'fusion tool should be registered');
+      const result = await tool.execute(
+        'call-explicit-reason',
+        { prompt: 'reason without repository inspection', capability: 'reason' },
+        undefined,
+        undefined,
+        h.session.extensionRunner.createContext(),
+      );
+      assert.ok(isFusionResultDetails(result.details));
+      const calls = await invocations(h.fakeLogPath);
+      assert.equal(calls.length, 5);
+      const candidates = calls.filter((call) => call.stage === 'candidate');
+      const adjudicators = calls.filter((call) => call.stage !== 'candidate');
+      assert.equal(candidates.length, 3);
+      assert.equal(adjudicators.length, 2);
+      for (const call of candidates) {
+        assert.ok(call.args.includes('--no-tools'));
+        assert.equal(call.args.includes('--no-builtin-tools'), false);
+      }
+      for (const call of adjudicators) assert.ok(call.args.includes('--no-tools'));
+      const artifactFiles = await readdir(join(h.cwd, result.details.artifact_dir));
+      assert.equal(
+        artifactFiles.some((name) => name.includes('.tool-calls.')),
+        false,
+        'reason-only children must not create tool-call audit logs',
+      );
     } finally {
       await disposeHarness(h);
     }
@@ -585,6 +634,9 @@ void describe('fusion SDK integration', { concurrency: false }, () => {
       const calls = await invocations(h.fakeLogPath);
       const candidate = calls.find((call) => call.stage === 'candidate');
       assert.ok(candidate, 'candidate invocation should be logged');
+      assert.equal(candidate.args.includes('--no-tools'), false);
+      assert.ok(candidate.args.includes('--no-builtin-tools'));
+      assert.equal(candidate.args[candidate.args.indexOf('--tools') + 1], 'read,grep,find,ls');
       const parsedInput = parseJsonText(candidate.stdin);
       assert.ok(isRecord(parsedInput), 'canonical input should be an object');
       const toolRequest = parsedInput['request'];
