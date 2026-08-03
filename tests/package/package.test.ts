@@ -8,7 +8,11 @@ import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { parseJsonText } from '../../src/core/common.js';
 import {
-  prepareFusionArguments,
+  FusionReasonParams,
+  FusionValidateParams,
+  prepareFusionInvestigateArguments,
+  prepareFusionReasonArguments,
+  prepareFusionResearchArguments,
   prepareFusionValidateArguments,
 } from '../../src/fusion-extension.js';
 
@@ -417,7 +421,9 @@ void describe('package', () => {
       'Ctrl+Alt+C',
       '/fusion',
       '/fusion-models',
-      'fusion_brainstorm',
+      'fusion_reason',
+      'fusion_investigate',
+      'fusion_research',
       'fusion_validate',
       'fusion-result',
       'fusion-models.json',
@@ -441,31 +447,107 @@ void describe('package', () => {
     }
   });
 
-  void it('validates fusion_brainstorm capability arguments loudly', () => {
-    assert.deepEqual(prepareFusionArguments({ prompt: ' hello ' }), {
-      prompt: 'hello',
-      capability: 'inspect',
-    });
-    assert.deepEqual(prepareFusionArguments({ prompt: 'hello', capability: 'reason' }), {
-      prompt: 'hello',
-      capability: 'reason',
-    });
-    assert.deepEqual(prepareFusionArguments({ prompt: 'hello', capability: 'inspect' }), {
-      prompt: 'hello',
-      capability: 'inspect',
-    });
-    assert.deepEqual(prepareFusionArguments({ prompt: 'hello', capability: 'research' }), {
-      prompt: 'hello',
-      capability: 'research',
-    });
+  void it('validates Fusion v1 public tool arguments loudly', () => {
+    assert.deepEqual(prepareFusionReasonArguments({ prompt: ' hello ' }), { prompt: 'hello' });
     assert.throws(
-      () => prepareFusionArguments({ prompt: 'hello', capability: 'bogus' }),
-      /allowed values: reason, inspect, research/,
+      () => prepareFusionReasonArguments({ prompt: 'hello', capability: 'reason' }),
+      /unsupported key\(s\): capability/,
+    );
+
+    assert.deepEqual(
+      prepareFusionInvestigateArguments({
+        objective: ' find risk ',
+        background: [' repo changed '],
+        deliverable: ' report ',
+      }),
+      {
+        objective: 'find risk',
+        background: ['repo changed'],
+        deliverable: 'report',
+        scope: [],
+        constraints: [],
+      },
+    );
+
+    assert.deepEqual(
+      prepareFusionResearchArguments({
+        objective: ' compare docs ',
+        background: ['need citations'],
+        deliverable: 'answer',
+        sources: [{ url: 'HTTPS://Example.COM/a#frag', purpose: 'official docs' }],
+      }),
+      {
+        objective: 'compare docs',
+        background: ['need citations'],
+        deliverable: 'answer',
+        scope: [],
+        constraints: [],
+        sources: [{ url: 'https://example.com/a', purpose: 'official docs' }],
+      },
     );
     assert.throws(
-      () => prepareFusionArguments({ prompt: 'hello', extra: true }),
-      /prompt and optional capability only/,
+      () =>
+        prepareFusionResearchArguments({
+          objective: 'x',
+          background: [],
+          deliverable: 'x',
+          sources: [
+            { url: 'https://example.com/a#one', purpose: 'one' },
+            { url: 'https://example.com/a#two', purpose: 'two' },
+          ],
+        }),
+      /duplicates canonical URL/,
     );
+    assert.throws(
+      () =>
+        prepareFusionResearchArguments({
+          objective: 'x',
+          background: [],
+          deliverable: 'x',
+          sources: [{ url: 'https://token@example.com/', purpose: 'bad' }],
+        }),
+      /credentials/,
+    );
+    assert.throws(
+      () =>
+        prepareFusionResearchArguments({
+          objective: 'x',
+          background: [],
+          deliverable: 'x',
+          sources: [{ url: 'http://127.0.0.1/', purpose: 'bad' }],
+        }),
+      /private|reserved|localhost/,
+    );
+    assert.throws(
+      () =>
+        prepareFusionResearchArguments({
+          objective: 'x',
+          background: [],
+          deliverable: 'x',
+          sources: [{ url: 'http://[::ffff:127.0.0.1]/', purpose: 'bad' }],
+        }),
+      /private|reserved/,
+    );
+    assert.throws(
+      () =>
+        prepareFusionResearchArguments({
+          objective: 'x',
+          background: [],
+          deliverable: 'x',
+          sources: [
+            { url: 'https://example.com/a', purpose: 'one' },
+            { url: 'https://example.com./a', purpose: 'two' },
+          ],
+        }),
+      /duplicates canonical URL/,
+    );
+
+    assert.equal(Reflect.get(FusionReasonParams, 'additionalProperties'), false);
+    assert.equal(Reflect.get(FusionValidateParams, 'additionalProperties'), false);
+    const verification = Reflect.get(Reflect.get(FusionValidateParams, 'properties'), 'verification');
+    assert.equal(Reflect.get(verification, 'additionalProperties'), false);
+    const status = Reflect.get(Reflect.get(verification, 'properties'), 'status');
+    assert.deepEqual(Reflect.get(status, 'enum'), ['provided', 'not_run']);
   });
 
   void it('Fusion candidate tool policy cannot be weakened', async () => {
@@ -591,36 +673,81 @@ void describe('package', () => {
     }
   });
 
-  void it('validates fusion_validate arguments loudly and accepts no capability', async () => {
-    assert.deepEqual(prepareFusionValidateArguments({ prompt: '  review it  ' }), {
-      prompt: 'review it',
-    });
-    // A caller-supplied capability must fail rather than be ignored: silently
-    // dropping capability:'reason' would run a review whose children never read the
-    // code, which is precisely what this tool exists to prevent.
+  void it('validates fusion_validate verification contracts and legacy migration loudly', async () => {
+    assert.deepEqual(
+      prepareFusionValidateArguments({
+        objective: 'ship v1',
+        background: ['changed fusion facade'],
+        changeSummary: 'renamed public tools',
+        scope: ['src/fusion-extension.ts'],
+        acceptanceCriteria: ['four tools only'],
+        verification: { status: 'provided', evidence: [{ check: 'typecheck', outcome: 'passed' }] },
+      }),
+      {
+        objective: 'ship v1',
+        background: ['changed fusion facade'],
+        changeSummary: 'renamed public tools',
+        scope: ['src/fusion-extension.ts'],
+        acceptanceCriteria: ['four tools only'],
+        verification: { status: 'provided', evidence: [{ check: 'typecheck', outcome: 'passed' }] },
+        knownLimitations: [],
+        exclusions: [],
+      },
+    );
+    assert.deepEqual(
+      prepareFusionValidateArguments({
+        objective: 'ship v1',
+        background: [],
+        changeSummary: 'renamed public tools',
+        scope: ['src/fusion-extension.ts'],
+        acceptanceCriteria: ['four tools only'],
+        verification: { status: 'not_run', reason: 'core branch unavailable' },
+      }).verification,
+      { status: 'not_run', evidence: [], reason: 'core branch unavailable' },
+    );
+    assert.throws(() => prepareFusionValidateArguments({ prompt: '  review it  ' }), /no longer accepts \{prompt\}/);
     assert.throws(
-      () => prepareFusionValidateArguments({ prompt: 'p', capability: 'reason' }),
-      /does not accept capability/,
+      () =>
+        prepareFusionValidateArguments({
+          objective: 'x',
+          background: [],
+          changeSummary: 'x',
+          scope: ['x'],
+          acceptanceCriteria: ['x'],
+          verification: { status: 'provided' },
+        }),
+      /requires non-empty evidence/,
     );
     assert.throws(
-      () => prepareFusionValidateArguments({ prompt: 'p', capability: 'inspect' }),
-      /does not accept capability/,
+      () =>
+        prepareFusionValidateArguments({
+          objective: 'x',
+          background: [],
+          changeSummary: 'x',
+          scope: ['x'],
+          acceptanceCriteria: ['x'],
+          verification: { status: 'not_run', evidence: [{ check: 'x', outcome: 'x' }], reason: 'x' },
+        }),
+      /must not include evidence/,
     );
     assert.throws(
-      () => prepareFusionValidateArguments({ prompt: 'p', extra: true }),
-      /must contain prompt only/,
+      () =>
+        prepareFusionValidateArguments({
+          objective: 'x',
+          background: [],
+          changeSummary: 'x',
+          scope: [],
+          acceptanceCriteria: ['x'],
+          verification: { status: 'not_run', reason: 'x' },
+        }),
+      /scope must not be empty/,
     );
-    assert.throws(() => prepareFusionValidateArguments({}), /must contain prompt only/);
-    assert.throws(() => prepareFusionValidateArguments({ prompt: '   ' }), /must not be blank/);
 
-    const types = await text('src/core/fusion/types.ts');
-    // Validation must stay inspect-only. A change to `reason` here would silently
-    // downgrade every validation run to opinion while still reporting success.
-    assert.match(
-      types,
-      /FUSION_VALIDATE_CAPABILITY:\s*FusionCapability\s*=\s*'inspect'/,
-      'the validate workflow capability must remain inspect',
-    );
+    const extension = await text('src/fusion-extension.ts');
+    assert.match(extension, /FUSION_REASON_TOOL_NAME = 'fusion_reason'/);
+    assert.match(extension, /FUSION_INVESTIGATE_TOOL_NAME = 'fusion_investigate'/);
+    assert.match(extension, /FUSION_RESEARCH_TOOL_NAME = 'fusion_research'/);
+    assert.match(extension, /RETIRED_FUSION_TOOL_NAMES = new Set<string>\(\['fusion_brainstorm'\]\)/);
   });
 
   void it('ships the Anthropic sanitizer as a real dependency for Claude children', async () => {
@@ -653,23 +780,19 @@ void describe('package', () => {
     }
   });
 
-  void it('workflow launch sites document their capability invariant', async () => {
-    const orchestrator = await text('src/core/fusion/orchestrator.ts');
+  void it('Fusion facade exposes four fixed-purpose tools and no public capability mode', async () => {
     const extension = await text('src/fusion-extension.ts');
-    // Distinct from the two "Stage policy" comments guarded above, so neither guard
-    // can be satisfied by the other's text.
-    const orchestratorNotes = orchestrator.match(/Workflow policy, not caller input/g) ?? [];
-    const extensionNotes = extension.match(/Workflow policy, not caller input/g) ?? [];
-    assert.equal(
-      orchestratorNotes.length,
-      1,
-      'the orchestrator must document the workflow capability invariant exactly once',
-    );
-    assert.equal(
-      extensionNotes.length,
-      1,
-      'the validate tool launch must document the workflow capability invariant exactly once',
-    );
+    for (const tool of ['fusion_reason', 'fusion_investigate', 'fusion_research', 'fusion_validate']) {
+      assert.match(extension, new RegExp(`name: ${tool === 'fusion_validate' ? 'FUSION_VALIDATE_TOOL_NAME' : tool === 'fusion_reason' ? 'FUSION_REASON_TOOL_NAME' : tool === 'fusion_investigate' ? 'FUSION_INVESTIGATE_TOOL_NAME' : 'FUSION_RESEARCH_TOOL_NAME'}`));
+    }
+    assert.doesNotMatch(extension, /registerTool[\s\S]*?name:\s*['"]fusion_brainstorm['"]/);
+    assert.match(extension, /pi\.setActiveTools\(next\)/, 'session_start must rewrite stale active tools deterministically');
+    assert.match(extension, /no capability argument/);
+    assert.match(extension, /targeted fetches of supplied URLs only/);
+    assert.match(extension, /no longer accepts \{prompt\}/);
+    assert.match(extension, /PI_BG_ALLOW_LEGACY_FUSION_CORE_FOR_TESTS/);
+    assert.match(extension, /refusing to fall back to legacy canonical input outside tests/);
+    assert.match(extension, /core fusion workflow export \$\{primaryName\} is missing/);
   });
 
   void it('fusion production code avoids direct completion APIs and local adapters', async () => {

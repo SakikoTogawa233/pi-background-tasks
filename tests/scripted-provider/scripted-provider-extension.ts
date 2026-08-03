@@ -31,7 +31,7 @@ type Scenario =
   | 'failed-follow-up'
   | 'display-only-bg'
   | 'json-tool-telemetry'
-  | 'fusion-brainstorm';
+  | 'fusion-reason';
 type ScriptedStopReason = 'stop' | 'length' | 'toolUse';
 
 type JsonObject = Record<PropertyKey, unknown>;
@@ -55,7 +55,7 @@ function parseScenario(value: string | undefined): Scenario {
     value === 'failed-follow-up' ||
     value === 'display-only-bg' ||
     value === 'json-tool-telemetry' ||
-    value === 'fusion-brainstorm'
+    value === 'fusion-reason'
   )
     return value;
   return 'bg-run-follow-up';
@@ -155,20 +155,14 @@ function responseFor(
   callCount: number,
   contract: EventDrivenContractCheck,
 ): ScriptedAssistantMessage {
-  if (scenario === 'fusion-brainstorm') {
+  if (scenario === 'fusion-reason') {
     if (callCount === 1) {
       return assistant(
-        [
-          toolCall(
-            'fusion_brainstorm',
-            { prompt: 'scripted fusion prompt' },
-            'call-fusion-brainstorm',
-          ),
-        ],
+        [toolCall('fusion_reason', { prompt: 'scripted fusion prompt' }, 'call-fusion-reason')],
         'toolUse',
       );
     }
-    return assistant([text('Parent observed fusion result from fusion_brainstorm.')], 'stop');
+    return assistant([text('Parent observed fusion result from fusion_reason.')], 'stop');
   }
 
   if (scenario === 'json-tool-telemetry') {

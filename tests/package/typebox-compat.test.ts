@@ -1,5 +1,6 @@
-import { describe, it } from 'node:test';
+import { describe, it, type TestContext } from 'node:test';
 import assert from 'node:assert/strict';
+import { existsSync } from 'node:fs';
 import { readdir, readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -45,10 +46,13 @@ function isRecord(value: unknown): value is Record<PropertyKey, unknown> {
 }
 
 void describe('TypeBox compatibility', () => {
-  void it('resolves the TypeBox version bundled by the installed Pi, not a private pin', async () => {
-    const installed = parseJsonText(
-      await readFile(join(packageRoot, 'node_modules/typebox/package.json'), 'utf8'),
-    );
+  void it('resolves the TypeBox version bundled by the installed Pi, not a private pin', async (t: TestContext) => {
+    const typeboxPackageJson = join(packageRoot, 'node_modules/typebox/package.json');
+    if (!existsSync(typeboxPackageJson)) {
+      t.skip('local node_modules/typebox is unavailable in this isolated worktree');
+      return;
+    }
+    const installed = parseJsonText(await readFile(typeboxPackageJson, 'utf8'));
     assert.ok(isRecord(installed));
     const version = String(installed['version']);
     assert.match(version, /^1\.3\./, `expected the Pi 0.83 TypeBox 1.3.x line, saw ${version}`);
@@ -100,19 +104,50 @@ void describe('TypeBox compatibility', () => {
     assert.deepEqual(violations, []);
   });
 
-  void it('compiles the exact shipped tool schemas under TypeBox 1.3', async () => {
-    // Mirrors the real registered fusion_brainstorm parameter schema.
-    const FusionBrainstormParams = Type.Object(
-      {
-        prompt: Type.String({ description: 'Prompt to run through the fusion workflow.' }),
-      },
-      { additionalProperties: false },
+  void it('compiles the exact shipped Fusion v1 public schemas under TypeBox 1.3', async () => {
+    const { FusionReasonParams, FusionResearchParams, FusionValidateParams } = await import(
+      '../../src/fusion-extension.js'
     );
-    const compiled = Compile(FusionBrainstormParams);
-    assert.equal(compiled.Check({ prompt: 'ok' }), true);
-    assert.equal(compiled.Check({ prompt: 'ok', extra: 1 }), false);
-    assert.equal(compiled.Check({ prompt: 1 }), false);
-    assert.equal(Value.Check(FusionBrainstormParams, { prompt: 'ok' }), true);
+    const reason = Compile(FusionReasonParams);
+    assert.equal(reason.Check({ prompt: 'ok' }), true);
+    assert.equal(reason.Check({ prompt: 'ok', capability: 'reason' }), false);
+    assert.equal(Value.Check(FusionReasonParams, { prompt: 'ok' }), true);
+
+    const research = Compile(FusionResearchParams);
+    assert.equal(
+      research.Check({
+        objective: 'o',
+        background: [],
+        deliverable: 'd',
+        sources: [{ url: 'https://example.com/', purpose: 'p' }],
+      }),
+      true,
+    );
+    assert.equal(
+      research.Check({
+        objective: 'o',
+        background: [],
+        deliverable: 'd',
+        sources: [],
+      }),
+      false,
+    );
+
+    const validate = Compile(FusionValidateParams);
+    assert.equal(
+      validate.Check({
+        objective: 'o',
+        background: [],
+        changeSummary: 'c',
+        scope: ['s'],
+        acceptanceCriteria: ['a'],
+        verification: { status: 'provided', evidence: [{ check: 'c', outcome: 'o' }] },
+      }),
+      true,
+    );
+    const verification = Reflect.get(Reflect.get(FusionValidateParams, 'properties'), 'verification');
+    const status = Reflect.get(Reflect.get(verification, 'properties'), 'status');
+    assert.deepEqual(Reflect.get(status, 'enum'), ['provided', 'not_run']);
   });
 
   void it('compiles nullable-array schemas matching Fusion projection shapes', () => {

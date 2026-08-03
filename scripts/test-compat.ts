@@ -294,12 +294,12 @@ async function readPersistedFusionToolResult(
     if (
       isRecord(message) &&
       message['role'] === 'toolResult' &&
-      message['toolName'] === 'fusion_brainstorm'
+      message['toolName'] === 'fusion_reason'
     ) {
       return message;
     }
   }
-  throw new Error('persisted session is missing the fusion_brainstorm tool result');
+  throw new Error('persisted session is missing the fusion_reason tool result');
 }
 
 function parsePack(text: string): PackFileEntry {
@@ -417,6 +417,7 @@ async function smokeVersion(version: string, tarballPath: string): Promise<void>
       PI_CODING_AGENT_SESSION_DIR: join(temp, 'sessions'),
       PI_BG_SCRIPTED_API_KEY: 'scripted-api-key',
       PI_BG_SCRIPTED_SCENARIO: 'display-only-bg',
+      PI_BG_ALLOW_LEGACY_FUSION_CORE_FOR_TESTS: '1',
     };
     run(
       process.execPath,
@@ -478,12 +479,8 @@ async function smokeVersion(version: string, tarballPath: string): Promise<void>
       if (!isRecord(record) || !Array.isArray(record['args']))
         throw new Error(`Fusion compatibility candidate argv missing for ${version}`);
       const args = record['args'];
-      if (
-        args.includes('--no-tools') ||
-        !args.includes('--no-builtin-tools') ||
-        args[args.indexOf('--tools') + 1] !== 'read,grep,find,ls'
-      )
-        throw new Error(`Fusion compatibility default candidate is not inspect for ${version}`);
+      if (!args.includes('--no-tools') || args.includes('--no-builtin-tools'))
+        throw new Error(`Fusion compatibility /fusion candidate is not reason/no-tools for ${version}`);
     }
     for (const record of adjudicators) {
       if (
@@ -546,8 +543,9 @@ async function verifyCurrentHostFusionUsage(): Promise<string> {
       PATH: `${fake.binDir}:${process.env['PATH'] ?? ''}`,
       PI_CODING_AGENT_DIR: agentDir,
       PI_BG_SCRIPTED_API_KEY: 'scripted-api-key',
-      PI_BG_SCRIPTED_SCENARIO: 'fusion-brainstorm',
+      PI_BG_SCRIPTED_SCENARIO: 'fusion-reason',
       PI_BG_SCRIPTED_EVENTS: join(temp, 'provider-events.jsonl'),
+      PI_BG_ALLOW_LEGACY_FUSION_CORE_FOR_TESTS: '1',
     };
     const rpcArgs = [
       '--mode',

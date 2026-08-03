@@ -28,6 +28,7 @@ const envKeys = [
   'PI_BG_SCRIPTED_SCENARIO',
   'PI_BG_SCRIPTED_EVENTS',
   'PI_BG_SCRIPTED_API_KEY',
+  'PI_BG_ALLOW_LEGACY_FUSION_CORE_FOR_TESTS',
 ] as const;
 
 type JsonRecord = Record<string, unknown>;
@@ -128,8 +129,7 @@ function fusionToolResults(session: AgentSession): JsonRecord[] {
   return session.sessionManager.getEntries().flatMap((entry) => {
     if (!isRecord(entry) || !isRecord(entry['message'])) return [];
     const message = entry['message'];
-    if (message['role'] === 'toolResult' && message['toolName'] === 'fusion_brainstorm')
-      return [message];
+    if (message['role'] === 'toolResult' && message['toolName'] === 'fusion_reason') return [message];
     return [];
   });
 }
@@ -163,9 +163,10 @@ async function harness(): Promise<Harness> {
   Object.assign(process.env, isolatedTestEnv, {
     PATH: fake.env['PATH'],
     PI_CODING_AGENT_DIR: agentDir,
-    PI_BG_SCRIPTED_SCENARIO: 'fusion-brainstorm',
+    PI_BG_SCRIPTED_SCENARIO: 'fusion-reason',
     PI_BG_SCRIPTED_EVENTS: eventsPath,
     PI_BG_SCRIPTED_API_KEY: 'scripted-api-key',
+    PI_BG_ALLOW_LEGACY_FUSION_CORE_FOR_TESTS: '1',
     NPM_CONFIG_CACHE: join(tmpdir(), 'pi-npm-cache'),
   });
   const settingsManager = SettingsManager.inMemory({
@@ -218,9 +219,9 @@ afterEach(async () => {
   restoreEnv();
 });
 
-void describe('scripted provider fusion_brainstorm integration', { concurrency: false }, () => {
+void describe('scripted provider fusion_reason integration', { concurrency: false }, () => {
   void it(
-    'lets the parent model call fusion_brainstorm and consume the exact merged tool result',
+    'lets the parent model call fusion_reason and consume the exact merged tool result',
     { timeout: 15_000 },
     async (t: TestContext) => {
       // This case intercepts the Pi child by placing a fake `pi` on PATH. That
@@ -262,7 +263,7 @@ void describe('scripted provider fusion_brainstorm integration', { concurrency: 
         assert.match((events[0]?.summaries ?? []).join('\n'), /user:Use fusion/);
         assert.match(
           (events[1]?.summaries ?? []).join('\n'),
-          /toolResult:fusion_brainstorm:Scripted fused answer/,
+          /toolResult:fusion_reason:Scripted fused answer/,
         );
         assert.ok(
           assistantTexts(h.session).some((text) => text.includes('Parent observed fusion result')),

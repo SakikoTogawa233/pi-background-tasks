@@ -39,6 +39,7 @@ const envKeys = [
   'PI_SESSION_ID',
   'PI_PROVIDER',
   'PI_MODEL',
+  'PI_BG_ALLOW_LEGACY_FUSION_CORE_FOR_TESTS',
 ] as const;
 
 type JsonRecord = Record<string, unknown>;
@@ -194,6 +195,7 @@ async function harness(options: HarnessOptions = {}): Promise<Harness> {
   process.env['PI_SESSION_ID'] = 'stale-session';
   process.env['PI_PROVIDER'] = 'stale-provider';
   process.env['PI_MODEL'] = 'stale-model';
+  process.env['PI_BG_ALLOW_LEGACY_FUSION_CORE_FOR_TESTS'] = '1';
   Object.assign(process.env, isolatedTestEnv);
   const fake = await installFusionFakePi(root, {
     mergedText: 'SDK fused answer.',
@@ -393,31 +395,20 @@ void describe('fusion SDK integration', { concurrency: false }, () => {
     if (skipWin32FusionChildPathFixture(t)) return;
     const h = await harness();
     try {
-      assert.ok(h.session.getActiveToolNames().includes('fusion_brainstorm'));
-      const fusionTool = h.session.getToolDefinition('fusion_brainstorm');
+      const activeTools = h.session.getActiveToolNames();
+      assert.ok(!activeTools.includes('fusion_brainstorm'));
+      for (const name of ['fusion_reason', 'fusion_investigate', 'fusion_research', 'fusion_validate']) {
+        assert.ok(activeTools.includes(name), `${name} should be active`);
+      }
+      const fusionTool = h.session.getToolDefinition('fusion_reason');
       assert.ok(fusionTool);
       assert.equal(Reflect.get(fusionTool.parameters, 'additionalProperties'), false);
       assert.ok(fusionTool.prepareArguments);
-      // The closed-schema guarantee still holds; the message now also names the optional
-      // capability parameter added alongside prompt.
       assert.throws(
-        () => fusionTool.prepareArguments?.({ prompt: 'x', extra: true }),
-        /must contain prompt and optional capability only/,
+        () => fusionTool.prepareArguments?.({ prompt: 'x', capability: 'reason' }),
+        /unsupported key\(s\): capability/,
       );
-      assert.deepEqual(fusionTool.prepareArguments?.({ prompt: 'x' }), {
-        prompt: 'x',
-        capability: 'inspect',
-      });
-      // 'research' remains supported. An unknown capability must fail loudly rather
-      // than silently defaulting to inspect.
-      assert.deepEqual(fusionTool.prepareArguments?.({ prompt: 'x', capability: 'research' }), {
-        prompt: 'x',
-        capability: 'research',
-      });
-      assert.throws(
-        () => fusionTool.prepareArguments?.({ prompt: 'x', capability: 'browse' }),
-        /allowed values: reason, inspect, research/,
-      );
+      assert.deepEqual(fusionTool.prepareArguments?.({ prompt: 'x' }), { prompt: 'x' });
       const commandNames = h.session.extensionRunner
         .getRegisteredCommands()
         .map((cmd) => cmd.invocationName);
@@ -446,12 +437,7 @@ void describe('fusion SDK integration', { concurrency: false }, () => {
       assert.equal(calls.filter((call) => call.stage === 'merge').length, 1);
       const candidateCalls = calls.filter((call) => call.stage === 'candidate');
       const adjudicationCalls = calls.filter((call) => call.stage !== 'candidate');
-      for (const call of candidateCalls) {
-        assert.equal(call.args.includes('--no-tools'), false);
-        assert.ok(call.args.includes('--no-builtin-tools'));
-        assert.equal(call.args[call.args.indexOf('--tools') + 1], 'read,grep,find,ls');
-      }
-      for (const call of adjudicationCalls) {
+      for (const call of [...candidateCalls, ...adjudicationCalls]) {
         assert.ok(call.args.includes('--no-tools'), `${call.stage} must run with --no-tools`);
         assert.equal(call.args.includes('--no-builtin-tools'), false);
       }
@@ -520,15 +506,15 @@ void describe('fusion SDK integration', { concurrency: false }, () => {
     }
   });
 
-  void it('preserves explicit reason as a host-level no-tools compatibility path', async (t) => {
+  void it('runs fusion_reason as the host-level no-tools path', async (t) => {
     if (skipWin32FusionChildPathFixture(t)) return;
     const h = await harness();
     try {
-      const tool = h.session.getToolDefinition('fusion_brainstorm');
-      assert.ok(tool, 'fusion tool should be registered');
+      const tool = h.session.getToolDefinition('fusion_reason');
+      assert.ok(tool, 'fusion_reason tool should be registered');
       const result = await tool.execute(
-        'call-explicit-reason',
-        { prompt: 'reason without repository inspection', capability: 'reason' },
+        'call-fusion-reason',
+        { prompt: 'reason without repository inspection' },
         undefined,
         undefined,
         h.session.extensionRunner.createContext(),
@@ -536,15 +522,10 @@ void describe('fusion SDK integration', { concurrency: false }, () => {
       assert.ok(isFusionResultDetails(result.details));
       const calls = await invocations(h.fakeLogPath);
       assert.equal(calls.length, 5);
-      const candidates = calls.filter((call) => call.stage === 'candidate');
-      const adjudicators = calls.filter((call) => call.stage !== 'candidate');
-      assert.equal(candidates.length, 3);
-      assert.equal(adjudicators.length, 2);
-      for (const call of candidates) {
+      for (const call of calls) {
         assert.ok(call.args.includes('--no-tools'));
         assert.equal(call.args.includes('--no-builtin-tools'), false);
       }
-      for (const call of adjudicators) assert.ok(call.args.includes('--no-tools'));
       const artifactFiles = await readdir(join(h.cwd, result.details.artifact_dir));
       assert.equal(
         artifactFiles.some((name) => name.includes('.tool-calls.')),
@@ -589,7 +570,7 @@ void describe('fusion SDK integration', { concurrency: false }, () => {
           {
             type: 'toolCall',
             id: 'call-fusion',
-            name: 'fusion_brainstorm',
+            name: 'fusion_reason',
             arguments: { prompt: 'tool prompt' },
           },
           { type: 'toolCall', id: 'call-sibling', name: 'bg_status', arguments: {} },
@@ -597,8 +578,8 @@ void describe('fusion SDK integration', { concurrency: false }, () => {
         timestamp: Date.now(),
       };
       h.session.sessionManager.appendMessage(assistant);
-      const tool = h.session.getToolDefinition('fusion_brainstorm');
-      assert.ok(tool, 'fusion tool should be registered');
+      const tool = h.session.getToolDefinition('fusion_reason');
+      assert.ok(tool, 'fusion_reason tool should be registered');
       const updates: string[] = [];
       const result = await tool.execute(
         'call-fusion',
@@ -634,9 +615,8 @@ void describe('fusion SDK integration', { concurrency: false }, () => {
       const calls = await invocations(h.fakeLogPath);
       const candidate = calls.find((call) => call.stage === 'candidate');
       assert.ok(candidate, 'candidate invocation should be logged');
-      assert.equal(candidate.args.includes('--no-tools'), false);
-      assert.ok(candidate.args.includes('--no-builtin-tools'));
-      assert.equal(candidate.args[candidate.args.indexOf('--tools') + 1], 'read,grep,find,ls');
+      assert.ok(candidate.args.includes('--no-tools'));
+      assert.equal(candidate.args.includes('--no-builtin-tools'), false);
       const parsedInput = parseJsonText(candidate.stdin);
       assert.ok(isRecord(parsedInput), 'canonical input should be an object');
       const toolRequest = parsedInput['request'];
@@ -667,8 +647,8 @@ void describe('fusion SDK integration', { concurrency: false }, () => {
     if (skipWin32FusionChildPathFixture(t)) return;
     const h = await harness({ fakeFailStage: 'candidate' });
     try {
-      const tool = h.session.getToolDefinition('fusion_brainstorm');
-      assert.ok(tool, 'fusion tool should be registered');
+      const tool = h.session.getToolDefinition('fusion_reason');
+      assert.ok(tool, 'fusion_reason tool should be registered');
       await assert.rejects(
         () =>
           tool.execute(
@@ -690,8 +670,8 @@ void describe('fusion SDK integration', { concurrency: false }, () => {
     const h = await harness({ fakeDelayMs: 10000 });
     let disposed = false;
     try {
-      const tool = h.session.getToolDefinition('fusion_brainstorm');
-      assert.ok(tool, 'fusion tool should be registered');
+      const tool = h.session.getToolDefinition('fusion_reason');
+      assert.ok(tool, 'fusion_reason tool should be registered');
       const running = tool.execute(
         'call-shutdown',
         { prompt: 'shutdown prompt' },
@@ -802,8 +782,8 @@ void describe('fusion SDK integration', { concurrency: false }, () => {
 
       await writeFile(h.fakeLogPath, '', 'utf8');
       await writeFile(join(h.agentDir, FUSION_MODEL_CONFIG_FILE), '{"bad":true}\n', 'utf8');
-      const invalidTool = h.session.getToolDefinition('fusion_brainstorm');
-      assert.ok(invalidTool, 'fusion tool should remain registered');
+      const invalidTool = h.session.getToolDefinition('fusion_reason');
+      assert.ok(invalidTool, 'fusion_reason tool should remain registered');
       await assert.rejects(
         () =>
           invalidTool.execute(
@@ -829,19 +809,25 @@ void describe('fusion SDK integration', { concurrency: false }, () => {
       const tool = h.session.getToolDefinition('fusion_validate');
       assert.ok(tool, 'fusion_validate should be registered at load');
       assert.equal(Reflect.get(tool.parameters, 'additionalProperties'), false);
-      // The closed schema has exactly one parameter and rejects capability outright.
       assert.throws(
-        () => tool.prepareArguments?.({ prompt: 'x', capability: 'inspect' }),
-        /does not accept capability/,
+        () => tool.prepareArguments?.({ prompt: 'x' }),
+        /no longer accepts \{prompt\}/,
       );
       assert.throws(
-        () => tool.prepareArguments?.({ prompt: 'x', extra: true }),
-        /must contain prompt only/,
+        () => tool.prepareArguments?.({ objective: 'x', extra: true }),
+        /unsupported key\(s\): extra/,
       );
 
       const result = await tool.execute(
         'call-validate',
-        { prompt: 'validate the change' },
+        {
+          objective: 'validate the change',
+          background: ['SDK integration test'],
+          changeSummary: 'fusion public facade changed',
+          scope: ['src/fusion-extension.ts'],
+          acceptanceCriteria: ['validation runs with read-only reviewers'],
+          verification: { status: 'provided', evidence: [{ check: 'sdk', outcome: 'running' }] },
+        },
         undefined,
         undefined,
         h.session.extensionRunner.createContext(),

@@ -217,6 +217,7 @@ async function withRpc(
     PI_CODING_AGENT_DIR: agentDir,
     PI_BG_SCRIPTED_API_KEY: 'scripted-api-key',
     PI_BG_SCRIPTED_SCENARIO: 'display-only-bg',
+    PI_BG_ALLOW_LEGACY_FUSION_CORE_FOR_TESTS: '1',
     NPM_CONFIG_CACHE: '/tmp/pi-npm-cache',
   };
   const rpc = new FusionRpc(cwd, env);
@@ -272,9 +273,8 @@ void describe('fusion RPC integration', () => {
       assert.ok(isRecord(request), 'canonical request must be an object');
       assert.equal(request['text'], 'rpc prompt with separators \u2028 and \u2029 kept');
       assert.equal(request['authority'], 'directive_over_projected_conversation');
-      assert.equal(candidate.args.includes('--no-tools'), false);
-      assert.ok(candidate.args.includes('--no-builtin-tools'));
-      assert.equal(candidate.args[candidate.args.indexOf('--tools') + 1], 'read,grep,find,ls');
+      assert.ok(candidate.args.includes('--no-tools'));
+      assert.equal(candidate.args.includes('--no-builtin-tools'), false);
       for (const flag of [
         '--no-extensions',
         '--no-skills',
@@ -284,7 +284,7 @@ void describe('fusion RPC integration', () => {
       ]) {
         assert.ok(candidate.args.includes(flag), flag);
       }
-      for (const call of calls.filter((item) => item.stage !== 'candidate')) {
+      for (const call of calls) {
         assert.ok(call.args.includes('--no-tools'), `${call.stage} must run with --no-tools`);
       }
     });
