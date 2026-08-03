@@ -64,7 +64,8 @@ export const FUSION_CHILD_TIMEOUT_MS = 30 * 60 * 1000;
 export const FUSION_CHILD_IDLE_TIMEOUT_MS = 20 * 60 * 1000;
 export const FUSION_CHILD_KILL_GRACE_MS = 3000;
 export const FUSION_CHILD_SIGKILL_WAIT_MS = 5000;
-const FUSION_PI_CHILD_O_NOFOLLOW = typeof constants.O_NOFOLLOW === 'number' ? constants.O_NOFOLLOW : 0;
+const FUSION_PI_CHILD_O_NOFOLLOW =
+  typeof constants.O_NOFOLLOW === 'number' ? constants.O_NOFOLLOW : 0;
 
 export const FUSION_CHILD_REMOVED_ENV_KEYS = [
   'PI_SESSION_ID',
@@ -452,6 +453,7 @@ export function buildFusionPiChildArgv(
 
 const SHA256_HEX_PATTERN = /^[0-9a-f]{64}$/;
 const FUSION_CHILD_RESULT_PREFIX_BYTES = Buffer.from(FUSION_CHILD_RESULT_PREFIX, 'utf8');
+const PI_EXTENSION_ERROR_PREFIX_BYTES = Buffer.from('Extension error (', 'utf8');
 
 interface ParsedFusionChildStderr {
   records: FusionChildResultMetadata[];
@@ -728,36 +730,53 @@ export function parseFusionToolCallLog(bytes: Buffer): FusionToolCallTrace {
   };
 }
 
-
 async function assertCompletedToolPolicy(
   trace: FusionToolCallTrace,
   capability: FusionCapability,
   sourcePolicy: { path: string; sha256: string } | undefined,
 ): Promise<void> {
-  const allowed = capability === 'inspect' ? FUSION_INSPECT_TOOLS : capability === 'research' ? FUSION_RESEARCH_TOOLS : [];
+  const allowed =
+    capability === 'inspect'
+      ? FUSION_INSPECT_TOOLS
+      : capability === 'research'
+        ? FUSION_RESEARCH_TOOLS
+        : [];
   const allowedSet = new Set<string>(allowed);
   const declared =
     capability === 'research' && sourcePolicy !== undefined
-      ? new Set((await readFusionSourcePolicyFile(sourcePolicy.path, sourcePolicy.sha256)).sources.map((source) => source.canonical_url))
+      ? new Set(
+          (await readFusionSourcePolicyFile(sourcePolicy.path, sourcePolicy.sha256)).sources.map(
+            (source) => source.canonical_url,
+          ),
+        )
       : undefined;
   for (const record of trace.records) {
     if (!allowedSet.has(record.tool_name)) {
       throw new Error(`fusion child used non-allowlisted tool ${record.tool_name}`);
     }
     if (capability === 'research' && record.tool_name === FUSION_WEB_FETCH_TOOL_NAME) {
-      if (sourcePolicy === undefined || declared === undefined) throw new Error('fusion research source policy missing during audit');
+      if (sourcePolicy === undefined || declared === undefined)
+        throw new Error('fusion research source policy missing during audit');
       if (record.status === 'ok') {
         if (record.url === undefined) throw new Error('fusion research fetch audit is missing url');
         const canonicalUrl = canonicalizeFusionPublicUrl(record.url);
-        if (record.url !== canonicalUrl) throw new Error('fusion research fetch audit URL was not canonical');
-        if (!declared.has(canonicalUrl)) throw new Error('fusion research fetch audit URL was not declared');
+        if (record.url !== canonicalUrl)
+          throw new Error('fusion research fetch audit URL was not canonical');
+        if (!declared.has(canonicalUrl))
+          throw new Error('fusion research fetch audit URL was not declared');
         if (record.rejected_url_sha256 !== undefined) {
-          throw new Error('fusion research successful fetch audit must not include rejected_url_sha256');
+          throw new Error(
+            'fusion research successful fetch audit must not include rejected_url_sha256',
+          );
         }
-        if (record.final_url === undefined) throw new Error('fusion research fetch audit is missing final_url');
-        if (record.http_status === undefined) throw new Error('fusion research fetch audit is missing http_status');
-        if (record.response_bytes === undefined) throw new Error('fusion research fetch audit is missing response_bytes');
-        if (record.content_sha256 === undefined) throw new Error('fusion research fetch audit is missing content_sha256');
+        if (record.final_url === undefined)
+          throw new Error('fusion research fetch audit is missing final_url');
+        if (record.http_status === undefined)
+          throw new Error('fusion research fetch audit is missing http_status');
+        if (record.response_bytes === undefined)
+          throw new Error('fusion research fetch audit is missing response_bytes');
+        if (record.content_sha256 === undefined)
+          throw new Error('fusion research fetch audit is missing content_sha256');
       } else {
         if (record.url !== undefined || record.final_url !== undefined) {
           throw new Error('fusion research rejected fetch audit must not persist raw URL');
@@ -828,7 +847,8 @@ async function assertFusionToolCallLogSeal(
   }
   try {
     const stats = await handle.stat();
-    if (!stats.isFile()) throw new Error('fusion tool-call audit completion seal is not a regular file');
+    if (!stats.isFile())
+      throw new Error('fusion tool-call audit completion seal is not a regular file');
     if (stats.size > 4096) throw new Error('fusion tool-call audit completion seal is oversized');
     const bytes = await handle.readFile();
     if (bytes.at(-1) !== 10) throw new Error('fusion tool-call audit completion seal is partial');
@@ -841,7 +861,13 @@ async function assertFusionToolCallLogSeal(
       throw new Error('fusion tool-call audit completion seal must be an object');
     }
     const keys = Object.keys(parsed).sort();
-    const expected = ['log_sha256', 'record_count', 'schema_version', 'status', 'total_result_bytes'];
+    const expected = [
+      'log_sha256',
+      'record_count',
+      'schema_version',
+      'status',
+      'total_result_bytes',
+    ];
     if (keys.join('\0') !== expected.join('\0')) {
       throw new Error('fusion tool-call audit completion seal keys mismatch');
     }
@@ -939,6 +965,9 @@ export class FusionPiCompactResultParser {
     diagnostics: Buffer;
   } {
     const parsed = parseFusionChildStderr(stderr);
+    if (parsed.diagnostics.includes(PI_EXTENSION_ERROR_PREFIX_BYTES)) {
+      throw new Error('Pi child reported an extension error diagnostic');
+    }
     const final = parsed.records.at(-1);
     if (final === undefined) throw new Error('Pi child emitted no compact result metadata');
     for (const record of parsed.records) this.assertModel(record);
@@ -1251,7 +1280,13 @@ export async function runPiChild(options: RunPiChildOptions): Promise<FusionChil
     env[FUSION_TOOL_CALL_LOG_PATH_ENV] = options.toolCallLogPath;
     if (capability === 'research') {
       if (options.sourcePolicy === undefined) {
-        throw childError('fusion research child requires a source-policy path and hash', 'orchestration_failed', options, false, false);
+        throw childError(
+          'fusion research child requires a source-policy path and hash',
+          'orchestration_failed',
+          options,
+          false,
+          false,
+        );
       }
       env[FUSION_RESEARCH_ENABLED_ENV] = '1';
       env[FUSION_SOURCE_POLICY_PATH_ENV] = options.sourcePolicy.path;
@@ -1335,7 +1370,15 @@ export async function runPiChild(options: RunPiChildOptions): Promise<FusionChil
             options,
           );
         }
-        terminateChild(child, state, platform, killProcess, killGraceMs, sigkillWaitMs, settleClose);
+        terminateChild(
+          child,
+          state,
+          platform,
+          killProcess,
+          killGraceMs,
+          sigkillWaitMs,
+          settleClose,
+        );
       }, idleTimeoutMs),
     );
   };

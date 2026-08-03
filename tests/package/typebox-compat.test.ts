@@ -45,6 +45,10 @@ function isRecord(value: unknown): value is Record<PropertyKey, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
+function stringValue(value: unknown): string {
+  return String(value);
+}
+
 void describe('TypeBox compatibility', () => {
   void it('resolves the TypeBox version bundled by the installed Pi, not a private pin', async (t: TestContext) => {
     const typeboxPackageJson = join(packageRoot, 'node_modules/typebox/package.json');
@@ -57,9 +61,7 @@ void describe('TypeBox compatibility', () => {
     const version = String(installed['version']);
     assert.match(version, /^1\.3\./, `expected the Pi 0.83 TypeBox 1.3.x line, saw ${version}`);
 
-    const manifest = parseJsonText(
-      await readFile(join(packageRoot, 'package.json'), 'utf8'),
-    );
+    const manifest = parseJsonText(await readFile(join(packageRoot, 'package.json'), 'utf8'));
     assert.ok(isRecord(manifest));
     const peers = manifest['peerDependencies'];
     assert.ok(isRecord(peers));
@@ -75,18 +77,24 @@ void describe('TypeBox compatibility', () => {
     assert.equal(Array.isArray(bundled) && bundled.includes('typebox'), false);
   });
 
-  void it('declares Pi and TUI 0.83 peer compatibility while keeping supported older lines', async () => {
-    const manifest = parseJsonText(
-      await readFile(join(packageRoot, 'package.json'), 'utf8'),
-    );
+  void it('requires Pi lines with the terminal agent_settled lifecycle event', async () => {
+    const manifest = parseJsonText(await readFile(join(packageRoot, 'package.json'), 'utf8'));
     assert.ok(isRecord(manifest));
     const peers = manifest['peerDependencies'];
     assert.ok(isRecord(peers));
     for (const key of ['@earendil-works/pi-coding-agent', '@earendil-works/pi-tui']) {
-      const range = String(peers[key]);
-      for (const supported of ['0.75.5', '0.81.1', '0.82.1', '0.83.0']) {
-        assert.ok(range.includes(supported), `${key} must still declare ${supported}: ${range}`);
+      const declaredRange = stringValue(peers[key]);
+      for (const supported of ['0.81.1', '0.82.1', '0.83.0']) {
+        assert.ok(
+          declaredRange.includes(supported),
+          `${key} must declare ${supported}: ${declaredRange}`,
+        );
       }
+      assert.equal(
+        declaredRange.includes('0.75.5'),
+        false,
+        `${key} must not claim pre-agent_settled Pi compatibility: ${declaredRange}`,
+      );
     }
   });
 
@@ -105,9 +113,12 @@ void describe('TypeBox compatibility', () => {
   });
 
   void it('compiles the exact shipped Fusion v1 public schemas under TypeBox 1.3', async () => {
-    const { FusionInvestigateParams, FusionReasonParams, FusionResearchParams, FusionValidateParams } = await import(
-      '../../src/fusion-extension.js'
-    );
+    const {
+      FusionInvestigateParams,
+      FusionReasonParams,
+      FusionResearchParams,
+      FusionValidateParams,
+    } = await import('../../src/fusion-extension.js');
     const reason = Compile(FusionReasonParams);
     assert.equal(reason.Check({ prompt: 'ok' }), true);
     assert.equal(reason.Check({ prompt: 'ok', capability: 'reason' }), false);
@@ -115,7 +126,12 @@ void describe('TypeBox compatibility', () => {
 
     const investigate = Compile(FusionInvestigateParams);
     assert.equal(
-      investigate.Check({ objective: 'o', background: [], deliverable: 'd', capability: 'inspect' }),
+      investigate.Check({
+        objective: 'o',
+        background: [],
+        deliverable: 'd',
+        capability: 'inspect',
+      }),
       false,
     );
     assert.equal(investigate.Check({ objective: 'o', background: [], deliverable: 'd' }), true);
@@ -152,7 +168,10 @@ void describe('TypeBox compatibility', () => {
       }),
       true,
     );
-    const verification = Reflect.get(Reflect.get(FusionValidateParams, 'properties'), 'verification');
+    const verification = Reflect.get(
+      Reflect.get(FusionValidateParams, 'properties'),
+      'verification',
+    );
     const status = Reflect.get(Reflect.get(verification, 'properties'), 'status');
     assert.deepEqual(Reflect.get(status, 'enum'), ['provided', 'not_run']);
   });
@@ -169,10 +188,7 @@ void describe('TypeBox compatibility', () => {
       { additionalProperties: false },
     );
     const compiled = Compile(Nullable);
-    assert.equal(
-      compiled.Check({ tool_call_id: null, entries: null, counts: [] }),
-      true,
-    );
+    assert.equal(compiled.Check({ tool_call_id: null, entries: null, counts: [] }), true);
     assert.equal(
       compiled.Check({ tool_call_id: 'c1', entries: ['a'], counts: [{ name: 'read', calls: 1 }] }),
       true,

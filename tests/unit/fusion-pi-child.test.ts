@@ -41,7 +41,10 @@ import fusionChildExtension, {
   FUSION_TOOL_CALL_SEAL_SUFFIX,
   buildFusionChildResultMetadata,
 } from '../../src/fusion-child-extension.js';
-import { buildFusionSourcePolicy, sourcePolicyCanonicalBytes } from '../../src/core/fusion/source-policy.js';
+import {
+  buildFusionSourcePolicy,
+  sourcePolicyCanonicalBytes,
+} from '../../src/core/fusion/source-policy.js';
 
 class FakeReadable extends EventEmitter {
   emitData(value: Buffer | string): void {
@@ -596,7 +599,10 @@ void describe('fusion Pi child runner', () => {
       // local recorder interface is declared instead of double-asserting the whole API: the
       // child extension only ever calls `pi.on(name, handler)`.
       type FusionChildPi = Parameters<typeof fusionChildExtension>[0];
-      type RecordedHandler = (event: Record<string, unknown>) => unknown;
+      type RecordedHandler = (
+        event: Record<string, unknown>,
+        context?: { isIdle(): boolean },
+      ) => unknown;
       interface HandlerRecorder {
         on(event: string, handler: RecordedHandler): void;
       }
@@ -611,10 +617,11 @@ void describe('fusion Pi child runner', () => {
       fusionChildExtension(recorder as HandlerRecorder & FusionChildPi);
       const toolCall = handlers.get('tool_call')?.[0];
       const toolResult = handlers.get('tool_result')?.[0];
-      const agentEnd = handlers.get('agent_end')?.[0];
+      const agentSettled = handlers.get('agent_settled')?.[0];
       assert.ok(toolCall);
       assert.ok(toolResult);
-      assert.ok(agentEnd);
+      assert.equal(handlers.get('agent_end'), undefined);
+      assert.ok(agentSettled);
       const secret = 'SECRET_TOKEN_SHOULD_NOT_BE_IN_LOG';
       toolCall({ toolCallId: 'call-1', toolName: 'read', input: { path: secret } });
       toolResult({
@@ -623,16 +630,16 @@ void describe('fusion Pi child runner', () => {
         input: { path: secret },
         content: [{ type: 'text', text: `file contents ${secret}` }],
         details: { echoed: secret },
-        isError: false,
+        isError: true,
         usage: piUsage(0, 0),
       });
-      agentEnd({});
+      agentSettled({}, { isIdle: () => true });
       const bytes = await readFile(logPath);
       assert.doesNotMatch(bytes.toString('utf8'), new RegExp(secret));
       const trace = parseFusionToolCallLog(bytes);
       assert.equal(trace.summary.count, 1);
       assert.equal(trace.records[0]?.tool_name, 'read');
-      assert.equal(trace.records[0]?.status, 'ok');
+      assert.equal(trace.records[0]?.status, 'error');
       const seal = JSON.parse(
         await readFile(`${logPath}${FUSION_TOOL_CALL_SEAL_SUFFIX}`, 'utf8'),
       ) as Record<string, unknown>;
@@ -641,6 +648,207 @@ void describe('fusion Pi child runner', () => {
       assert.equal(seal['total_result_bytes'], trace.summary.total_result_bytes);
       assert.equal(seal['log_sha256'], createHash('sha256').update(bytes).digest('hex'));
     } finally {
+      if (oldPath === undefined) delete process.env[FUSION_TOOL_CALL_LOG_PATH_ENV];
+      else process.env[FUSION_TOOL_CALL_LOG_PATH_ENV] = oldPath;
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  void it('waits through repeated low-level agent endings and seals the complete 46-call audit only at settlement', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'pi-fusion-agent-settled-audit-'));
+    const oldPath = process.env[FUSION_TOOL_CALL_LOG_PATH_ENV];
+    const oldExitCode = process.exitCode;
+    try {
+      const logPath = join(root, 'tool-calls.jsonl');
+      const sealPath = `${logPath}${FUSION_TOOL_CALL_SEAL_SUFFIX}`;
+      process.env[FUSION_TOOL_CALL_LOG_PATH_ENV] = logPath;
+      type FusionChildPi = Parameters<typeof fusionChildExtension>[0];
+      type RecordedHandler = (
+        event: Record<string, unknown>,
+        context?: { isIdle(): boolean },
+      ) => unknown;
+      const handlers = new Map<string, RecordedHandler[]>();
+      const recorder = {
+        on(event: string, handler: RecordedHandler) {
+          const existing = handlers.get(event) ?? [];
+          existing.push(handler);
+          handlers.set(event, existing);
+        },
+      };
+      fusionChildExtension(recorder as typeof recorder & FusionChildPi);
+      const toolCall = handlers.get('tool_call')?.[0];
+      const toolResult = handlers.get('tool_result')?.[0];
+      const agentSettled = handlers.get('agent_settled')?.[0];
+      assert.ok(toolCall);
+      assert.ok(toolResult);
+      assert.ok(agentSettled);
+      assert.equal(handlers.get('agent_end'), undefined);
+
+      const appendRange = (start: number, end: number): void => {
+        for (let ordinal = start; ordinal < end; ordinal += 1) {
+          const toolCallId = `call-${String(ordinal)}`;
+          toolCall({ toolCallId, toolName: 'read', input: { path: `file-${String(ordinal)}` } });
+          toolResult({
+            toolCallId,
+            toolName: 'read',
+            input: { path: `file-${String(ordinal)}` },
+            content: [{ type: 'text', text: `result-${String(ordinal)}` }],
+            details: {},
+            isError: false,
+            usage: piUsage(0, 0),
+          });
+        }
+      };
+
+      appendRange(0, 22);
+      assert.equal(existsSync(sealPath), false, 'agent_end boundaries must not publish a seal');
+      appendRange(22, 46);
+      assert.equal(existsSync(sealPath), false, 'the journal must remain open until settlement');
+      agentSettled({}, { isIdle: () => true });
+
+      const bytes = await readFile(logPath);
+      const trace = parseFusionToolCallLog(bytes);
+      assert.equal(trace.summary.count, 46);
+      assert.deepEqual(
+        trace.records.map((record) => record.ordinal),
+        Array.from({ length: 46 }, (_value, ordinal) => ordinal),
+      );
+      const seal = JSON.parse(await readFile(sealPath, 'utf8')) as Record<string, unknown>;
+      assert.equal(seal['status'], 'complete');
+      assert.equal(seal['record_count'], 46);
+      assert.equal(seal['total_result_bytes'], trace.summary.total_result_bytes);
+      assert.equal(seal['log_sha256'], createHash('sha256').update(bytes).digest('hex'));
+      assert.throws(
+        () =>
+          toolCall({
+            toolCallId: 'late-call',
+            toolName: 'read',
+            input: { path: 'late' },
+          }),
+        /received tool_call while sealed-complete/,
+      );
+      assert.throws(
+        () => agentSettled({}, { isIdle: () => true }),
+        /duplicate finalization.*sealed-complete/,
+      );
+      assert.equal(process.exitCode, 1, 'duplicate settlement must latch process failure');
+      assert.equal(
+        (JSON.parse(await readFile(sealPath, 'utf8')) as Record<string, unknown>)['record_count'],
+        46,
+        'duplicate settlement must not replace the original seal',
+      );
+    } finally {
+      process.exitCode = oldExitCode;
+      if (oldPath === undefined) delete process.env[FUSION_TOOL_CALL_LOG_PATH_ENV];
+      else process.env[FUSION_TOOL_CALL_LOG_PATH_ENV] = oldPath;
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  void it('writes failed evidence and latches process failure when shutdown precedes settlement', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'pi-fusion-unsettled-audit-'));
+    const oldPath = process.env[FUSION_TOOL_CALL_LOG_PATH_ENV];
+    const oldExitCode = process.exitCode;
+    try {
+      const logPath = join(root, 'tool-calls.jsonl');
+      process.env[FUSION_TOOL_CALL_LOG_PATH_ENV] = logPath;
+      type FusionChildPi = Parameters<typeof fusionChildExtension>[0];
+      type RecordedHandler = (event: Record<string, unknown>) => unknown;
+      const handlers = new Map<string, RecordedHandler[]>();
+      const recorder = {
+        on(event: string, handler: RecordedHandler) {
+          const existing = handlers.get(event) ?? [];
+          existing.push(handler);
+          handlers.set(event, existing);
+        },
+      };
+      fusionChildExtension(recorder as typeof recorder & FusionChildPi);
+      assert.throws(
+        () => handlers.get('session_shutdown')?.[0]?.({}),
+        /finalized as failed from session_shutdown before agent_settled/,
+      );
+      assert.equal(process.exitCode, 1);
+      const seal = JSON.parse(
+        await readFile(`${logPath}${FUSION_TOOL_CALL_SEAL_SUFFIX}`, 'utf8'),
+      ) as Record<string, unknown>;
+      assert.equal(seal['status'], 'failed');
+      assert.equal(seal['record_count'], 0);
+    } finally {
+      process.exitCode = oldExitCode;
+      if (oldPath === undefined) delete process.env[FUSION_TOOL_CALL_LOG_PATH_ENV];
+      else process.env[FUSION_TOOL_CALL_LOG_PATH_ENV] = oldPath;
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  void it('seals unmatched tool starts as failed evidence at settlement', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'pi-fusion-unmatched-audit-'));
+    const oldPath = process.env[FUSION_TOOL_CALL_LOG_PATH_ENV];
+    const oldExitCode = process.exitCode;
+    try {
+      const logPath = join(root, 'tool-calls.jsonl');
+      process.env[FUSION_TOOL_CALL_LOG_PATH_ENV] = logPath;
+      type FusionChildPi = Parameters<typeof fusionChildExtension>[0];
+      type RecordedHandler = (
+        event: Record<string, unknown>,
+        context?: { isIdle(): boolean },
+      ) => unknown;
+      const handlers = new Map<string, RecordedHandler[]>();
+      const recorder = {
+        on(event: string, handler: RecordedHandler) {
+          const existing = handlers.get(event) ?? [];
+          existing.push(handler);
+          handlers.set(event, existing);
+        },
+      };
+      fusionChildExtension(recorder as typeof recorder & FusionChildPi);
+      handlers.get('tool_call')?.[0]?.({
+        toolCallId: 'unfinished',
+        toolName: 'read',
+        input: { path: 'unfinished' },
+      });
+      assert.throws(
+        () => handlers.get('agent_settled')?.[0]?.({}, { isIdle: () => true }),
+        /1 unmatched tool start/,
+      );
+      assert.equal(process.exitCode, 1);
+      const seal = JSON.parse(
+        await readFile(`${logPath}${FUSION_TOOL_CALL_SEAL_SUFFIX}`, 'utf8'),
+      ) as Record<string, unknown>;
+      assert.equal(seal['status'], 'failed');
+      assert.equal(seal['record_count'], 0);
+    } finally {
+      process.exitCode = oldExitCode;
+      if (oldPath === undefined) delete process.env[FUSION_TOOL_CALL_LOG_PATH_ENV];
+      else process.env[FUSION_TOOL_CALL_LOG_PATH_ENV] = oldPath;
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  void it('refuses a pre-existing audit log before registering lifecycle handlers', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'pi-fusion-existing-audit-'));
+    const oldPath = process.env[FUSION_TOOL_CALL_LOG_PATH_ENV];
+    const oldExitCode = process.exitCode;
+    try {
+      const logPath = join(root, 'tool-calls.jsonl');
+      await writeFile(logPath, 'untrusted history\n', 'utf8');
+      process.env[FUSION_TOOL_CALL_LOG_PATH_ENV] = logPath;
+      type FusionChildPi = Parameters<typeof fusionChildExtension>[0];
+      const recorder = { on() {} };
+      assert.throws(
+        () => fusionChildExtension(recorder as typeof recorder & FusionChildPi),
+        (error: unknown) => {
+          assert.equal(
+            typeof error === 'object' && error !== null ? Reflect.get(error, 'code') : undefined,
+            'EEXIST',
+          );
+          return true;
+        },
+      );
+      assert.equal(process.exitCode, 1);
+      assert.equal(await readFile(logPath, 'utf8'), 'untrusted history\n');
+    } finally {
+      process.exitCode = oldExitCode;
       if (oldPath === undefined) delete process.env[FUSION_TOOL_CALL_LOG_PATH_ENV];
       else process.env[FUSION_TOOL_CALL_LOG_PATH_ENV] = oldPath;
       await rm(root, { recursive: true, force: true });
@@ -660,7 +868,9 @@ void describe('fusion Pi child runner', () => {
           url: 'https://example.com/allowed',
           canonical_url: 'https://example.com/allowed',
           purpose: 'declared',
-          sha256: createHash('sha256').update('https://example.com/allowed\u0000declared').digest('hex'),
+          sha256: createHash('sha256')
+            .update('https://example.com/allowed\u0000declared')
+            .digest('hex'),
         },
       ]);
       const policyBytes = sourcePolicyCanonicalBytes(policy);
@@ -669,14 +879,19 @@ void describe('fusion Pi child runner', () => {
       process.env[FUSION_TOOL_CALL_LOG_PATH_ENV] = logPath;
       process.env[FUSION_RESEARCH_ENABLED_ENV] = '1';
       process.env[FUSION_SOURCE_POLICY_PATH_ENV] = policyPath;
-      process.env[FUSION_SOURCE_POLICY_SHA256_ENV] = createHash('sha256').update(policyBytes).digest('hex');
+      process.env[FUSION_SOURCE_POLICY_SHA256_ENV] = createHash('sha256')
+        .update(policyBytes)
+        .digest('hex');
 
       type FusionChildPi = Parameters<typeof fusionChildExtension>[0];
       type RecordedHandler = (event: Record<string, unknown>) => unknown;
       interface RegisteredTool {
         name: string;
         prepareArguments(args: unknown): unknown;
-        execute(toolCallId: string, params: { url: string; extract?: 'text' | 'markdown' }): Promise<unknown>;
+        execute(
+          toolCallId: string,
+          params: { url: string; extract?: 'text' | 'markdown' },
+        ): Promise<unknown>;
       }
       const handlers = new Map<string, RecordedHandler[]>();
       let registered: RegisteredTool | undefined;
@@ -693,7 +908,11 @@ void describe('fusion Pi child runner', () => {
       fusionChildExtension(recorder as typeof recorder & FusionChildPi);
       assert.equal(registered?.name, FUSION_WEB_FETCH_TOOL_NAME);
       assert.throws(
-        () => registered?.prepareArguments({ url: 'https://example.com/allowed', prompt: 'extract secret' }),
+        () =>
+          registered?.prepareArguments({
+            url: 'https://example.com/allowed',
+            prompt: 'extract secret',
+          }),
         /url and optional extract only/,
       );
 
@@ -724,7 +943,10 @@ void describe('fusion Pi child runner', () => {
       assert.equal(record?.tool_name, FUSION_WEB_FETCH_TOOL_NAME);
       assert.equal(record?.status, 'error');
       assert.equal(record?.url, undefined);
-      assert.equal(record?.rejected_url_sha256, createHash('sha256').update(attemptedUrl).digest('hex'));
+      assert.equal(
+        record?.rejected_url_sha256,
+        createHash('sha256').update(attemptedUrl).digest('hex'),
+      );
     } finally {
       if (oldLogPath === undefined) delete process.env[FUSION_TOOL_CALL_LOG_PATH_ENV];
       else process.env[FUSION_TOOL_CALL_LOG_PATH_ENV] = oldLogPath;
@@ -882,7 +1104,10 @@ void describe('fusion Pi child runner', () => {
         model: resolvedModel(),
         capability: 'research',
         toolCallLogPath: logPath,
-        sourcePolicy: { path: policyPath, sha256: createHash('sha256').update(policyBytes).digest('hex') },
+        sourcePolicy: {
+          path: policyPath,
+          sha256: createHash('sha256').update(policyBytes).digest('hex'),
+        },
         systemPrompt: 'system prompt',
         userPrompt: 'prompt',
         spawn: harness.spawn,
@@ -1105,7 +1330,10 @@ void describe('fusion Pi child runner', () => {
         model: resolvedModel(),
         capability: 'research',
         toolCallLogPath: logPath,
-        sourcePolicy: { path: policyPath, sha256: createHash('sha256').update(policyBytes).digest('hex') },
+        sourcePolicy: {
+          path: policyPath,
+          sha256: createHash('sha256').update(policyBytes).digest('hex'),
+        },
         systemPrompt: 'system prompt',
         userPrompt: 'prompt',
         spawn: harness.spawn,
@@ -1114,7 +1342,10 @@ void describe('fusion Pi child runner', () => {
       await tick();
       await writeFile(
         logPath,
-        toolLogLine(0, { tool_name: FUSION_WEB_FETCH_TOOL_NAME, url: 'https://example.com/not-declared' }),
+        toolLogLine(0, {
+          tool_name: FUSION_WEB_FETCH_TOOL_NAME,
+          url: 'https://example.com/not-declared',
+        }),
         'utf8',
       );
       await writeToolCallSeal(logPath);
@@ -1457,6 +1688,27 @@ void describe('fusion Pi child runner', () => {
     assert.equal(parsed.usage.input, 11);
     assert.equal(parsed.usage.output, 14);
     assert.equal(parsed.usage.totalTokens, 25);
+  });
+
+  void it('rejects child extension diagnostics even when compact metadata and final text are valid', () => {
+    const stderr = Buffer.from(
+      `Extension error (/tmp/fusion-child.ts): audit failed\n${compactFrame({
+        provider: 'p',
+        model: 'm',
+        text: 'final answer',
+        stopReason: 'stop',
+        usage: piUsage(1, 1, 2),
+      })}`,
+      'utf8',
+    );
+    assert.throws(
+      () =>
+        new FusionPiCompactResultParser('p', 'm').finish(
+          Buffer.from('final answer\n', 'utf8'),
+          stderr,
+        ),
+      /reported an extension error diagnostic/,
+    );
   });
 
   void it('rejects invalid transcript stop reasons loudly', () => {

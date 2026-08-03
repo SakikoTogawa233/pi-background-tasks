@@ -118,7 +118,7 @@
       "verdict": "PASS"
     },
     {
-      "authored_body_sha256": "sha256:0bcc2c31c037782d1585b2d6ca317924cd4d20bacd217145cb15d9b8a3ac54b7",
+      "authored_body_sha256": "sha256:6b1afc2083d3f21c704d5af62c6b2259217169002daedb5aa604b8631d4d2fd8",
       "covers_sources": [
         "extensions/fusion-child.ts",
         "src/core/fusion/artifacts.ts",
@@ -140,8 +140,8 @@
         "src/ui/fusion-model-selector.ts"
       ],
       "doc_id": "subsystems/fusion",
-      "notes": "Independent GPT-5.5 panel reviewed all Fusion behavior; final delta reviewer verified the 20-minute idle watchdog, unchanged 30-minute absolute timeout, activity reset, child_timeout termination, tests, and source-constant documentation.",
-      "reviewer": "gpt-5.5-final-fusion-review-panel-plus-timeout-delta",
+      "notes": "Fusion investigate established agent_settled as the terminal audit boundary and required strict parser behavior; final implementation uses exclusive durable journal/seal I/O, rejects extension diagnostics, and focused lifecycle/incident/compatibility tests pass.",
+      "reviewer": "fusion-investigate-agent-settled-panel-plus-regression-evidence",
       "schema_version": "pi-background-tasks.docs-attestation.v1",
       "source_sha256": {
         "extensions/fusion-child.ts": "sha256:832937c8431d25f73215951d0446f5fa9e4394f0b03b8a9423fb19561eeba31a",
@@ -153,13 +153,13 @@
         "src/core/fusion/context.ts": "sha256:fefec409354e14acce8e401f7bcb70265eb0c1f4562fa3321508074e7ad1d96a",
         "src/core/fusion/evaluation.ts": "sha256:5ced311dbd03b177701c8acfb1782f48033d3c1d800d9f58fd4dbbfe7dc1fed3",
         "src/core/fusion/orchestrator.ts": "sha256:f0d8437d2c649f70b35ff550fee3b4a18a4e4501c8ee0bd2fd3c1f6984de88c2",
-        "src/core/fusion/pi-child.ts": "sha256:52dffbb8b047843e382bd2e534bbdb685b49c3c0607d118b693047b0cd22fec2",
+        "src/core/fusion/pi-child.ts": "sha256:bfc4981a9bedca50ff92ac7aaec7dfa93036bbdca2caf0261f4263b489868415",
         "src/core/fusion/prompts.ts": "sha256:0462a496fcf682c6e4cef87bafb1fd6d45f23e367ef83c2c8418126d4a1ee766",
         "src/core/fusion/source-policy.ts": "sha256:17718fe6c55bfacaaed0beebd6c8f4fbf477ec0f8210ae1ba038167231cc5f4d",
         "src/core/fusion/types.ts": "sha256:01a57512044c034aecd9dd304cedcc40fae737d87a3a93cae1027eb8b31a875d",
         "src/core/fusion/web-fetch.ts": "sha256:5aca8d9c8e7bb58f483cc17f60163e431e09e91dc80c299b1e0280a3b96e42aa",
         "src/core/fusion/workflows.ts": "sha256:1960784b7f9fd8cb62bf48c0a04261359e19b59a18146d32583b619db17f7394",
-        "src/fusion-child-extension.ts": "sha256:ba69cb6853ab51d21908f43bdbfd99345d929bfd14371f3efcbe2ef5a474f7a0",
+        "src/fusion-child-extension.ts": "sha256:5ce9cbe5de1a69d791dc8a8a40c05f3ac6ffca607677e150408bf9e385f9aabb",
         "src/fusion-extension.ts": "sha256:ecaf4f6619652029333c626a73e86d25174715864ad0a79a8558700f3eb224e0",
         "src/ui/fusion-model-selector.ts": "sha256:c6c080c7063d1fbf157c720d60dd0b634ef8e5767e004c632c011a7e543e9a34"
       },

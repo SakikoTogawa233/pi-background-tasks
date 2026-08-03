@@ -9,7 +9,7 @@ import { parseJsonText } from '../src/core/common.js';
 import { isolatedTestEnv } from '../tests/helpers/normalize.js';
 import { installFusionFakePi, resolveRealPiCli } from '../tests/helpers/fusion-fake-pi.js';
 
-const requiredVersions = ['0.75.5', '0.81.1', '0.82.1', '0.83.0'] as const;
+const requiredVersions = ['0.81.1', '0.82.1', '0.83.0'] as const;
 // `URL.pathname` yields `/D:/...` on Windows, which then joins into `D:\D:\...`.
 const root = fileURLToPath(new URL('../', import.meta.url));
 
@@ -29,9 +29,7 @@ const REMOVED_TYPEBOX_APIS = [
 
 /** Pi bundles typebox, so it must be a peer dependency with the documented "*" range. */
 function verifyTypeBoxPeerPosture(): void {
-  const manifest = parseJsonText(
-    readFileSync(join(root, 'package.json'), 'utf8'),
-  );
+  const manifest = parseJsonText(readFileSync(join(root, 'package.json'), 'utf8'));
   if (!isRecord(manifest)) throw new Error('package.json must be an object');
   const peers = manifest['peerDependencies'];
   if (!isRecord(peers)) throw new Error('package.json peerDependencies must be an object');
@@ -354,17 +352,37 @@ function assertBundledTypeBox(temp: string, version: string, expectedRange: stri
   // The package must resolve Pi's bundled typebox, never a private copy.
   const nested = join(temp, 'node_modules', 'pi-background-tasks', 'node_modules', 'typebox');
   if (existsSync(nested))
-    throw new Error(`Pi ${version}: package must not ship or install a private typebox at ${nested}`);
+    throw new Error(
+      `Pi ${version}: package must not ship or install a private typebox at ${nested}`,
+    );
   const hoisted = join(temp, 'node_modules', 'typebox', 'package.json');
   if (!existsSync(hoisted)) throw new Error(`Pi ${version}: typebox peer was not installed`);
   const parsed = parseJsonText(readFileSync(hoisted, 'utf8'));
   if (!isRecord(parsed)) throw new Error('typebox package.json must be an object');
   const installed = requireString(parsed['version'], 'typebox version');
   if (!installed.startsWith(expectedRange))
-    throw new Error(
-      `Pi ${version}: expected typebox ${expectedRange}x, resolved ${installed}`,
-    );
+    throw new Error(`Pi ${version}: expected typebox ${expectedRange}x, resolved ${installed}`);
   console.log(`  Pi ${version}: typebox ${installed} (peer, not bundled)`);
+}
+
+/** Fusion audit sealing requires the terminal lifecycle event introduced before Pi 0.81.1. */
+function assertAgentSettledSupport(temp: string, version: string): void {
+  const typesPath = join(
+    temp,
+    'node_modules',
+    '@earendil-works',
+    'pi-coding-agent',
+    'dist',
+    'core',
+    'extensions',
+    'types.d.ts',
+  );
+  if (!existsSync(typesPath)) {
+    throw new Error(`Pi ${version}: extension event declarations are missing at ${typesPath}`);
+  }
+  if (!readFileSync(typesPath, 'utf8').includes('agent_settled')) {
+    throw new Error(`Pi ${version}: agent_settled is required for terminal Fusion audit sealing`);
+  }
 }
 
 /** Pi 0.83.0 bundles TypeBox 1.3.7; older supported Pi lines bundle the 1.1.x line. */
@@ -394,6 +412,7 @@ async function smokeVersion(version: string, tarballPath: string): Promise<void>
       temp,
     );
     assertBundledTypeBox(temp, version, typebox.prefix);
+    assertAgentSettledSupport(temp, version);
     await assertNoRemovedTypeBoxApis(
       join(temp, 'node_modules', 'pi-background-tasks'),
       `Pi ${version}`,
@@ -488,7 +507,9 @@ async function smokeVersion(version: string, tarballPath: string): Promise<void>
         throw new Error(`Fusion compatibility candidate argv missing for ${version}`);
       const args = record['args'];
       if (!args.includes('--no-tools') || args.includes('--no-builtin-tools'))
-        throw new Error(`Fusion compatibility /fusion candidate is not reason/no-tools for ${version}`);
+        throw new Error(
+          `Fusion compatibility /fusion candidate is not reason/no-tools for ${version}`,
+        );
     }
     for (const record of adjudicators) {
       if (

@@ -105,6 +105,8 @@ Run artifacts are private local evidence under `.pi/fusion/<session-id>-<pid>/<r
 
 Artifact writes use durable private temp-file/fsync/rename. Manifests enforce legal state transitions and record config, resolved models, fixed capabilities, context policy, tool policy, anonymous map, attempts, artifact refs, cumulative usage, and errors. Successful, failed, and cancelled observed attempts preserve complete Pi usage/cost components; public tool results clone the same `Usage` shape.
 
+For tool-enabled children, the private audit journal remains open across every low-level `agent_end`, because Pi may still retry, compact and retry, or process a queued continuation. Only terminal `agent_settled` can exclusively publish the complete hash/count/byte seal. Tool activity after finalization, duplicate settlement, pre-settlement shutdown, extension diagnostics, and missing/failed/stale seals are fatal. This lifecycle requires Pi 0.81.1 or newer; older Pi lines do not expose the required terminal event and are not claimed as compatible.
+
 Cancellation and shutdown are loud and durable when a run store exists. The extension tracks active runs, links external abort signals, aborts on session shutdown/reload, and waits for settlement. Child processes have a 30 minute wall timeout, 20 minute idle watchdog, SIGTERM grace, SIGKILL wait, process-group kill on POSIX, bounded stdout/stderr, and cleanup-error propagation.
 
 ## Troubleshooting

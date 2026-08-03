@@ -1,13 +1,18 @@
 import { createHash } from 'node:crypto';
 import {
   existsSync,
+  mkdirSync,
+  mkdtempSync,
   readFileSync,
   readdirSync,
+  rmSync,
   statSync,
+  writeFileSync,
 } from 'node:fs';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import { basename, dirname, extname, join, posix, relative, resolve, sep } from 'node:path';
+import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
 
@@ -575,28 +580,379 @@ const PUBLIC_REGISTRATION_METHODS = new Set([
 function collectRegistrationsInFunction(ts, root, rel, fn, piParamName, cache, regs, visitedFns) {
   const info = moduleInfo(ts, root, rel, cache);
   const localWrapperNames = new Set();
+  const wrapperPublicKeys = [
+    'name',
+    'label',
+    'description',
+    'promptSnippet',
+    'promptGuidelines',
+    'parameters',
+  ];
 
-  const containsRegistrationReference = (rootNode) => {
+  const unwrapExpression = (node) => {
+    let current = node;
+    while (
+      ts.isParenthesizedExpression(current) ||
+      ts.isAsExpression(current) ||
+      ts.isTypeAssertionExpression(current) ||
+      ts.isNonNullExpression(current) ||
+      ts.isSatisfiesExpression(current)
+    ) {
+      current = current.expression;
+    }
+    return current;
+  };
+  const isPiHostExpression = (node) => {
+    if (!node) return false;
+    const unwrapped = unwrapExpression(node);
+    return ts.isIdentifier(unwrapped) && unwrapped.text === piParamName;
+  };
+  const calleeIdentifier = (node) => {
+    const unwrapped = unwrapExpression(node);
+    return ts.isIdentifier(unwrapped) ? unwrapped : undefined;
+  };
+  const directRegistrationAccess = (node) => {
+    const unwrapped = unwrapExpression(node);
+    if (!ts.isPropertyAccessExpression(unwrapped)) return undefined;
+    if (!isPiHostExpression(unwrapped.expression)) return undefined;
+    return unwrapped;
+  };
+  const isDirectCallTarget = (node) => {
+    let current = node;
+    while (
+      current.parent &&
+      (ts.isParenthesizedExpression(current.parent) ||
+        ts.isAsExpression(current.parent) ||
+        ts.isTypeAssertionExpression(current.parent) ||
+        ts.isNonNullExpression(current.parent) ||
+        ts.isSatisfiesExpression(current.parent))
+    ) {
+      current = current.parent;
+    }
+    return ts.isCallExpression(current.parent) && current.parent.expression === current;
+  };
+  const isLocalWrapperReference = (node) => {
+    const identifier = calleeIdentifier(node);
+    return identifier !== undefined && localWrapperNames.has(identifier.text);
+  };
+  const isAssignmentExpression = (node) =>
+    ts.isBinaryExpression(node) &&
+    node.operatorToken.kind >= ts.SyntaxKind.FirstAssignment &&
+    node.operatorToken.kind <= ts.SyntaxKind.LastAssignment;
+  const assertImmediateRegistrationCall = (call, body, context) => {
+    if (
+      !body ||
+      !ts.isBlock(body) ||
+      !ts.isExpressionStatement(call.parent) ||
+      call.parent.parent !== body
+    ) {
+      throw new DocsGateError(
+        `${lineOf(info.sf, call, ts)} ${context} must be an immediate top-level statement`,
+      );
+    }
+  };
+  const expressionContainsLocalWrapper = (rootNode) => {
     let found = false;
     const scan = (node) => {
       if (found) return;
+      if (ts.isIdentifier(node) && localWrapperNames.has(node.text)) {
+        found = true;
+        return;
+      }
+      ts.forEachChild(node, scan);
+    };
+    scan(rootNode);
+    return found;
+  };
+  const isTypeOnlyIdentifier = (node) => {
+    let current = node.parent;
+    while (current && current !== fn) {
+      if (ts.isTypeNode(current)) return true;
+      current = current.parent;
+    }
+    return false;
+  };
+  const isAllowedPiIdentifierUse = (node) => {
+    if (isTypeOnlyIdentifier(node)) return true;
+    let current = node;
+    while (
+      current.parent &&
+      (ts.isParenthesizedExpression(current.parent) ||
+        ts.isAsExpression(current.parent) ||
+        ts.isTypeAssertionExpression(current.parent) ||
+        ts.isNonNullExpression(current.parent) ||
+        ts.isSatisfiesExpression(current.parent))
+    ) {
+      current = current.parent;
+    }
+    const parent = current.parent;
+    if (ts.isPropertyAccessExpression(parent) && parent.expression === current) {
+      return parent.name.text === 'events' || isDirectCallTarget(parent);
+    }
+    if (ts.isCallExpression(parent) && parent.arguments[0] === current) {
+      const callee = calleeIdentifier(parent.expression);
+      return callee !== undefined && info.imports.has(callee.text);
+    }
+    return false;
+  };
+  const isAllowedLocalWrapperIdentifierUse = (node) => {
+    if (isTypeOnlyIdentifier(node)) return true;
+    if (
+      (ts.isPropertyAccessExpression(node.parent) && node.parent.name === node) ||
+      (ts.isPropertyAssignment(node.parent) && node.parent.name === node) ||
+      (ts.isMethodDeclaration(node.parent) && node.parent.name === node) ||
+      (ts.isPropertyDeclaration(node.parent) && node.parent.name === node)
+    ) {
+      return true;
+    }
+    let current = node;
+    while (
+      current.parent &&
+      (ts.isParenthesizedExpression(current.parent) ||
+        ts.isAsExpression(current.parent) ||
+        ts.isTypeAssertionExpression(current.parent) ||
+        ts.isNonNullExpression(current.parent) ||
+        ts.isSatisfiesExpression(current.parent))
+    ) {
+      current = current.parent;
+    }
+    return ts.isCallExpression(current.parent) && current.parent.expression === current;
+  };
+  const expressionContainsUnsafePiUse = (rootNode) => {
+    let unsafe = false;
+    const scan = (node) => {
+      if (unsafe) return;
+      if (ts.isIdentifier(node) && node.text === piParamName) {
+        let current = node;
+        while (
+          current.parent &&
+          (ts.isParenthesizedExpression(current.parent) ||
+            ts.isAsExpression(current.parent) ||
+            ts.isTypeAssertionExpression(current.parent) ||
+            ts.isNonNullExpression(current.parent) ||
+            ts.isSatisfiesExpression(current.parent))
+        ) {
+          current = current.parent;
+        }
+        const access = current.parent;
+        if (
+          ts.isPropertyAccessExpression(access) &&
+          access.expression === current &&
+          !access.name.text.startsWith('register') &&
+          (isDirectCallTarget(access) || access.name.text === 'events')
+        ) {
+          return;
+        }
+        unsafe = true;
+        return;
+      }
+      ts.forEachChild(node, scan);
+    };
+    scan(rootNode);
+    return unsafe;
+  };
+
+  const validateToolWrapper = (node) => {
+    if (!node.name || !node.body || node.parameters.length !== 1) {
+      throw new DocsGateError(
+        `${lineOf(info.sf, node, ts)} supported tool wrapper must be a named function declaration with one parameter`,
+      );
+    }
+    const parameter = node.parameters[0].name;
+    if (!ts.isIdentifier(parameter)) {
+      throw new DocsGateError(`${lineOf(info.sf, node, ts)} tool wrapper parameter must be an identifier`);
+    }
+    const calls = [];
+    const scan = (child) => {
       if (
-        ts.isPropertyAccessExpression(node) &&
-        node.expression.getText(info.sf) === piParamName &&
-        node.name.text.startsWith('register')
+        (ts.isVariableDeclaration(child) ||
+          ts.isParameter(child) ||
+          ts.isPropertyDeclaration(child) ||
+          ts.isBindingElement(child)) &&
+        child.initializer &&
+        (expressionContainsUnsafePiUse(child.initializer) ||
+          expressionContainsLocalWrapper(child.initializer))
+      ) {
+        throw new DocsGateError(
+          `${lineOf(info.sf, child, ts)} wrapper must not alias or derive a Pi host or registration wrapper`,
+        );
+      }
+      if (
+        isAssignmentExpression(child) &&
+        (expressionContainsUnsafePiUse(child.right) || expressionContainsLocalWrapper(child.right))
+      ) {
+        throw new DocsGateError(
+          `${lineOf(info.sf, child, ts)} wrapper must not assign a Pi host or registration wrapper alias`,
+        );
+      }
+      if (
+        ts.isElementAccessExpression(child) &&
+        isPiHostExpression(child.expression)
+      ) {
+        throw new DocsGateError(
+          `${lineOf(info.sf, child, ts)} element access on the Pi registration host is unsupported`,
+        );
+      }
+      if (ts.isPropertyAccessExpression(child) && isPiHostExpression(child.expression)) {
+        const method = child.name.text;
+        if (method.startsWith('register')) {
+          if (!isDirectCallTarget(child)) {
+            throw new DocsGateError(
+              `${lineOf(info.sf, child, ts)} registration API ${method} must be called directly and must not be aliased or bound`,
+            );
+          }
+          if (!PUBLIC_REGISTRATION_METHODS.has(method)) {
+            throw new DocsGateError(
+              `${lineOf(info.sf, child, ts)} unsupported public registration API ${method}`,
+            );
+          }
+        }
+      }
+      if (
+        ts.isReturnStatement(child) &&
+        child.expression &&
+        (expressionContainsUnsafePiUse(child.expression) ||
+          expressionContainsLocalWrapper(child.expression))
+      ) {
+        throw new DocsGateError(
+          `${lineOf(info.sf, child, ts)} wrapper must not return a Pi host or registration wrapper`,
+        );
+      }
+      if (ts.isCallExpression(child)) {
+        const access = directRegistrationAccess(child.expression);
+        if (access) {
+          calls.push({ call: child, method: access.name.text });
+        } else if (
+          expressionContainsLocalWrapper(child.expression) ||
+          expressionContainsUnsafePiUse(child.expression) ||
+          child.arguments.some(
+            (argument) =>
+              expressionContainsUnsafePiUse(argument) || expressionContainsLocalWrapper(argument),
+          )
+        ) {
+          throw new DocsGateError(
+            `${lineOf(info.sf, child, ts)} wrapper must not invoke another registration helper`,
+          );
+        }
+      }
+      ts.forEachChild(child, scan);
+    };
+    scan(node.body);
+    if (calls.length !== 1 || calls[0].method !== 'registerTool') {
+      throw new DocsGateError(
+        `${lineOf(info.sf, node, ts)} tool wrapper must contain exactly one direct registerTool call and no secondary registrations`,
+      );
+    }
+    const registration = calls[0].call;
+    assertImmediateRegistrationCall(
+      registration,
+      node.body,
+      'tool wrapper registerTool call',
+    );
+    const options = registration.arguments[0];
+    if (!options) {
+      throw new DocsGateError(`${lineOf(info.sf, registration, ts)} registerTool has no options object`);
+    }
+    assertPublicPropertiesAreExplicit(
+      ts,
+      root,
+      rel,
+      options,
+      cache,
+      new Set(wrapperPublicKeys),
+      `${lineOf(info.sf, registration, ts)} tool wrapper registration`,
+    );
+    const props = objectProperties(ts, root, rel, options, cache);
+    for (const key of wrapperPublicKeys) {
+      const value = props.get(key);
+      const unwrapped = value && unwrapExpression(value);
+      if (
+        !unwrapped ||
+        !ts.isPropertyAccessExpression(unwrapped) ||
+        !ts.isIdentifier(unwrapExpression(unwrapped.expression)) ||
+        unwrapExpression(unwrapped.expression).text !== parameter.text ||
+        unwrapped.name.text !== key
+      ) {
+        throw new DocsGateError(
+          `${lineOf(info.sf, registration, ts)} tool wrapper public field ${key} must map directly from ${parameter.text}.${key}`,
+        );
+      }
+    }
+  };
+
+  const wrapperCandidates = [];
+  const findWrapperCandidates = (node) => {
+    if (node !== fn && ts.isFunctionDeclaration(node) && node.body) {
+      let hasDirectToolRegistration = false;
+      const scan = (child) => {
+        if (ts.isCallExpression(child)) {
+          const access = directRegistrationAccess(child.expression);
+          if (access?.name.text === 'registerTool') hasDirectToolRegistration = true;
+        }
+        ts.forEachChild(child, scan);
+      };
+      scan(node.body);
+      if (hasDirectToolRegistration) wrapperCandidates.push(node);
+    }
+    ts.forEachChild(node, findWrapperCandidates);
+  };
+  findWrapperCandidates(fn.body ?? fn);
+  for (const wrapper of wrapperCandidates) {
+    if (wrapper.parent !== fn.body) {
+      throw new DocsGateError(
+        `${lineOf(info.sf, wrapper, ts)} tool wrapper definition must be top-level in its registration function`,
+      );
+    }
+    if (!wrapper.name) {
+      throw new DocsGateError(`${lineOf(info.sf, wrapper, ts)} tool wrapper must be named`);
+    }
+    if (localWrapperNames.has(wrapper.name.text)) {
+      throw new DocsGateError(`${lineOf(info.sf, wrapper, ts)} duplicate tool wrapper ${wrapper.name.text}`);
+    }
+    localWrapperNames.add(wrapper.name.text);
+  }
+  for (const wrapper of wrapperCandidates) validateToolWrapper(wrapper);
+
+  const containsUnsupportedNestedRegistration = (rootNode) => {
+    let found =
+      expressionContainsUnsafePiUse(rootNode) || expressionContainsLocalWrapper(rootNode);
+    const scan = (node) => {
+      if (found) return;
+      if (
+        ts.isVariableDeclaration(node) &&
+        node.initializer &&
+        (expressionContainsUnsafePiUse(node.initializer) ||
+          expressionContainsLocalWrapper(node.initializer))
       ) {
         found = true;
         return;
       }
       if (
-        ts.isElementAccessExpression(node) &&
-        node.expression.getText(info.sf) === piParamName
+        isAssignmentExpression(node) &&
+        (expressionContainsUnsafePiUse(node.right) || expressionContainsLocalWrapper(node.right))
       ) {
-        const key = node.argumentExpression;
+        found = true;
+        return;
+      }
+      if (ts.isElementAccessExpression(node) && isPiHostExpression(node.expression)) {
+        found = true;
+        return;
+      }
+      if (
+        ts.isPropertyAccessExpression(node) &&
+        isPiHostExpression(node.expression) &&
+        node.name.text.startsWith('register')
+      ) {
+        found = true;
+        return;
+      }
+      if (ts.isCallExpression(node)) {
         if (
-          key &&
-          (ts.isStringLiteral(key) || ts.isNoSubstitutionTemplateLiteral(key)) &&
-          key.text.startsWith('register')
+          expressionContainsLocalWrapper(node.expression) ||
+          node.arguments.some(
+            (argument) =>
+              expressionContainsUnsafePiUse(argument) || expressionContainsLocalWrapper(argument),
+          )
         ) {
           found = true;
           return;
@@ -608,22 +964,6 @@ function collectRegistrationsInFunction(ts, root, rel, fn, piParamName, cache, r
     return found;
   };
 
-  function detectWrappers(node) {
-    if (ts.isFunctionDeclaration(node) && node.name && node.body) {
-      let wrapper = false;
-      const scan = (child) => {
-        if (ts.isCallExpression(child) && ts.isPropertyAccessExpression(child.expression)) {
-          if (child.expression.name.text === 'registerTool' && child.expression.expression.getText(info.sf) === piParamName) wrapper = true;
-        }
-        ts.forEachChild(child, scan);
-      };
-      scan(node.body);
-      if (wrapper) localWrapperNames.add(node.name.text);
-    }
-    ts.forEachChild(node, detectWrappers);
-  }
-  detectWrappers(fn.body ?? fn);
-
   function visit(node) {
     if (node !== fn && ts.isFunctionLike(node)) {
       if (
@@ -633,55 +973,79 @@ function collectRegistrationsInFunction(ts, root, rel, fn, piParamName, cache, r
       ) {
         return;
       }
-      if (containsRegistrationReference(node)) {
+      if (containsUnsupportedNestedRegistration(node)) {
         throw new DocsGateError(
-          `${lineOf(info.sf, node, ts)} unsupported nested registration helper; use a supported function-declaration tool wrapper`,
+          `${lineOf(info.sf, node, ts)} unsupported nested registration helper or invocation`,
         );
       }
       return;
     }
     if (
-      ts.isVariableDeclaration(node) &&
-      node.initializer?.getText(info.sf) === piParamName
+      ts.isIdentifier(node) &&
+      node.text === piParamName &&
+      !isAllowedPiIdentifierUse(node)
     ) {
       throw new DocsGateError(
-        `${lineOf(info.sf, node, ts)} aliasing the Pi registration host is unsupported`,
+        `${lineOf(info.sf, node, ts)} Pi registration host escapes the supported direct-use grammar`,
       );
     }
     if (
-      ts.isElementAccessExpression(node) &&
-      node.expression.getText(info.sf) === piParamName
+      ts.isIdentifier(node) &&
+      localWrapperNames.has(node.text) &&
+      !isAllowedLocalWrapperIdentifierUse(node)
     ) {
-      const key = node.argumentExpression;
-      if (
-        key &&
-        (ts.isStringLiteral(key) || ts.isNoSubstitutionTemplateLiteral(key)) &&
-        key.text.startsWith('register')
-      ) {
-        throw new DocsGateError(
-          `${lineOf(info.sf, node, ts)} element-access registration ${key.text} is unsupported`,
-        );
-      }
+      throw new DocsGateError(
+        `${lineOf(info.sf, node, ts)} registration wrapper escapes the supported direct-call grammar`,
+      );
     }
     if (
-      ts.isPropertyAccessExpression(node) &&
-      node.expression.getText(info.sf) === piParamName &&
-      node.name.text.startsWith('register')
+      ts.isVariableDeclaration(node) &&
+      node.initializer &&
+      (expressionContainsUnsafePiUse(node.initializer) ||
+        expressionContainsLocalWrapper(node.initializer))
     ) {
-      if (!PUBLIC_REGISTRATION_METHODS.has(node.name.text)) {
-        throw new DocsGateError(
-          `${lineOf(info.sf, node, ts)} unsupported public registration API ${node.name.text}`,
-        );
-      }
-      if (!(ts.isCallExpression(node.parent) && node.parent.expression === node)) {
-        throw new DocsGateError(
-          `${lineOf(info.sf, node, ts)} registration API ${node.name.text} must be called directly and must not be aliased or bound`,
-        );
+      throw new DocsGateError(
+        `${lineOf(info.sf, node, ts)} aliasing the Pi registration host or registration wrapper is unsupported`,
+      );
+    }
+    if (
+      isAssignmentExpression(node) &&
+      (expressionContainsUnsafePiUse(node.right) || expressionContainsLocalWrapper(node.right))
+    ) {
+      throw new DocsGateError(
+        `${lineOf(info.sf, node, ts)} assigning a Pi registration host or registration wrapper alias is unsupported`,
+      );
+    }
+    if (ts.isElementAccessExpression(node) && isPiHostExpression(node.expression)) {
+      throw new DocsGateError(
+        `${lineOf(info.sf, node, ts)} element access on the Pi registration host is unsupported`,
+      );
+    }
+    if (ts.isPropertyAccessExpression(node) && isPiHostExpression(node.expression)) {
+      const method = node.name.text;
+      if (method.startsWith('register')) {
+        if (!PUBLIC_REGISTRATION_METHODS.has(method)) {
+          throw new DocsGateError(
+            `${lineOf(info.sf, node, ts)} unsupported public registration API ${method}`,
+          );
+        }
+        if (!isDirectCallTarget(node)) {
+          throw new DocsGateError(
+            `${lineOf(info.sf, node, ts)} registration API ${method} must be called directly and must not be aliased or bound`,
+          );
+        }
       }
     }
     if (ts.isCallExpression(node)) {
-      if (ts.isPropertyAccessExpression(node.expression) && node.expression.expression.getText(info.sf) === piParamName) {
-        const method = node.expression.name.text;
+      if (node.arguments.some((argument) => expressionContainsLocalWrapper(argument))) {
+        throw new DocsGateError(
+          `${lineOf(info.sf, node, ts)} registration wrappers must not be passed as arguments`,
+        );
+      }
+      const registration = directRegistrationAccess(node.expression);
+      if (registration) {
+        assertImmediateRegistrationCall(node, fn.body, 'public registration call');
+        const method = registration.name.text;
         if (method === 'registerCommand') {
           const name = firstArgString(ts, root, rel, node, cache);
           addSurface(regs, 'command', name, lineOf(info.sf, node, ts), commandDetails(ts, root, rel, name, node, cache));
@@ -694,47 +1058,78 @@ function collectRegistrationsInFunction(ts, root, rel, fn, piParamName, cache, r
         } else if (method === 'registerTool') {
           const first = node.arguments[0];
           if (!first) throw new DocsGateError(`${lineOf(info.sf, node, ts)} registerTool has no options object`);
-          if (ts.isObjectLiteralExpression(stripAsConst(ts, first))) {
-            const props = objectProperties(ts, root, rel, first, cache);
-            const nameExpr = props.get('name');
-            if (nameExpr && /^\w+\.name$/u.test(nameExpr.getText(info.sf))) {
-              // Local wrappers are counted at their concrete call sites.
-            } else {
-              const details = toolDetailsFromObject(ts, root, rel, first, cache, lineOf(info.sf, node, ts));
-              addSurface(regs, 'tool', details.name, details.source, details);
-            }
-          } else {
-            throw new DocsGateError(`${lineOf(info.sf, node, ts)} registerTool options must be an object literal`);
-          }
+          const details = toolDetailsFromObject(ts, root, rel, first, cache, lineOf(info.sf, node, ts));
+          addSurface(regs, 'tool', details.name, details.source, details);
         }
-      } else if (ts.isIdentifier(node.expression) && localWrapperNames.has(node.expression.text)) {
-        const first = node.arguments[0];
-        if (!first) throw new DocsGateError(`${lineOf(info.sf, node, ts)} local registration wrapper has no options object`);
-        const details = toolDetailsFromObject(ts, root, rel, first, cache, lineOf(info.sf, node, ts));
-        addSurface(regs, 'tool', details.name, details.source, details);
-      } else if (ts.isIdentifier(node.expression)) {
-        const imported = info.imports.get(node.expression.text);
-        const first = node.arguments[0];
-        if (imported && first?.getText(info.sf) === piParamName) {
-          const next = findExportedFunction(ts, root, imported.rel, imported.exported, cache);
-          const nextKey = `${next.rel}:${imported.exported}`;
-          if (visitedFns.has(nextKey)) {
+      } else {
+        const callee = calleeIdentifier(node.expression);
+        if (callee && localWrapperNames.has(callee.text)) {
+          assertImmediateRegistrationCall(node, fn.body, 'local registration-wrapper call');
+          const first = node.arguments[0];
+          if (!first) throw new DocsGateError(`${lineOf(info.sf, node, ts)} local registration wrapper has no options object`);
+          const details = toolDetailsFromObject(ts, root, rel, first, cache, lineOf(info.sf, node, ts));
+          addSurface(regs, 'tool', details.name, details.source, details);
+        } else if (expressionContainsLocalWrapper(node.expression)) {
+          throw new DocsGateError(
+            `${lineOf(info.sf, node, ts)} unsupported derived registration-wrapper invocation`,
+          );
+        } else if (expressionContainsUnsafePiUse(node.expression)) {
+          throw new DocsGateError(
+            `${lineOf(info.sf, node, ts)} unsupported derived Pi registration invocation`,
+          );
+        } else if (callee) {
+          const imported = info.imports.get(callee.text);
+          const first = node.arguments[0];
+          if (imported && isPiHostExpression(first)) {
+            assertImmediateRegistrationCall(node, fn.body, 'imported registration-helper call');
+            const next = findExportedFunction(ts, root, imported.rel, imported.exported, cache);
+            const nextKey = `${next.rel}:${imported.exported}`;
+            if (visitedFns.has(nextKey)) {
+              throw new DocsGateError(
+                `${lineOf(info.sf, node, ts)} imported registration function ${nextKey} is invoked more than once`,
+              );
+            }
+            visitedFns.add(nextKey);
+            const nextParameter = next.node.parameters[0]?.name;
+            if (!nextParameter || !ts.isIdentifier(nextParameter)) {
+              throw new DocsGateError(
+                `${next.rel} exported registration function must have an identifier Pi parameter`,
+              );
+            }
+            collectRegistrationsInFunction(
+              ts,
+              root,
+              next.rel,
+              next.node,
+              nextParameter.text,
+              cache,
+              regs,
+              visitedFns,
+            );
+          } else if (node.arguments.some((argument) => expressionContainsUnsafePiUse(argument))) {
             throw new DocsGateError(
-              `${lineOf(info.sf, node, ts)} imported registration function ${nextKey} is invoked more than once`,
+              `${lineOf(info.sf, node, ts)} unsupported helper invocation receives the Pi registration host`,
             );
           }
-          visitedFns.add(nextKey);
-          const nextPi = next.node.parameters[0]?.name?.getText(moduleInfo(ts, root, next.rel, cache).sf);
-          if (!nextPi) throw new DocsGateError(`${next.rel} exported registration function has no pi parameter`);
-          collectRegistrationsInFunction(ts, root, next.rel, next.node, nextPi, cache, regs, visitedFns);
-        } else if (node.arguments.some((argument) => argument.getText(info.sf) === piParamName)) {
+        } else if (node.arguments.some((argument) => expressionContainsUnsafePiUse(argument))) {
           throw new DocsGateError(
-            `${lineOf(info.sf, node, ts)} unsupported helper invocation receives the Pi registration host`,
+            `${lineOf(info.sf, node, ts)} unsupported non-identifier helper invocation receives the Pi registration host`,
           );
         }
-      } else if (node.arguments.some((argument) => argument.getText(info.sf) === piParamName)) {
+      }
+    }
+    if (ts.isNewExpression(node)) {
+      const args = node.arguments ?? [];
+      if (
+        expressionContainsLocalWrapper(node.expression) ||
+        expressionContainsUnsafePiUse(node.expression) ||
+        args.some(
+          (argument) =>
+            expressionContainsUnsafePiUse(argument) || expressionContainsLocalWrapper(argument),
+        )
+      ) {
         throw new DocsGateError(
-          `${lineOf(info.sf, node, ts)} unsupported non-identifier helper invocation receives the Pi registration host`,
+          `${lineOf(info.sf, node, ts)} constructors must not receive or derive Pi registration hosts or wrappers`,
         );
       }
     }
@@ -767,11 +1162,13 @@ function extractEntrypoint(root, pkg, ts, cache) {
   const entryRel = entry.endsWith('.ts') ? entry : `${entry}.ts`;
   if (!existsSync(packagePath(root, entryRel))) throw new DocsGateError(`package.json pi extension ${entry} does not exist`);
   const target = findExportedFunction(ts, root, entryRel, 'default', cache);
-  const targetInfo = moduleInfo(ts, root, target.rel, cache);
-  const piParam = target.node.parameters[0]?.name?.getText(targetInfo.sf);
-  if (!piParam) throw new DocsGateError(`${target.rel} default export has no pi parameter`);
+  moduleInfo(ts, root, target.rel, cache);
+  const piParameter = target.node.parameters[0]?.name;
+  if (!piParameter || !ts.isIdentifier(piParameter)) {
+    throw new DocsGateError(`${target.rel} default export must have an identifier Pi parameter`);
+  }
   const regs = [];
-  collectRegistrationsInFunction(ts, root, target.rel, target.node, piParam, cache, regs, new Set([`${target.rel}:default`]));
+  collectRegistrationsInFunction(ts, root, target.rel, target.node, piParameter.text, cache, regs, new Set([`${target.rel}:default`]));
   return uniqueRegistrations(regs);
 }
 
@@ -2022,116 +2419,42 @@ export function runPayloadCheck(root = PACKAGE_ROOT) {
   return files;
 }
 
-export function assertRegistrationFixture(source) {
-  const ts = loadTypeScript();
-  const sf = ts.createSourceFile('fixture.ts', source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
-  const surfaces = [];
-  const visit = (node) => {
-    if (
-      ts.isVariableDeclaration(node) &&
-      node.initializer?.getText(sf) === 'pi'
-    ) {
-      throw new DocsGateError('fixture aliasing the Pi registration host is unsupported');
-    }
-    if (
-      ts.isElementAccessExpression(node) &&
-      node.expression.getText(sf) === 'pi'
-    ) {
-      const key = node.argumentExpression;
-      if (
-        key &&
-        (ts.isStringLiteral(key) || ts.isNoSubstitutionTemplateLiteral(key)) &&
-        key.text.startsWith('register')
-      ) {
-        throw new DocsGateError(`fixture element-access registration ${key.text} is unsupported`);
-      }
-    }
-    if (
-      ts.isPropertyAccessExpression(node) &&
-      node.expression.getText(sf) === 'pi' &&
-      node.name.text.startsWith('register') &&
-      !(ts.isCallExpression(node.parent) && node.parent.expression === node)
-    ) {
-      throw new DocsGateError(
-        `fixture registration API ${node.name.text} must be called directly and must not be aliased or bound`,
-      );
-    }
-    if (
-      ts.isCallExpression(node) &&
-      node.arguments.some((argument) => argument.getText(sf) === 'pi') &&
-      !(
-        ts.isPropertyAccessExpression(node.expression) &&
-        node.expression.expression.getText(sf) === 'pi'
-      )
-    ) {
-      throw new DocsGateError('fixture unsupported helper invocation receives the Pi registration host');
-    }
-    if (ts.isCallExpression(node) && ts.isPropertyAccessExpression(node.expression) && node.expression.expression.getText(sf) === 'pi') {
-      const method = node.expression.name.text;
-      if (method === 'registerCommand' || method === 'registerShortcut' || method === 'registerMessageRenderer') {
-        const arg = node.arguments[0];
-        if (!arg || !(ts.isStringLiteral(arg) || ts.isNoSubstitutionTemplateLiteral(arg))) throw new DocsGateError(`fixture unsupported ${method} registration; first argument must be a literal`);
-        surfaces.push(`${method}:${arg.text}`);
-      }
-      if (method === 'registerTool') {
-        const arg = node.arguments[0];
-        if (!arg || !ts.isObjectLiteralExpression(arg)) throw new DocsGateError('fixture unsupported registerTool options');
-        const publicKeys = new Set([
-          'name',
-          'label',
-          'description',
-          'promptSnippet',
-          'promptGuidelines',
-          'parameters',
-        ]);
-        for (const prop of arg.properties) {
-          if (ts.isSpreadAssignment(prop)) {
-            throw new DocsGateError('fixture registerTool must not use object spread');
-          }
-          if (!ts.isPropertyAssignment(prop) && prop.name !== undefined) {
-            const key = prop.name.getText(sf).replace(/^["']|["']$/gu, '');
-            if (publicKeys.has(key)) {
-              throw new DocsGateError(
-                `fixture registerTool public field ${key} must be an explicit property assignment`,
-              );
-            }
-          }
-        }
-        const property = (key) => arg.properties.find(
-          (prop) => ts.isPropertyAssignment(prop) && prop.name.getText(sf).replace(/^["']|["']$/gu, '') === key,
-        );
-        const name = property('name');
-        if (!name || !(ts.isStringLiteral(name.initializer) || ts.isNoSubstitutionTemplateLiteral(name.initializer))) throw new DocsGateError('fixture unsupported registerTool name');
-        for (const key of ['label', 'description', 'promptSnippet']) {
-          const prop = property(key);
-          if (prop && !(ts.isStringLiteral(prop.initializer) || ts.isNoSubstitutionTemplateLiteral(prop.initializer))) {
-            throw new DocsGateError(`fixture registerTool ${name.initializer.text} ${key} must be a literal string`);
-          }
-        }
-        const guidelines = property('promptGuidelines');
-        if (
-          guidelines &&
-          (!ts.isArrayLiteralExpression(guidelines.initializer) ||
-            guidelines.initializer.elements.some(
-              (element) => !(ts.isStringLiteral(element) || ts.isNoSubstitutionTemplateLiteral(element)),
-            ))
-        ) {
-          throw new DocsGateError(
-            `fixture registerTool ${name.initializer.text} promptGuidelines must be a literal string array`,
-          );
-        }
-        surfaces.push(`registerTool:${name.initializer.text}`);
-      }
-    }
-    ts.forEachChild(node, visit);
-  };
-  visit(sf);
-  const seen = new Set();
-  for (const surface of surfaces) {
-    if (seen.has(surface)) throw new DocsGateError(`fixture duplicate public registration ${surface}`);
-    seen.add(surface);
+export function assertRegistrationFixture(fixture) {
+  const files = typeof fixture === 'string' ? { 'fixture.ts': fixture } : fixture.files;
+  const entry = typeof fixture === 'string' ? 'fixture.ts' : (fixture.entry ?? 'fixture.ts');
+  if (!files || typeof files !== 'object' || typeof files[entry] !== 'string') {
+    throw new DocsGateError('registration fixture must provide an entry TypeScript source');
   }
-  return surfaces;
+  const root = mkdtempSync(join(tmpdir(), 'pi-docs-registration-fixture-'));
+  try {
+    for (const [rel, source] of Object.entries(files)) {
+      const target = packagePath(root, rel);
+      mkdirSync(dirname(target), { recursive: true });
+      writeFileSync(target, source);
+    }
+    const ts = loadTypeScript();
+    const cache = new Map();
+    const target = findExportedFunction(ts, root, entry, 'default', cache);
+    moduleInfo(ts, root, target.rel, cache);
+    const piParameter = target.node.parameters[0]?.name;
+    if (!piParameter || !ts.isIdentifier(piParameter)) {
+      throw new DocsGateError(`${target.rel} default export must have an identifier Pi parameter`);
+    }
+    const regs = [];
+    collectRegistrationsInFunction(
+      ts,
+      root,
+      target.rel,
+      target.node,
+      piParameter.text,
+      cache,
+      regs,
+      new Set([`${target.rel}:default`]),
+    );
+    return uniqueRegistrations(regs).map((registration) => registration.id);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 }
 
 export function checkReleaseVersion(root = PACKAGE_ROOT, refName = process.env.GITHUB_REF_NAME, refType = process.env.GITHUB_REF_TYPE) {

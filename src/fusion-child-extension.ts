@@ -1,5 +1,14 @@
 import { createHash } from 'node:crypto';
-import { closeSync, constants, fstatSync, fsyncSync, openSync, readFileSync, writeSync } from 'node:fs';
+import {
+  closeSync,
+  constants,
+  fstatSync,
+  fsyncSync,
+  openSync,
+  readFileSync,
+  writeSync,
+} from 'node:fs';
+import { dirname } from 'node:path';
 import type { ExtensionAPI } from '@earendil-works/pi-coding-agent';
 import { Type, type Static } from 'typebox';
 import {
@@ -100,24 +109,115 @@ function utf8JsonBytes(value: unknown, label: string): Buffer {
   return Buffer.from(text, 'utf8');
 }
 
+function throwableError(value: unknown): Error {
+  return value instanceof Error ? value : new Error(String(value));
+}
+
+function writeAllSync(fd: number, bytes: Buffer, label: string): void {
+  let offset = 0;
+  while (offset < bytes.length) {
+    const written = writeSync(fd, bytes, offset, bytes.length - offset, null);
+    if (written <= 0) {
+      throw new Error(`${label} made no write progress at byte ${String(offset)}`);
+    }
+    offset += written;
+  }
+}
+
+function withRegularFileDescriptorSync(
+  path: string,
+  flags: number,
+  mode: number | undefined,
+  label: string,
+  operation: (fd: number) => void,
+): void {
+  let fd: number | undefined;
+  let primaryFailure: unknown;
+  let closeFailure: unknown;
+  try {
+    fd = mode === undefined ? openSync(path, flags) : openSync(path, flags, mode);
+    const stats = fstatSync(fd);
+    if (!stats.isFile()) throw new Error(`${label} at ${path} is not a regular file`);
+    operation(fd);
+  } catch (error) {
+    primaryFailure = error;
+  }
+  if (fd !== undefined) {
+    try {
+      closeSync(fd);
+    } catch (error) {
+      closeFailure = error;
+    }
+  }
+  if (primaryFailure !== undefined && closeFailure !== undefined) {
+    throw new AggregateError(
+      [primaryFailure, closeFailure],
+      `${label} operation and descriptor close both failed`,
+    );
+  }
+  if (primaryFailure !== undefined) throw throwableError(primaryFailure);
+  if (closeFailure !== undefined) throw throwableError(closeFailure);
+}
+
+function fsyncParentDirectorySync(path: string): void {
+  if (process.platform === 'win32') return;
+  const parent = dirname(path);
+  let fd: number | undefined;
+  let primaryFailure: unknown;
+  let closeFailure: unknown;
+  try {
+    fd = openSync(parent, constants.O_RDONLY | FUSION_CHILD_O_NOFOLLOW);
+    const stats = fstatSync(fd);
+    if (!stats.isDirectory())
+      throw new Error(`fusion audit parent at ${parent} is not a directory`);
+    fsyncSync(fd);
+  } catch (error) {
+    primaryFailure = error;
+  }
+  if (fd !== undefined) {
+    try {
+      closeSync(fd);
+    } catch (error) {
+      closeFailure = error;
+    }
+  }
+  if (primaryFailure !== undefined && closeFailure !== undefined) {
+    throw new AggregateError(
+      [primaryFailure, closeFailure],
+      'fusion audit directory sync and descriptor close both failed',
+    );
+  }
+  if (primaryFailure !== undefined) throw throwableError(primaryFailure);
+  if (closeFailure !== undefined) throw throwableError(closeFailure);
+}
+
+function createToolCallLog(path: string): void {
+  withRegularFileDescriptorSync(
+    path,
+    constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | FUSION_CHILD_O_NOFOLLOW,
+    0o600,
+    'fusion tool-call log',
+    (fd) => {
+      fsyncSync(fd);
+    },
+  );
+  fsyncParentDirectorySync(path);
+}
+
 function appendToolCallLogLine(path: string, record: FusionToolCallLogRecord): void {
   // The log is an audit trail, not a payload copy: raw tool arguments/results may
   // contain secrets, so only byte counts and SHA-256 digests are persisted.
-  const line = `${JSON.stringify(record)}\n`;
-  const expectedBytes = Buffer.byteLength(line, 'utf8');
-  let fd: number | undefined;
-  try {
-    fd = openSync(path, 'a', 0o600);
-    const written = writeSync(fd, line, undefined, 'utf8');
-    if (written !== expectedBytes) {
-      throw new Error(
-        `short write: wrote ${String(written)} of ${String(expectedBytes)} bytes`,
-      );
-    }
-    fsyncSync(fd);
-  } finally {
-    if (fd !== undefined) closeSync(fd);
-  }
+  const bytes = Buffer.from(`${JSON.stringify(record)}\n`, 'utf8');
+  withRegularFileDescriptorSync(
+    path,
+    constants.O_WRONLY | constants.O_APPEND | FUSION_CHILD_O_NOFOLLOW,
+    undefined,
+    'fusion tool-call log',
+    (fd) => {
+      writeAllSync(fd, bytes, 'fusion tool-call log append');
+      fsyncSync(fd);
+    },
+  );
 }
 
 function writeToolCallLogSeal(
@@ -126,7 +226,7 @@ function writeToolCallLogSeal(
   totalResultBytes: number,
   complete: boolean,
 ): void {
-  const logBytes = readFileSync(path);
+  const logBytes = readRegularFileNoSymlinkSync(path, 'fusion tool-call log');
   const seal = {
     schema_version: FUSION_TOOL_CALL_SEAL_SCHEMA_VERSION,
     status: complete ? 'complete' : 'failed',
@@ -135,17 +235,22 @@ function writeToolCallLogSeal(
     log_sha256: sha256(logBytes),
   } as const;
   const bytes = Buffer.from(`${JSON.stringify(seal)}\n`, 'utf8');
-  let fd: number | undefined;
-  try {
-    fd = openSync(`${path}${FUSION_TOOL_CALL_SEAL_SUFFIX}`, 'wx', 0o600);
-    const written = writeSync(fd, bytes);
-    if (written !== bytes.length) {
-      throw new Error(`fusion tool-call seal short write: ${String(written)} of ${String(bytes.length)} bytes`);
-    }
-    fsyncSync(fd);
-  } finally {
-    if (fd !== undefined) closeSync(fd);
-  }
+  const sealPath = `${path}${FUSION_TOOL_CALL_SEAL_SUFFIX}`;
+  withRegularFileDescriptorSync(
+    sealPath,
+    constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | FUSION_CHILD_O_NOFOLLOW,
+    0o600,
+    'fusion tool-call audit completion seal',
+    (fd) => {
+      writeAllSync(fd, bytes, 'fusion tool-call audit completion seal');
+      fsyncSync(fd);
+    },
+  );
+  fsyncParentDirectorySync(sealPath);
+}
+
+function latchAuditProcessFailure(): void {
+  if (process.exitCode === undefined || process.exitCode === 0) process.exitCode = 1;
 }
 
 async function writeMetadata(record: FusionChildResultMetadata): Promise<void> {
@@ -165,7 +270,9 @@ function strictFusionWebFetchArgs(args: unknown): FusionWebFetchParamsValue {
   const keys = Object.keys(args);
   const unknownKeys = keys.filter((key) => key !== 'url' && key !== 'extract');
   if (unknownKeys.length > 0 || !keys.includes('url')) {
-    throw new Error(`${FUSION_WEB_FETCH_TOOL_NAME} arguments must contain url and optional extract only`);
+    throw new Error(
+      `${FUSION_WEB_FETCH_TOOL_NAME} arguments must contain url and optional extract only`,
+    );
   }
   const url = Reflect.get(args, 'url');
   if (typeof url !== 'string' || url.trim().length === 0) {
@@ -189,7 +296,10 @@ function stringField(value: object, key: string): string | undefined {
   return typeof field === 'string' && field.length > 0 ? field : undefined;
 }
 
-function fetchAuditMetadataFromObject(value: object, fallbackUrl: string): FusionWebFetchAuditMetadata {
+function fetchAuditMetadataFromObject(
+  value: object,
+  fallbackUrl: string,
+): FusionWebFetchAuditMetadata {
   const metadata: FusionWebFetchAuditMetadata = {
     url: stringField(value, 'url') ?? canonicalizeFusionPublicUrl(fallbackUrl),
   };
@@ -204,7 +314,10 @@ function fetchAuditMetadataFromObject(value: object, fallbackUrl: string): Fusio
   return metadata;
 }
 
-function fetchAuditMetadataFromError(error: unknown, attemptedUrl: string): FusionWebFetchAuditMetadata {
+function fetchAuditMetadataFromError(
+  error: unknown,
+  attemptedUrl: string,
+): FusionWebFetchAuditMetadata {
   const metadata: FusionWebFetchAuditMetadata = { rejected_url_sha256: sha256(attemptedUrl) };
   if (error instanceof FusionWebFetchError && typeof error === 'object' && error !== null) {
     const status = numberField(error, 'status');
@@ -212,7 +325,6 @@ function fetchAuditMetadataFromError(error: unknown, attemptedUrl: string): Fusi
   }
   return metadata;
 }
-
 
 function readRegularFileNoSymlinkSync(path: string, label: string): Buffer {
   let fd: number | undefined;
@@ -237,13 +349,17 @@ function loadDeclaredResearchUrls(): ReadonlySet<string> {
   const policyPath = process.env[FUSION_SOURCE_POLICY_PATH_ENV];
   const expectedHash = process.env[FUSION_SOURCE_POLICY_SHA256_ENV];
   if (policyPath === undefined || expectedHash === undefined) {
-    throw new Error(`${FUSION_WEB_FETCH_TOOL_NAME} research mode requires source policy path and sha256`);
+    throw new Error(
+      `${FUSION_WEB_FETCH_TOOL_NAME} research mode requires source policy path and sha256`,
+    );
   }
-  if (!/^[0-9a-f]{64}$/.test(expectedHash)) throw new Error('fusion source policy hash is malformed');
+  if (!/^[0-9a-f]{64}$/.test(expectedHash))
+    throw new Error('fusion source policy hash is malformed');
   const bytes = readRegularFileNoSymlinkSync(policyPath, 'fusion source policy');
   if (sha256(bytes) !== expectedHash) throw new Error('fusion source policy hash mismatch');
   const text = bytes.toString('utf8');
-  if (!Buffer.from(text, 'utf8').equals(bytes)) throw new Error('fusion source policy is not UTF-8');
+  if (!Buffer.from(text, 'utf8').equals(bytes))
+    throw new Error('fusion source policy is not UTF-8');
   const parsed = parseFusionSourcePolicy(JSON.parse(text));
   return new Set(parsed.sources.map((source) => source.canonical_url));
 }
@@ -279,30 +395,97 @@ export default function fusionChildExtension(pi: ExtensionAPI): void {
     throw new Error(`${FUSION_RESEARCH_ENABLED_ENV} must be unset or exactly 1`);
   }
   if (researchEnabled === '1' && toolCallLogPath === undefined) {
-    throw new Error(`${FUSION_WEB_FETCH_TOOL_NAME} research mode requires ${FUSION_TOOL_CALL_LOG_PATH_ENV}`);
+    throw new Error(
+      `${FUSION_WEB_FETCH_TOOL_NAME} research mode requires ${FUSION_TOOL_CALL_LOG_PATH_ENV}`,
+    );
   }
   const declaredResearchUrls = researchEnabled === '1' ? loadDeclaredResearchUrls() : undefined;
   const fetchAuditMetadata = new Map<string, FusionWebFetchAuditMetadata>();
   if (toolCallLogPath !== undefined) {
-    // Create the log immediately, before tools can run. Without this, an absent file
-    // is ambiguous: it could mean "this child made zero tool calls" or "the audit trail
-    // was never written". The parent must be able to tell those apart, so existence is
-    // established up front and a missing file is a hard failure rather than an empty trace.
-    closeSync(openSync(toolCallLogPath, 'a', 0o600));
+    // Establish the audit file before tools can run. Exclusive creation makes a reused
+    // attempt path or redirected file loud instead of appending to untrusted history.
+    try {
+      createToolCallLog(toolCallLogPath);
+    } catch (error) {
+      latchAuditProcessFailure();
+      throw error;
+    }
+
+    type AuditPhase = 'open' | 'finalizing' | 'sealed-complete' | 'sealed-failed';
+    interface ToolStart {
+      startedAt: number;
+      toolName: string;
+    }
+
+    let phase: AuditPhase = 'open';
     let ordinal = 0;
     let totalToolResultBytes = 0;
     let auditFailed = false;
-    const starts = new Map<string, number>();
+    const starts = new Map<string, ToolStart>();
+
+    const failAudit = (error: unknown): never => {
+      auditFailed = true;
+      latchAuditProcessFailure();
+      throw error instanceof Error ? error : new Error(String(error));
+    };
+    const requireOpen = (eventName: string): void => {
+      if (phase !== 'open') {
+        failAudit(`fusion tool-call audit received ${eventName} while ${phase}`);
+      }
+    };
+    const finalizeAudit = (normalSettlement: boolean, trigger: string): void => {
+      if (phase !== 'open') {
+        failAudit(
+          `fusion tool-call audit received duplicate finalization from ${trigger} while ${phase}`,
+        );
+      }
+      phase = 'finalizing';
+      const unmatchedStarts = starts.size;
+      const complete = normalSettlement && !auditFailed && unmatchedStarts === 0;
+      if (!complete) {
+        auditFailed = true;
+        latchAuditProcessFailure();
+      }
+      try {
+        writeToolCallLogSeal(toolCallLogPath, ordinal, totalToolResultBytes, complete);
+      } catch (error) {
+        phase = 'sealed-failed';
+        failAudit(error);
+      }
+      phase = complete ? 'sealed-complete' : 'sealed-failed';
+      if (!complete) {
+        failAudit(
+          `fusion tool-call audit finalized as failed from ${trigger}: ${String(unmatchedStarts)} unmatched tool start(s)`,
+        );
+      }
+    };
+
     pi.on('tool_call', (event) => {
-      starts.set(event.toolCallId, Date.now());
+      try {
+        requireOpen('tool_call');
+        if (starts.has(event.toolCallId)) {
+          throw new Error(`fusion tool-call log duplicate start for ${event.toolCallId}`);
+        }
+        starts.set(event.toolCallId, {
+          startedAt: Date.now(),
+          toolName: event.toolName,
+        });
+      } catch (error) {
+        failAudit(error);
+      }
     });
     pi.on('tool_result', (event) => {
       try {
+        requireOpen('tool_result');
         const start = starts.get(event.toolCallId);
         if (start === undefined) {
           throw new Error(`fusion tool-call log missing start for ${event.toolCallId}`);
         }
-        starts.delete(event.toolCallId);
+        if (start.toolName !== event.toolName) {
+          throw new Error(
+            `fusion tool-call log tool mismatch for ${event.toolCallId}: started ${start.toolName}, completed ${event.toolName}`,
+          );
+        }
         const argumentsBytes = utf8JsonBytes(event.input, 'arguments');
         const resultBytes = utf8JsonBytes(
           {
@@ -314,7 +497,7 @@ export default function fusionChildExtension(pi: ExtensionAPI): void {
           'result',
         );
         const fetchMetadata = fetchAuditMetadata.get(event.toolCallId);
-        fetchAuditMetadata.delete(event.toolCallId);
+        const nextTotalToolResultBytes = totalToolResultBytes + resultBytes.length;
         const record: FusionToolCallLogRecord = {
           schema_version: FUSION_TOOL_CALL_LOG_SCHEMA_VERSION,
           ordinal,
@@ -324,25 +507,33 @@ export default function fusionChildExtension(pi: ExtensionAPI): void {
           result_bytes: resultBytes.length,
           result_sha256: sha256(resultBytes),
           status: event.isError === true ? 'error' : 'ok',
-          duration_ms: Math.max(0, Date.now() - start),
+          duration_ms: Math.max(0, Date.now() - start.startedAt),
           ...(fetchMetadata === undefined ? {} : fetchMetadata),
         };
-        ordinal += 1;
         appendToolCallLogLine(toolCallLogPath, record);
-        totalToolResultBytes += resultBytes.length;
+        starts.delete(event.toolCallId);
+        fetchAuditMetadata.delete(event.toolCallId);
+        ordinal += 1;
+        totalToolResultBytes = nextTotalToolResultBytes;
         if (totalToolResultBytes > FUSION_CHILD_MAX_TOTAL_TOOL_RESULT_BYTES) {
           throw new Error(
             `fusion candidate exceeded the aggregate tool-output budget: ${String(totalToolResultBytes)} bytes across ${String(ordinal)} calls exceeds ${String(FUSION_CHILD_MAX_TOTAL_TOOL_RESULT_BYTES)}`,
           );
         }
       } catch (error) {
-        auditFailed = true;
-        throw error;
+        failAudit(error);
       }
     });
-    pi.on('agent_end', () => {
-      const complete = !auditFailed && starts.size === 0;
-      writeToolCallLogSeal(toolCallLogPath, ordinal, totalToolResultBytes, complete);
+    // agent_end is only the end of one low-level run. Pi may still retry, compact and
+    // retry, or consume queued continuations. Sealing there created stale prefix seals.
+    pi.on('agent_settled', (_event, ctx) => {
+      if (!ctx.isIdle()) {
+        failAudit('fusion child emitted agent_settled while the agent was not idle');
+      }
+      finalizeAudit(true, 'agent_settled');
+    });
+    pi.on('session_shutdown', () => {
+      if (phase === 'open') finalizeAudit(false, 'session_shutdown before agent_settled');
     });
   }
 
@@ -366,10 +557,14 @@ export default function fusionChildExtension(pi: ExtensionAPI): void {
         try {
           const canonicalUrl = canonicalizeFusionPublicUrl(params.url);
           if (params.url !== canonicalUrl) {
-            throw new Error(`${FUSION_WEB_FETCH_TOOL_NAME} URL must exactly match its declared canonical URL`);
+            throw new Error(
+              `${FUSION_WEB_FETCH_TOOL_NAME} URL must exactly match its declared canonical URL`,
+            );
           }
           if (declaredResearchUrls === undefined || !declaredResearchUrls.has(canonicalUrl)) {
-            throw new Error(`${FUSION_WEB_FETCH_TOOL_NAME} URL was not declared in the research source policy`);
+            throw new Error(
+              `${FUSION_WEB_FETCH_TOOL_NAME} URL was not declared in the research source policy`,
+            );
           }
           const result = await fusionWebFetch(
             params.extract === undefined

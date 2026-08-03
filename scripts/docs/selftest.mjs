@@ -106,17 +106,127 @@ mustThrow('stale receipt', () => verifyAttestations(process.cwd(), { docs: [atte
 mustThrow('duplicate receipt', () => verifyAttestations(process.cwd(), { docs: [attestationFixtureDoc] }, { schema_version: 'pi-background-tasks.docs-attestations.v1', receipts: [attestationFixtureReceipt, { ...attestationFixtureReceipt }] }), /duplicate receipt/);
 mustThrow('orphan receipt', () => verifyAttestations(process.cwd(), { docs: [attestationFixtureDoc] }, { schema_version: 'pi-background-tasks.docs-attestations.v1', receipts: [{ ...attestationFixtureReceipt, doc_id: 'removed-owner' }] }), /orphan receipt/);
 
-mustThrow('unsupported extraction', () => assertRegistrationFixture('export default function x(pi){ pi.registerCommand(makeName(), {}); }'), /unsupported registerCommand/);
+mustThrow('unsupported extraction', () => assertRegistrationFixture('export default function x(pi){ pi.registerCommand(makeName(), {}); }'), /unsupported expression for docs extraction/);
 mustThrow('duplicate public registration', () => assertRegistrationFixture("export default function x(pi){ pi.registerCommand('same', {}); pi.registerCommand('same', {}); }"), /duplicate public registration/);
-mustThrow('invalid tool string metadata', () => assertRegistrationFixture("export default function x(pi){ pi.registerTool({ name: 'fixture', description: 42 }); }"), /description must be a literal string/);
-mustThrow('invalid tool guidelines metadata', () => assertRegistrationFixture("export default function x(pi){ pi.registerTool({ name: 'fixture', promptGuidelines: ['valid', 42] }); }"), /promptGuidelines must be a literal string array/);
+mustThrow('invalid tool string metadata', () => assertRegistrationFixture("export default function x(pi){ pi.registerTool({ name: 'fixture', description: 42 }); }"), /description must resolve to a string/);
+mustThrow('invalid tool guidelines metadata', () => assertRegistrationFixture("export default function x(pi){ pi.registerTool({ name: 'fixture', promptGuidelines: ['valid', 42] }); }"), /promptGuidelines must resolve to an array of strings/);
 mustThrow('shorthand tool metadata', () => assertRegistrationFixture("export default function x(pi){ const description = 'hidden'; pi.registerTool({ name: 'fixture', description }); }"), /public field description must be an explicit property assignment/);
 mustThrow('spread tool metadata', () => assertRegistrationFixture("export default function x(pi){ const metadata = { description: 'hidden' }; pi.registerTool({ name: 'fixture', ...metadata }); }"), /must not use object spread/);
-mustThrow('aliased registration method', () => assertRegistrationFixture("export default function x(pi){ const register = pi.registerCommand; register('hidden', {}); }"), /must be called directly/);
-mustThrow('bound registration method', () => assertRegistrationFixture("export default function x(pi){ const register = pi.registerTool.bind(pi); register({ name: 'hidden' }); }"), /unsupported helper invocation|must be called directly/);
-mustThrow('element-access registration', () => assertRegistrationFixture("export default function x(pi){ pi['registerCommand']('hidden', {}); }"), /element-access registration/);
-mustThrow('aliased registration host', () => assertRegistrationFixture("export default function x(pi){ const host = pi; host.registerCommand('hidden', {}); }"), /aliasing the Pi registration host/);
-mustThrow('unknown registration helper', () => assertRegistrationFixture("function hidden(host){} export default function x(pi){ hidden(pi); }"), /unsupported helper invocation receives the Pi registration host/);
+mustThrow('aliased registration method', () => assertRegistrationFixture("export default function x(pi){ const register = pi.registerCommand; register('hidden', {}); }"), /aliasing the Pi registration host|must be called directly/);
+mustThrow('bound registration method', () => assertRegistrationFixture("export default function x(pi){ const register = pi.registerTool.bind(pi); register({ name: 'hidden' }); }"), /aliasing the Pi registration host|unsupported (?:non-identifier )?helper invocation|must be called directly/);
+mustThrow('literal element-access registration', () => assertRegistrationFixture("export default function x(pi){ pi['registerCommand']('hidden', {}); }"), /element access on the Pi registration host|unsupported derived Pi registration invocation/);
+mustThrow('computed element-access registration', () => assertRegistrationFixture("export default function x(pi){ const key = 'register' + 'Command'; pi[key]('hidden', {}); }"), /element access on the Pi registration host|unsupported derived Pi registration invocation/);
+mustThrow('derived registration callee', () => assertRegistrationFixture("export default function x(pi){ ({ call: pi.registerCommand }).call('hidden', {}); }"), /unsupported derived Pi registration invocation/);
+mustThrow('nested returned host alias', () => assertRegistrationFixture("export default function x(pi){ function hidden(){ return pi; } hidden().registerCommand('hidden', {}); }"), /unsupported nested registration helper or invocation/);
+mustThrow('nested default host alias', () => assertRegistrationFixture("export default function x(pi){ function hidden(host = pi){ host.registerCommand('hidden', {}); } hidden(); }"), /unsupported nested registration helper or invocation/);
+mustThrow('aliased registration host', () => assertRegistrationFixture("export default function x(pi){ const host = (pi as any); host.registerCommand('hidden', {}); }"), /aliasing the Pi registration host or registration wrapper/);
+mustThrow('assigned registration host alias', () => assertRegistrationFixture("export default function x(pi){ let host; host = (pi satisfies unknown); host.registerCommand('hidden', {}); }"), /assigning a Pi registration host/);
+mustThrow('compound registration host alias', () => assertRegistrationFixture("export default function x(pi){ let host; host ??= pi; host.registerCommand('hidden', {}); }"), /assigning a Pi registration host/);
+mustThrow('iterated registration host alias', () => assertRegistrationFixture("export default function x(pi){ for (const host of [pi]) { host.registerCommand('hidden', {}); } }"), /Pi registration host escapes the supported direct-use grammar/);
+mustThrow('destructured Pi parameter', () => assertRegistrationFixture("export default function x({ registerCommand }){ registerCommand('hidden', {}); }"), /default export must have an identifier Pi parameter/);
+mustThrow('constructor receives Pi', () => assertRegistrationFixture("class Hidden { constructor(host: any) { host.registerCommand('hidden', {}); } } export default function x(pi){ new Hidden(pi); }"), /constructors must not receive or derive Pi registration hosts/);
+mustThrow('derived registration host alias', () => assertRegistrationFixture("export default function x(pi){ const host = { ...pi }; host.registerCommand('hidden', {}); }"), /aliasing the Pi registration host or registration wrapper/);
+mustThrow('unknown registration helper', () => assertRegistrationFixture("function hidden(host){} export default function x(pi){ hidden((pi as any)); }"), /unsupported helper invocation receives the Pi registration host/);
+assert.deepEqual(
+  assertRegistrationFixture("export default function x(pi){ (pi as any).registerCommand('normalized', {}); }"),
+  ['command:normalized'],
+  'normalized Pi host expressions must still be extracted',
+);
+
+const validToolFields = "name: 'fixture', label: 'Fixture', description: 'fixture', promptSnippet: 'fixture', promptGuidelines: ['fixture'], parameters: Type.Object({})";
+const wrapperDefinition = "function registerTool(options: any): void { pi.registerTool({ name: options.name, label: options.label, description: options.description, promptSnippet: options.promptSnippet, promptGuidelines: options.promptGuidelines, parameters: options.parameters }); }";
+assert.deepEqual(
+  assertRegistrationFixture(`export default function x(pi){ ${wrapperDefinition} (registerTool as typeof registerTool)({ ${validToolFields} }); }`),
+  ['tool:fixture'],
+  'cast wrapper calls must be normalized and extracted',
+);
+mustThrow(
+  'returned wrapper escape',
+  () => assertRegistrationFixture(`export default function x(pi){ ${wrapperDefinition} function hidden(){ return registerTool; } hidden()({ ${validToolFields} }); }`),
+  /unsupported nested registration helper or invocation/,
+);
+mustThrow(
+  'higher-order wrapper argument',
+  () => assertRegistrationFixture(`export default function x(pi){ ${wrapperDefinition} invoke(registerTool, { ${validToolFields} }); }`),
+  /registration wrappers must not be passed as arguments/,
+);
+mustThrow(
+  'constructor receives wrapper',
+  () => assertRegistrationFixture(`export default function x(pi){ ${wrapperDefinition} new Hidden(registerTool); }`),
+  /constructors must not receive or derive Pi registration hosts or wrappers/,
+);
+mustThrow(
+  'wrapper computed public path',
+  () => assertRegistrationFixture(`export default function x(pi){ function registerTool(options: any): void { pi.registerTool({ name: options['name'], label: options.label, description: options.description, promptSnippet: options.promptSnippet, promptGuidelines: options.promptGuidelines, parameters: options.parameters }); } registerTool({ ${validToolFields} }); }`),
+  /public field name must map directly from options\.name/,
+);
+mustThrow(
+  'wrapper spread hides public fields',
+  () => assertRegistrationFixture(`export default function x(pi){ function registerTool(options: any): void { pi.registerTool({ ...options }); } registerTool({ ${validToolFields} }); }`),
+  /must not use object spread/,
+);
+mustThrow(
+  'conditional registerTool inside wrapper',
+  () => assertRegistrationFixture(`export default function x(pi){ function registerTool(options: any): void { if (enabled) { pi.registerTool({ name: options.name, label: options.label, description: options.description, promptSnippet: options.promptSnippet, promptGuidelines: options.promptGuidelines, parameters: options.parameters }); } } registerTool({ ${validToolFields} }); }`),
+  /tool wrapper registerTool call must be an immediate top-level statement/,
+);
+mustThrow(
+  'conditional wrapper definition',
+  () => assertRegistrationFixture(`export default function x(pi){ if (enabled) { function registerTool(options: any): void { pi.registerTool({ name: options.name, label: options.label, description: options.description, promptSnippet: options.promptSnippet, promptGuidelines: options.promptGuidelines, parameters: options.parameters }); } registerTool({ ${validToolFields} }); } }`),
+  /tool wrapper definition must be top-level/,
+);
+mustThrow(
+  'conditional wrapper invocation',
+  () => assertRegistrationFixture(`export default function x(pi){ ${wrapperDefinition} if (enabled) { registerTool({ ${validToolFields} }); } }`),
+  /local registration-wrapper call must be an immediate top-level statement/,
+);
+mustThrow(
+  'conditional direct registration',
+  () => assertRegistrationFixture("export default function x(pi){ if (enabled) { pi.registerCommand('hidden', {}); } }"),
+  /public registration call must be an immediate top-level statement/,
+);
+mustThrow(
+  'wrapper secondary registration',
+  () => assertRegistrationFixture(`export default function x(pi){ function registerTool(options: any): void { pi.registerTool({ name: options.name, label: options.label, description: options.description, promptSnippet: options.promptSnippet, promptGuidelines: options.promptGuidelines, parameters: options.parameters }); pi.registerCommand('hidden', {}); } registerTool({ ${validToolFields} }); }`),
+  /exactly one direct registerTool call and no secondary registrations/,
+);
+mustThrow(
+  'nested wrapper invocation',
+  () => assertRegistrationFixture(`export default function x(pi){ ${wrapperDefinition} pi.on('event', () => { (registerTool as typeof registerTool)({ ${validToolFields} }); }); }`),
+  /unsupported nested registration helper or invocation|registration wrappers must not be passed as arguments/,
+);
+mustThrow(
+  'wrapper invokes second wrapper',
+  () => assertRegistrationFixture(`export default function x(pi){ function registerFirst(options: any): void { pi.registerTool({ name: options.name, label: options.label, description: options.description, promptSnippet: options.promptSnippet, promptGuidelines: options.promptGuidelines, parameters: options.parameters }); registerSecond(options); } function registerSecond(options: any): void { pi.registerTool({ name: options.name, label: options.label, description: options.description, promptSnippet: options.promptSnippet, promptGuidelines: options.promptGuidelines, parameters: options.parameters }); } registerFirst({ ${validToolFields} }); }`),
+  /wrapper must not invoke another registration helper/,
+);
+mustThrow(
+  'aliased local wrapper',
+  () => assertRegistrationFixture(`export default function x(pi){ ${wrapperDefinition} const hidden = registerTool; hidden({ ${validToolFields} }); }`),
+  /aliasing the Pi registration host or registration wrapper/,
+);
+assert.deepEqual(
+  assertRegistrationFixture({
+    entry: 'entry.ts',
+    files: {
+      'entry.ts': "import { registerFeature } from './feature.js'; export default function x(pi){ (registerFeature as typeof registerFeature)((pi)); }",
+      'feature.ts': "export function registerFeature(pi){ pi.registerCommand('imported', {}); }",
+    },
+  }),
+  ['command:imported'],
+  'normalized imported registrar calls must be extracted',
+);
+mustThrow(
+  'repeated imported registrar',
+  () => assertRegistrationFixture({
+    entry: 'entry.ts',
+    files: {
+      'entry.ts': "import { registerFeature } from './feature.js'; export default function x(pi){ registerFeature(pi); registerFeature(pi); }",
+      'feature.ts': "export function registerFeature(pi){ pi.registerCommand('imported', {}); }",
+    },
+  }),
+  /imported registration function .* is invoked more than once/,
+);
 
 mustThrow('mandatory gateway missing', () => checkPayloadFiles(['package.json', 'README.md', 'TESTING.md', 'TEST_PLAN.md', 'PUBLISHING.md', 'LICENSE', 'logo.png', 'extensions/background-tasks.ts', 'extensions/delegate-child.ts', 'extensions/fusion-child.ts']), /packed payload missing BACKGROUND-TASKS-INSTRUCTIONS\.md/);
 mustThrow('missing packed doc', () => checkPayloadFiles(['package.json', 'README.md', 'TESTING.md', 'TEST_PLAN.md', 'PUBLISHING.md', 'LICENSE', 'BACKGROUND-TASKS-INSTRUCTIONS.md', 'logo.png', 'extensions/background-tasks.ts', 'extensions/delegate-child.ts', 'extensions/fusion-child.ts']), /packed payload missing/);

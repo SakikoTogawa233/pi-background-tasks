@@ -89,7 +89,7 @@
       "state": "pass"
     },
     {
-      "authored_body_sha256": "sha256:0bcc2c31c037782d1585b2d6ca317924cd4d20bacd217145cb15d9b8a3ac54b7",
+      "authored_body_sha256": "sha256:6b1afc2083d3f21c704d5af62c6b2259217169002daedb5aa604b8631d4d2fd8",
       "covers_sources": [
         "extensions/fusion-child.ts",
         "src/core/fusion/artifacts.ts",
@@ -111,10 +111,10 @@
         "src/ui/fusion-model-selector.ts"
       ],
       "doc_id": "subsystems/fusion",
-      "notes": "Independent GPT-5.5 panel reviewed all Fusion behavior; final delta reviewer verified the 20-minute idle watchdog, unchanged 30-minute absolute timeout, activity reset, child_timeout termination, tests, and source-constant documentation.",
+      "notes": "Fusion investigate established agent_settled as the terminal audit boundary and required strict parser behavior; final implementation uses exclusive durable journal/seal I/O, rejects extension diagnostics, and focused lifecycle/incident/compatibility tests pass.",
       "rel": "docs/subsystems/fusion.md",
       "required": true,
-      "reviewer": "gpt-5.5-final-fusion-review-panel-plus-timeout-delta",
+      "reviewer": "fusion-investigate-agent-settled-panel-plus-regression-evidence",
       "state": "pass"
     },
     {
@@ -787,7 +787,7 @@
     "image": "https://raw.githubusercontent.com/ismailsaleekh/pi-background-tasks/main/logo.png",
     "name": "pi-background-tasks",
     "type": "module",
-    "version": "1.0.3"
+    "version": "1.0.4"
   },
   "public_surface_ids": [
     "command:bg",
