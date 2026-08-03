@@ -94,10 +94,11 @@
         "src/delegate-extension.ts"
       ],
       "doc_id": "subsystems/delegation",
+      "notes": "Independent GPT-5.5 panel reviewed all delegation behavior; final delta reviewer verified the 1200-second default, positive override handling, generated schema description, tests, and authored timeout documentation.",
       "rel": "docs/subsystems/delegation.md",
       "required": true,
-      "reviewer": "gpt-5.5-final-delegation-review-panel",
-      "state": "stale-authored-prose"
+      "reviewer": "gpt-5.5-final-delegation-review-panel-plus-timeout-delta",
+      "state": "pass"
     },
     {
       "authored_body_sha256": "sha256:0bcc2c31c037782d1585b2d6ca317924cd4d20bacd217145cb15d9b8a3ac54b7",
@@ -122,10 +123,11 @@
         "src/ui/fusion-model-selector.ts"
       ],
       "doc_id": "subsystems/fusion",
+      "notes": "Independent GPT-5.5 panel reviewed all Fusion behavior; final delta reviewer verified the 20-minute idle watchdog, unchanged 30-minute absolute timeout, activity reset, child_timeout termination, tests, and source-constant documentation.",
       "rel": "docs/subsystems/fusion.md",
       "required": true,
-      "reviewer": "gpt-5.5-final-fusion-review-panel",
-      "state": "stale-authored-prose"
+      "reviewer": "gpt-5.5-final-fusion-review-panel-plus-timeout-delta",
+      "state": "pass"
     },
     {
       "authored_body_sha256": "sha256:185e4ec320770ededfce51e1e8a5a166be8b4b11275b7515737f0305820555fe",
