@@ -208,6 +208,14 @@ function calibrationViolationName(prefix: string): string {
   return `${prefix}.calibration-violation.json`;
 }
 
+function artifactRefSha256Hex(value: string): string {
+  const hex = value.startsWith('sha256:') ? value.slice('sha256:'.length) : value;
+  if (!/^[0-9a-f]{64}$/u.test(hex)) {
+    throw errorForArtifact(`fusion artifact sha256 is not a lowercase hex digest: ${value}`);
+  }
+  return hex;
+}
+
 export class FusionArtifactStore {
   private readonly runDirAbs: string;
   private readonly runDirDisplay: string;
@@ -353,7 +361,7 @@ export class FusionArtifactStore {
   sourcePolicyLaunchReference(): { path: string; sha256: string } {
     const ref = this.manifest.artifacts['source-policy.private.json'];
     if (ref === undefined) throw errorForArtifact('research source policy has not been written');
-    return { path: this.artifactPath(ref.path), sha256: ref.sha256 };
+    return { path: this.artifactPath(ref.path), sha256: artifactRefSha256Hex(ref.sha256) };
   }
 
   /** Route capacities and the pre-candidate whole-workflow feasibility decision. */

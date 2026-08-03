@@ -204,7 +204,7 @@ export const FusionReasonParams = Type.Object(
     prompt: Type.String({
       minLength: 1,
       description:
-        'Self-contained reasoning request. Candidate children run in clean contexts with no tools.',
+        'Reasoning request. Candidate children run without tools over the reason workflow\'s projected conversation context.',
     }),
   },
   { additionalProperties: false },
@@ -1033,10 +1033,10 @@ export function registerFusionExtension(pi: ExtensionAPI): void {
     name: FUSION_REASON_TOOL_NAME,
     label: 'Fusion Reason',
     description:
-      'Run a five-model Fusion reason workflow for a self-contained prompt. Candidate children run in clean isolated contexts with no tools; evaluator and merger also run without tools.',
+      'Run a five-model Fusion reason workflow. Candidate children receive the reason projection and no tools; evaluator and merger also run without tools.',
     promptSnippet: 'Use fusion_reason for self-contained no-tool multi-model reasoning',
     promptGuidelines: [
-      'fusion_reason requires a self-contained {prompt}; candidates do not inherit tools or repository access, so include all facts they need.',
+      'fusion_reason requires {prompt}; candidates receive the reason workflow projection but do not inherit tools or repository access, so restate any facts that exist only in omitted tool output.',
       'fusion_reason is for reasoning only. It has no capability argument and no public mode switches.',
     ],
     parameters: FusionReasonParams,

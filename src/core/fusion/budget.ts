@@ -936,7 +936,7 @@ export class FusionBudget {
     return new FusionError(message, details);
   }
 
-  private planMetadata(input?: FusionCanonicalInputV3): Pick<FusionBudgetPlanV1, 'workflow' | 'context' | 'fixed_candidate_policy'> {
+  private planMetadata(input?: FusionCanonicalInputV3): Pick<FusionBudgetPlanV1, 'workflow' | 'context' | 'fixed_candidate_policy' | 'tool_policy'> {
     return {
       workflow: this.profile.id,
       context: {
@@ -946,6 +946,11 @@ export class FusionBudget {
       fixed_candidate_policy: {
         capability: this.candidateCapability,
         tools: this.profile.candidateTools,
+      },
+      tool_policy: {
+        candidate_tools: this.profile.candidateTools,
+        evaluation_tools: [] as readonly [],
+        merge_tools: [] as readonly [],
       },
     };
   }

@@ -220,6 +220,8 @@ export const DELEGATE_FORBIDDEN_TOOLS: readonly string[] = [
   'bg_delegate',
   'bg_result',
   'bg_kill',
+  'bg_status',
+  'bg_logs',
   'bg_run_pi_attested',
   'fusion_brainstorm',
   'fusion_reason',

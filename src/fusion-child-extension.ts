@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { closeSync, fsyncSync, lstatSync, openSync, readFileSync, writeSync } from 'node:fs';
+import { closeSync, constants, fstatSync, fsyncSync, openSync, readFileSync, writeSync } from 'node:fs';
 import type { Usage } from '@earendil-works/pi-ai';
 import type { ExtensionAPI } from '@earendil-works/pi-coding-agent';
 import { Type, type Static } from 'typebox';
@@ -25,6 +25,8 @@ export const FUSION_TOOL_CALL_LOG_PATH_ENV = 'PI_FUSION_TOOL_CALL_LOG_PATH';
 export const FUSION_RESEARCH_ENABLED_ENV = 'PI_FUSION_RESEARCH_ENABLED';
 export const FUSION_SOURCE_POLICY_PATH_ENV = 'PI_FUSION_SOURCE_POLICY_PATH';
 export const FUSION_SOURCE_POLICY_SHA256_ENV = 'PI_FUSION_SOURCE_POLICY_SHA256';
+
+const FUSION_CHILD_O_NOFOLLOW = typeof constants.O_NOFOLLOW === 'number' ? constants.O_NOFOLLOW : 0;
 
 /**
  * Aggregate ceiling on tool-result bytes a single candidate child may accumulate.
@@ -206,7 +208,9 @@ function stringField(value: object, key: string): string | undefined {
 }
 
 function fetchAuditMetadataFromObject(value: object, fallbackUrl: string): FusionWebFetchAuditMetadata {
-  const metadata: FusionWebFetchAuditMetadata = { url: stringField(value, 'url') ?? fallbackUrl };
+  const metadata: FusionWebFetchAuditMetadata = {
+    url: stringField(value, 'url') ?? canonicalizeFusionPublicUrl(fallbackUrl),
+  };
   const finalUrl = stringField(value, 'final_url');
   if (finalUrl !== undefined) metadata.final_url = finalUrl;
   const status = numberField(value, 'status');
@@ -228,6 +232,25 @@ function fetchAuditMetadataFromError(error: unknown, attemptedUrl: string): Fusi
 }
 
 
+function readRegularFileNoSymlinkSync(path: string, label: string): Buffer {
+  let fd: number | undefined;
+  try {
+    fd = openSync(path, constants.O_RDONLY | FUSION_CHILD_O_NOFOLLOW);
+  } catch (error) {
+    if (typeof error === 'object' && error !== null && Reflect.get(error, 'code') === 'ELOOP') {
+      throw new Error(`${label} at ${path} is a symlink; refusing to follow it`);
+    }
+    throw error;
+  }
+  try {
+    const stats = fstatSync(fd);
+    if (!stats.isFile()) throw new Error(`${label} at ${path} is not a regular file`);
+    return readFileSync(fd);
+  } finally {
+    if (fd !== undefined) closeSync(fd);
+  }
+}
+
 function loadDeclaredResearchUrls(): ReadonlySet<string> {
   const policyPath = process.env[FUSION_SOURCE_POLICY_PATH_ENV];
   const expectedHash = process.env[FUSION_SOURCE_POLICY_SHA256_ENV];
@@ -235,9 +258,7 @@ function loadDeclaredResearchUrls(): ReadonlySet<string> {
     throw new Error(`${FUSION_WEB_FETCH_TOOL_NAME} research mode requires source policy path and sha256`);
   }
   if (!/^[0-9a-f]{64}$/.test(expectedHash)) throw new Error('fusion source policy hash is malformed');
-  const stats = lstatSync(policyPath);
-  if (!stats.isFile()) throw new Error(`fusion source policy at ${policyPath} is not a regular file`);
-  const bytes = readFileSync(policyPath);
+  const bytes = readRegularFileNoSymlinkSync(policyPath, 'fusion source policy');
   if (sha256(bytes) !== expectedHash) throw new Error('fusion source policy hash mismatch');
   const text = bytes.toString('utf8');
   if (!Buffer.from(text, 'utf8').equals(bytes)) throw new Error('fusion source policy is not UTF-8');
@@ -357,6 +378,9 @@ export default function fusionChildExtension(pi: ExtensionAPI): void {
       async execute(toolCallId, params) {
         try {
           const canonicalUrl = canonicalizeFusionPublicUrl(params.url);
+          if (params.url !== canonicalUrl) {
+            throw new Error(`${FUSION_WEB_FETCH_TOOL_NAME} URL must exactly match its declared canonical URL`);
+          }
           if (declaredResearchUrls === undefined || !declaredResearchUrls.has(canonicalUrl)) {
             throw new Error(`${FUSION_WEB_FETCH_TOOL_NAME} URL was not declared in the research source policy`);
           }

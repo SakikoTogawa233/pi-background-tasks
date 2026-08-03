@@ -46,6 +46,12 @@ export function buildFusionCleanTaskCanonicalInput(
       childCreated: false,
     });
   }
+  if (!['investigate', 'research', 'validate'].includes(options.workflow)) {
+    throw new FusionError('clean-task fusion input is available only to investigate, research, and validate workflows', {
+      code: 'context_capture_failed',
+      childCreated: false,
+    });
+  }
   const declaredSources = normalizeFusionDeclaredSources(options.declaredSources ?? []);
   if (options.workflow === 'research' && declaredSources.length === 0) {
     throw new FusionError('fusion research requires at least one declared source URL and purpose', {

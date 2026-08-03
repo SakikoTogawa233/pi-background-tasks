@@ -389,8 +389,8 @@ function validateEvaluationAccountsForSourceFindings(
   if (accounting === undefined) {
     return ['validation evaluator output must include validation_accounting'];
   }
-  const expected = sourceFindings.map((finding) => JSON.stringify(finding)).sort();
-  const actual = accounting.findings.map((finding) => JSON.stringify(finding)).sort();
+  const expected = sourceFindings.map((finding) => canonicalJson(finding)).sort();
+  const actual = accounting.findings.map((finding) => canonicalJson(finding)).sort();
   if (expected.length !== actual.length || expected.some((value, index) => value !== actual[index])) {
     errors.push('validation evaluator validation_accounting.findings must exactly equal host-assigned source findings');
   }
@@ -398,6 +398,25 @@ function validateEvaluationAccountsForSourceFindings(
   return errors;
 }
 
+
+function resolveRunProfile(input: FusionWorkflowInput): FusionWorkflowProfile {
+  if (input.profile !== undefined) return fusionWorkflowProfile(input.profile.id);
+  const workflow = input.canonicalInput.workflow;
+  const contextKind = input.canonicalInput.context?.kind;
+  if (workflow !== undefined && workflow !== 'reason') {
+    throw new FusionError(`fusion workflow profile is required for ${workflow} runs`, {
+      code: 'orchestration_failed',
+      childCreated: false,
+    });
+  }
+  if (contextKind === 'clean_task') {
+    throw new FusionError('fusion workflow profile is required for clean-task runs', {
+      code: 'orchestration_failed',
+      childCreated: false,
+    });
+  }
+  return fusionWorkflowProfile('reason');
+}
 
 export class FusionOrchestrator {
   private readonly childRunner: FusionChildRunner;
@@ -421,7 +440,7 @@ export class FusionOrchestrator {
         childCreated: false,
       });
     }
-    const profile = fusionWorkflowProfile(input.profile?.id ?? 'reason');
+    const profile = resolveRunProfile(input);
     const inputWorkflow = input.canonicalInput.workflow ?? profile.id;
     const inputContextKind = input.canonicalInput.context?.kind ?? 'session_projection';
     if (inputWorkflow !== profile.id || inputContextKind !== profile.contextKind) {

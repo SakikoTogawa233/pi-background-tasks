@@ -37,12 +37,6 @@ export interface FusionWorkflowProfile {
   readonly contextKind: FusionContextKind;
   readonly candidateCapability: FusionCapability;
   readonly candidateTools: readonly string[];
-  /** @deprecated v4 profile compatibility only. */
-  readonly capabilityPolicy?: 'fixed' | 'caller_selected';
-  /** @deprecated v4 profile compatibility only. */
-  readonly fixedCapability?: FusionCapability | undefined;
-  /** @deprecated v4 profile compatibility only. */
-  readonly defaultCapability?: FusionCapability | undefined;
   readonly evaluatorCapability: typeof FUSION_NO_TOOLS_CAPABILITY;
   readonly evaluatorTools: readonly [];
   readonly mergeCapability: typeof FUSION_NO_TOOLS_CAPABILITY;
@@ -59,9 +53,6 @@ function freezeProfile(profile: FusionWorkflowProfile): FusionWorkflowProfile {
   return Object.freeze({
     ...profile,
     candidateTools: Object.freeze([...profile.candidateTools]),
-    capabilityPolicy: 'fixed',
-    fixedCapability: profile.candidateCapability,
-    defaultCapability: profile.candidateCapability,
     evaluatorTools: empty,
     mergeTools: empty,
   });

@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
-import { lstat, readFile } from 'node:fs/promises';
+import { constants } from 'node:fs';
+import { open } from 'node:fs/promises';
 import { isIP } from 'node:net';
 import { canonicalJson } from '../attested-pi-run.js';
 import { isJsonObject, parseJsonText } from '../common.js';
@@ -11,6 +12,7 @@ import {
 } from './types.js';
 
 const SHA256_HEX = /^[0-9a-f]{64}$/;
+const O_NOFOLLOW = typeof constants.O_NOFOLLOW === 'number' ? constants.O_NOFOLLOW : 0;
 
 function sha256Text(value: string): string {
   return createHash('sha256').update(value, 'utf8').digest('hex');
@@ -128,19 +130,35 @@ export interface DeclaredFusionSourceInput {
 export function normalizeFusionDeclaredSources(
   sources: readonly DeclaredFusionSourceInput[] = [],
 ): readonly FusionDeclaredSourceV1[] {
+  const seen = new Map<string, number>();
   return sources.map((source, index) => {
+    if (typeof source.url !== 'string' || source.url.trim().length === 0) {
+      throw new FusionError(`fusion research source ${String(index)} requires non-blank URL`, {
+        code: 'orchestration_failed',
+        childCreated: false,
+      });
+    }
     if (typeof source.purpose !== 'string' || source.purpose.trim().length === 0) {
       throw new FusionError(`fusion research source ${String(index)} requires non-blank purpose`, {
         code: 'orchestration_failed',
         childCreated: false,
       });
     }
-    const canonicalUrl = canonicalizeFusionPublicUrl(source.url);
+    const canonicalUrl = canonicalizeFusionPublicUrl(source.url.trim());
+    const previous = seen.get(canonicalUrl);
+    if (previous !== undefined) {
+      throw new FusionError(
+        `fusion research source ${String(index)} duplicates canonical URL from source ${String(previous)}: ${canonicalUrl}`,
+        { code: 'orchestration_failed', childCreated: false },
+      );
+    }
+    seen.set(canonicalUrl, index);
+    const purpose = source.purpose.trim();
     return {
-      url: source.url,
+      url: canonicalUrl,
       canonical_url: canonicalUrl,
-      purpose: source.purpose,
-      sha256: sha256Text(`${canonicalUrl}\u0000${source.purpose}`),
+      purpose,
+      sha256: sha256Text(`${canonicalUrl}\u0000${purpose}`),
     };
   });
 }
@@ -191,19 +209,45 @@ export function parseFusionSourcePolicy(value: unknown): FusionSourcePolicyV1 {
     const sha256 = requireString(item, 'sha256', label);
     if (!SHA256_HEX.test(sha256)) throw new Error(`${label}.sha256 must be sha256`);
     if (canonicalizeFusionPublicUrl(url) !== canonical_url) throw new Error(`${label}.canonical_url mismatch`);
+    if (url !== canonical_url) throw new Error(`${label}.url must equal canonical_url`);
+    if (purpose.trim() !== purpose) throw new Error(`${label}.purpose must be trimmed`);
     if (sha256Text(`${canonical_url}\u0000${purpose}`) !== sha256) throw new Error(`${label}.sha256 mismatch`);
     return { url, canonical_url, purpose, sha256 };
   });
+  const seen = new Set<string>();
+  for (const [index, source] of sources.entries()) {
+    if (seen.has(source.canonical_url)) {
+      throw new Error(`fusion source policy.sources[${String(index)}].canonical_url duplicate`);
+    }
+    seen.add(source.canonical_url);
+  }
   const body = { schema_version: FUSION_SOURCE_POLICY_SCHEMA_VERSION, workflow: 'research' as const, cwd, sources } as const;
   if (sha256Text(canonicalJson(body)) !== rootSha256) throw new Error('fusion source policy root_sha256 mismatch');
   return { ...body, root_sha256: rootSha256 };
 }
 
+async function readRegularFileNoSymlink(path: string, label: string): Promise<Buffer> {
+  let handle: Awaited<ReturnType<typeof open>>;
+  try {
+    handle = await open(path, constants.O_RDONLY | O_NOFOLLOW);
+  } catch (error) {
+    if (isJsonObject(error) && error['code'] === 'ELOOP') {
+      throw new Error(`${label} at ${path} is a symlink; refusing to follow it`);
+    }
+    throw error;
+  }
+  try {
+    const stats = await handle.stat();
+    if (!stats.isFile()) throw new Error(`${label} at ${path} is not a regular file`);
+    return await handle.readFile();
+  } finally {
+    await handle.close();
+  }
+}
+
 export async function readFusionSourcePolicyFile(path: string, expectedSha256: string): Promise<FusionSourcePolicyV1> {
   if (!SHA256_HEX.test(expectedSha256)) throw new Error('fusion source policy expected hash is malformed');
-  const stats = await lstat(path);
-  if (!stats.isFile()) throw new Error(`fusion source policy at ${path} is not a regular file`);
-  const bytes = await readFile(path);
+  const bytes = await readRegularFileNoSymlink(path, 'fusion source policy');
   const actual = createHash('sha256').update(bytes).digest('hex');
   if (actual !== expectedSha256) throw new Error('fusion source policy artifact hash mismatch');
   const text = bytes.toString('utf8');

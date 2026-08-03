@@ -1,7 +1,7 @@
 import { spawn as nodeSpawn, type SpawnOptions } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { existsSync, readFileSync } from 'node:fs';
-import { lstat, readFile } from 'node:fs/promises';
+import { constants, existsSync, readFileSync } from 'node:fs';
+import { open } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -61,6 +61,7 @@ export const FUSION_CHILD_TIMEOUT_MS = 30 * 60 * 1000;
 export const FUSION_CHILD_IDLE_TIMEOUT_MS = 15 * 60 * 1000;
 export const FUSION_CHILD_KILL_GRACE_MS = 3000;
 export const FUSION_CHILD_SIGKILL_WAIT_MS = 5000;
+const FUSION_PI_CHILD_O_NOFOLLOW = typeof constants.O_NOFOLLOW === 'number' ? constants.O_NOFOLLOW : 0;
 
 export const FUSION_CHILD_REMOVED_ENV_KEYS = [
   'PI_SESSION_ID',
@@ -725,9 +726,22 @@ async function assertCompletedToolPolicy(
       if (record.status === 'ok') {
         if (record.url === undefined) throw new Error('fusion research fetch audit is missing url');
         const canonicalUrl = canonicalizeFusionPublicUrl(record.url);
+        if (record.url !== canonicalUrl) throw new Error('fusion research fetch audit URL was not canonical');
         if (!declared.has(canonicalUrl)) throw new Error('fusion research fetch audit URL was not declared');
-      } else if (record.url !== undefined) {
-        throw new Error('fusion research rejected fetch audit must not persist raw URL');
+        if (record.rejected_url_sha256 !== undefined) {
+          throw new Error('fusion research successful fetch audit must not include rejected_url_sha256');
+        }
+        if (record.final_url === undefined) throw new Error('fusion research fetch audit is missing final_url');
+        if (record.http_status === undefined) throw new Error('fusion research fetch audit is missing http_status');
+        if (record.response_bytes === undefined) throw new Error('fusion research fetch audit is missing response_bytes');
+        if (record.content_sha256 === undefined) throw new Error('fusion research fetch audit is missing content_sha256');
+      } else {
+        if (record.url !== undefined || record.final_url !== undefined) {
+          throw new Error('fusion research rejected fetch audit must not persist raw URL');
+        }
+        if (record.rejected_url_sha256 === undefined) {
+          throw new Error('fusion research rejected fetch audit is missing rejected_url_sha256');
+        }
       }
     }
   }
@@ -738,9 +752,9 @@ function isNotFound(error: unknown): boolean {
 }
 
 async function readFusionToolCallLog(path: string): Promise<FusionToolCallTrace> {
-  let bytes: Buffer;
+  let handle: Awaited<ReturnType<typeof open>>;
   try {
-    bytes = await readFile(path);
+    handle = await open(path, constants.O_RDONLY | FUSION_PI_CHILD_O_NOFOLLOW);
   } catch (error) {
     // The child extension creates this file before tools can run, so a missing file
     // means the audit trail was never established - not that zero tools were used. Those
@@ -751,19 +765,27 @@ async function readFusionToolCallLog(path: string): Promise<FusionToolCallTrace>
         `fusion tool-call log is missing at ${path}; the inspect child never initialized its audit trail`,
       );
     }
+    if (isJsonObject(error) && error['code'] === 'ELOOP') {
+      throw new Error(
+        `fusion tool-call log at ${path} is a symlink; refusing to trust a redirected audit trail`,
+      );
+    }
     throw error;
   }
-  // The audit trail must be a real file inside the run directory. A symlink here would let
-  // anything able to pre-create the path redirect the parent's read elsewhere, so the type
-  // is checked explicitly rather than trusting the 0700 run directory alone. lstat does not
-  // follow the link, so a symlinked path is rejected instead of silently resolved.
-  const stats = await lstat(path);
-  if (!stats.isFile()) {
-    throw new Error(
-      `fusion tool-call log at ${path} is not a regular file; refusing to trust a redirected audit trail`,
-    );
+  try {
+    // The audit trail must be a real file inside the run directory. A symlink here would let
+    // anything able to pre-create the path redirect the parent's read elsewhere, so the file
+    // is opened with O_NOFOLLOW and then fstat-checked before any bytes are trusted.
+    const stats = await handle.stat();
+    if (!stats.isFile()) {
+      throw new Error(
+        `fusion tool-call log at ${path} is not a regular file; refusing to trust a redirected audit trail`,
+      );
+    }
+    return parseFusionToolCallLog(await handle.readFile());
+  } finally {
+    await handle.close();
   }
-  return parseFusionToolCallLog(bytes);
 }
 
 function sha256Buffer(bytes: Buffer): string {

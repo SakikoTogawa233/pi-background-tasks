@@ -888,6 +888,7 @@ export interface FusionBudgetPlanV1 {
   workflow: FusionWorkflowId;
   context: { kind: FusionContextKind; policy_id: string };
   fixed_candidate_policy: { capability: FusionCapability; tools: readonly string[] };
+  tool_policy: { candidate_tools: readonly string[]; evaluation_tools: readonly []; merge_tools: readonly [] };
   policy: FusionBudgetPolicyDescriptor;
   routes: readonly FusionRouteCapacity[];
   stages: readonly FusionStageBudgetPlanEntry[];
