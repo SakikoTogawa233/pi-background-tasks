@@ -9,7 +9,7 @@ import {
 } from '../../src/ui/fusion-model-selector.js';
 import { CURRENT_MODEL_SELECTION, defaultFusionModelConfig } from '../../src/core/fusion/config.js';
 import type { FusionModelConfigV1 } from '../../src/core/fusion/types.js';
-import { stripAnsi } from '../../src/testing/normalize.js';
+import { stripAnsi } from '../helpers/normalize.js';
 
 const themeColors: readonly ThemeColor[] = [
   'accent',

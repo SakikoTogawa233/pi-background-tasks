@@ -1194,7 +1194,6 @@ void describe('package', () => {
       'src/core/fusion/orchestrator.ts',
       'src/core/fusion/budget.ts',
       'src/core/fusion/web-fetch.ts',
-      'src/testing/normalize.ts',
       'README.md',
       'BACKGROUND-TASKS-INSTRUCTIONS.md',
       'logo.png',

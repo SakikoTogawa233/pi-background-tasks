@@ -34,20 +34,6 @@
       "verdict": "PASS"
     },
     {
-      "authored_body_sha256": "sha256:dc7ed44638216b8131099dd89eabaac0e81f79736d468a3e4a298a3e7c6500b8",
-      "covers_sources": [
-        "src/testing/normalize.ts"
-      ],
-      "doc_id": "operations/testing",
-      "notes": "Reviewed isolated test environment and output normalization source against operations/testing, and verified every documented focused, full, smoke, compatibility, docs, payload, pack, and release script in package.json.",
-      "reviewer": "gpt-5.5-final-testing-contract-reviewer",
-      "schema_version": "pi-background-tasks.docs-attestation.v1",
-      "source_sha256": {
-        "src/testing/normalize.ts": "sha256:724772449cf44f1fcab4b492da9334db3990ddbf9aa682ef5ce49dd7584d5167"
-      },
-      "verdict": "PASS"
-    },
-    {
       "authored_body_sha256": "sha256:4d3d0ba1534c8ea5368e201fbf8fc7d52f2fbb353262d4af1ead263548547356",
       "covers_sources": [
         "src/core/attested-pi-run.ts"
@@ -188,13 +174,13 @@
         "src/ui/background-tasks-manager.ts"
       ],
       "doc_id": "subsystems/host-ui-and-telemetry",
-      "notes": "Independent GPT-5.5 panel reviewed entrypoint registrations, update checks, task-manager UI, telemetry and shutdown; correction re-review verified exact-ID detail, focused footer, hidden clear hint, and detail-driven seen badges.",
-      "reviewer": "gpt-5.5-final-host-ui-review-panel",
+      "notes": "Existing independent GPT-5.5 panel reviewed the host subsystem; operator delta review verified /bg-update no longer derives git tags from npm versions and SDK assertions pin main plus explicit tag verification.",
+      "reviewer": "existing-gpt-5.5-host-panel-plus-operator-update-delta",
       "schema_version": "pi-background-tasks.docs-attestation.v1",
       "source_sha256": {
         "extensions/background-tasks.ts": "sha256:b221129d3a1449606de6e7c04bd8989c6b7feee3eaf5122339c2d45cffadf74f",
         "src/core/update-check.ts": "sha256:7f754a43288c8c7dae1518f4a8c3fa7f1b5499864c5c54ae279188661aa0412d",
-        "src/extension.ts": "sha256:ccdca230234d4af157e66f437556db624e22828a47d76cfcda152f444c5d67cd",
+        "src/extension.ts": "sha256:65b8d2a23555a244eb1ed1ef5ad5ab3aa1d70eb59e3f4f4d69efdfb553e34218",
         "src/ui/background-tasks-manager.ts": "sha256:96c71807767499887ab3417e5eabac973a19221e4f2e985e2218d4ad672dd687"
       },
       "verdict": "PASS"

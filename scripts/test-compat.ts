@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { isDeepStrictEqual } from 'node:util';
 import { parseJsonText } from '../src/core/common.js';
-import { isolatedTestEnv } from '../src/testing/normalize.js';
+import { isolatedTestEnv } from '../tests/helpers/normalize.js';
 import { installFusionFakePi, resolveRealPiCli } from '../tests/helpers/fusion-fake-pi.js';
 
 const requiredVersions = ['0.75.5', '0.81.1', '0.82.1', '0.83.0'] as const;

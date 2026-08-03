@@ -27,18 +27,6 @@
       "state": "pass"
     },
     {
-      "authored_body_sha256": "sha256:dc7ed44638216b8131099dd89eabaac0e81f79736d468a3e4a298a3e7c6500b8",
-      "covers_sources": [
-        "src/testing/normalize.ts"
-      ],
-      "doc_id": "operations/testing",
-      "notes": "Reviewed isolated test environment and output normalization source against operations/testing, and verified every documented focused, full, smoke, compatibility, docs, payload, pack, and release script in package.json.",
-      "rel": "docs/operations/testing.md",
-      "required": true,
-      "reviewer": "gpt-5.5-final-testing-contract-reviewer",
-      "state": "pass"
-    },
-    {
       "authored_body_sha256": "sha256:4d3d0ba1534c8ea5368e201fbf8fc7d52f2fbb353262d4af1ead263548547356",
       "covers_sources": [
         "src/core/attested-pi-run.ts"
@@ -138,10 +126,10 @@
         "src/ui/background-tasks-manager.ts"
       ],
       "doc_id": "subsystems/host-ui-and-telemetry",
-      "notes": "Independent GPT-5.5 panel reviewed entrypoint registrations, update checks, task-manager UI, telemetry and shutdown; correction re-review verified exact-ID detail, focused footer, hidden clear hint, and detail-driven seen badges.",
+      "notes": "Existing independent GPT-5.5 panel reviewed the host subsystem; operator delta review verified /bg-update no longer derives git tags from npm versions and SDK assertions pin main plus explicit tag verification.",
       "rel": "docs/subsystems/host-ui-and-telemetry.md",
       "required": true,
-      "reviewer": "gpt-5.5-final-host-ui-review-panel",
+      "reviewer": "existing-gpt-5.5-host-panel-plus-operator-update-delta",
       "state": "pass"
     }
   ],
@@ -330,13 +318,11 @@
     },
     "operations/testing": {
       "audience": "maintainer",
-      "covers_sources": [
-        "src/testing/normalize.ts"
-      ],
+      "covers_sources": [],
       "covers_surfaces": [],
       "mode": "authored",
       "rel": "docs/operations/testing.md",
-      "review_policy": "behavioral",
+      "review_policy": "contract",
       "stability": "evolving"
     },
     "operations/troubleshooting": {
@@ -801,7 +787,7 @@
     "image": "https://raw.githubusercontent.com/ismailsaleekh/pi-background-tasks/main/logo.png",
     "name": "pi-background-tasks",
     "type": "module",
-    "version": "1.0.2"
+    "version": "1.0.3"
   },
   "public_surface_ids": [
     "command:bg",
@@ -1736,9 +1722,6 @@
     ],
     "src/fusion-extension.ts": [
       "subsystems/fusion"
-    ],
-    "src/testing/normalize.ts": [
-      "operations/testing"
     ],
     "src/ui/background-tasks-manager.ts": [
       "subsystems/host-ui-and-telemetry"

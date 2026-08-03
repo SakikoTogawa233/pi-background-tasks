@@ -565,9 +565,48 @@ function commandDetails(ts, root, rel, name, call, cache) {
   return { description, source };
 }
 
+const PUBLIC_REGISTRATION_METHODS = new Set([
+  'registerCommand',
+  'registerShortcut',
+  'registerMessageRenderer',
+  'registerTool',
+]);
+
 function collectRegistrationsInFunction(ts, root, rel, fn, piParamName, cache, regs, visitedFns) {
   const info = moduleInfo(ts, root, rel, cache);
   const localWrapperNames = new Set();
+
+  const containsRegistrationReference = (rootNode) => {
+    let found = false;
+    const scan = (node) => {
+      if (found) return;
+      if (
+        ts.isPropertyAccessExpression(node) &&
+        node.expression.getText(info.sf) === piParamName &&
+        node.name.text.startsWith('register')
+      ) {
+        found = true;
+        return;
+      }
+      if (
+        ts.isElementAccessExpression(node) &&
+        node.expression.getText(info.sf) === piParamName
+      ) {
+        const key = node.argumentExpression;
+        if (
+          key &&
+          (ts.isStringLiteral(key) || ts.isNoSubstitutionTemplateLiteral(key)) &&
+          key.text.startsWith('register')
+        ) {
+          found = true;
+          return;
+        }
+      }
+      ts.forEachChild(node, scan);
+    };
+    scan(rootNode);
+    return found;
+  };
 
   function detectWrappers(node) {
     if (ts.isFunctionDeclaration(node) && node.name && node.body) {
@@ -586,7 +625,60 @@ function collectRegistrationsInFunction(ts, root, rel, fn, piParamName, cache, r
   detectWrappers(fn.body ?? fn);
 
   function visit(node) {
-    if (ts.isFunctionDeclaration(node) && node !== fn) return;
+    if (node !== fn && ts.isFunctionLike(node)) {
+      if (
+        ts.isFunctionDeclaration(node) &&
+        node.name &&
+        localWrapperNames.has(node.name.text)
+      ) {
+        return;
+      }
+      if (containsRegistrationReference(node)) {
+        throw new DocsGateError(
+          `${lineOf(info.sf, node, ts)} unsupported nested registration helper; use a supported function-declaration tool wrapper`,
+        );
+      }
+      return;
+    }
+    if (
+      ts.isVariableDeclaration(node) &&
+      node.initializer?.getText(info.sf) === piParamName
+    ) {
+      throw new DocsGateError(
+        `${lineOf(info.sf, node, ts)} aliasing the Pi registration host is unsupported`,
+      );
+    }
+    if (
+      ts.isElementAccessExpression(node) &&
+      node.expression.getText(info.sf) === piParamName
+    ) {
+      const key = node.argumentExpression;
+      if (
+        key &&
+        (ts.isStringLiteral(key) || ts.isNoSubstitutionTemplateLiteral(key)) &&
+        key.text.startsWith('register')
+      ) {
+        throw new DocsGateError(
+          `${lineOf(info.sf, node, ts)} element-access registration ${key.text} is unsupported`,
+        );
+      }
+    }
+    if (
+      ts.isPropertyAccessExpression(node) &&
+      node.expression.getText(info.sf) === piParamName &&
+      node.name.text.startsWith('register')
+    ) {
+      if (!PUBLIC_REGISTRATION_METHODS.has(node.name.text)) {
+        throw new DocsGateError(
+          `${lineOf(info.sf, node, ts)} unsupported public registration API ${node.name.text}`,
+        );
+      }
+      if (!(ts.isCallExpression(node.parent) && node.parent.expression === node)) {
+        throw new DocsGateError(
+          `${lineOf(info.sf, node, ts)} registration API ${node.name.text} must be called directly and must not be aliased or bound`,
+        );
+      }
+    }
     if (ts.isCallExpression(node)) {
       if (ts.isPropertyAccessExpression(node.expression) && node.expression.expression.getText(info.sf) === piParamName) {
         const method = node.expression.name.text;
@@ -626,13 +718,24 @@ function collectRegistrationsInFunction(ts, root, rel, fn, piParamName, cache, r
         if (imported && first?.getText(info.sf) === piParamName) {
           const next = findExportedFunction(ts, root, imported.rel, imported.exported, cache);
           const nextKey = `${next.rel}:${imported.exported}`;
-          if (!visitedFns.has(nextKey)) {
-            visitedFns.add(nextKey);
-            const nextPi = next.node.parameters[0]?.name?.getText(moduleInfo(ts, root, next.rel, cache).sf);
-            if (!nextPi) throw new DocsGateError(`${next.rel} exported registration function has no pi parameter`);
-            collectRegistrationsInFunction(ts, root, next.rel, next.node, nextPi, cache, regs, visitedFns);
+          if (visitedFns.has(nextKey)) {
+            throw new DocsGateError(
+              `${lineOf(info.sf, node, ts)} imported registration function ${nextKey} is invoked more than once`,
+            );
           }
+          visitedFns.add(nextKey);
+          const nextPi = next.node.parameters[0]?.name?.getText(moduleInfo(ts, root, next.rel, cache).sf);
+          if (!nextPi) throw new DocsGateError(`${next.rel} exported registration function has no pi parameter`);
+          collectRegistrationsInFunction(ts, root, next.rel, next.node, nextPi, cache, regs, visitedFns);
+        } else if (node.arguments.some((argument) => argument.getText(info.sf) === piParamName)) {
+          throw new DocsGateError(
+            `${lineOf(info.sf, node, ts)} unsupported helper invocation receives the Pi registration host`,
+          );
         }
+      } else if (node.arguments.some((argument) => argument.getText(info.sf) === piParamName)) {
+        throw new DocsGateError(
+          `${lineOf(info.sf, node, ts)} unsupported non-identifier helper invocation receives the Pi registration host`,
+        );
       }
     }
     ts.forEachChild(node, visit);
@@ -1231,6 +1334,14 @@ export function assertCoverage(codeFacts, docsModel) {
   const surfaceOwners = new Map();
   const sourceOwners = new Map();
   for (const doc of docsModel.docs) {
+    if (
+      doc.frontmatter.covers_sources.length > 0 &&
+      doc.frontmatter.review_policy !== 'behavioral'
+    ) {
+      throw new DocsGateError(
+        `${doc.rel}: production source owners must use review_policy behavioral`,
+      );
+    }
     for (const surface of doc.frontmatter.covers_surfaces) {
       if (!knownSurfaces.has(surface)) throw new DocsGateError(`${doc.rel}: unknown public surface ${surface}`);
       if (surfaceOwners.has(surface)) throw new DocsGateError(`${surface} has duplicate primary docs ${surfaceOwners.get(surface)} and ${doc.doc_id}`);
@@ -1393,7 +1504,28 @@ function expectedSourceHashes(root, doc) {
 export function verifyAttestations(root, docsModel, receiptsDoc = readAttestations(root), options = {}) {
   const strict = options.strict !== false;
   const receipts = Array.isArray(receiptsDoc) ? receiptsDoc : receiptsDoc.receipts;
-  const byDoc = new Map(receipts.map((r) => [r.doc_id, r]));
+  const requiredDocIds = new Set(
+    docsModel.docs
+      .filter(
+        (doc) =>
+          doc.frontmatter.review_policy === 'behavioral' &&
+          doc.frontmatter.covers_sources.length > 0,
+      )
+      .map((doc) => doc.doc_id),
+  );
+  const byDoc = new Map();
+  for (const receipt of receipts) {
+    if (!receipt || typeof receipt !== 'object' || typeof receipt.doc_id !== 'string') {
+      throw new DocsGateError(`${ATTESTATIONS_PATH}: every receipt must have a string doc_id`);
+    }
+    if (byDoc.has(receipt.doc_id)) {
+      throw new DocsGateError(`${ATTESTATIONS_PATH}: duplicate receipt for ${receipt.doc_id}`);
+    }
+    if (!requiredDocIds.has(receipt.doc_id)) {
+      throw new DocsGateError(`${ATTESTATIONS_PATH}: orphan receipt for ${receipt.doc_id}`);
+    }
+    byDoc.set(receipt.doc_id, receipt);
+  }
   const out = [];
   for (const doc of docsModel.docs) {
     if (doc.frontmatter.review_policy !== 'behavioral' || doc.frontmatter.covers_sources.length === 0) continue;
@@ -1464,6 +1596,14 @@ export async function recordAttestation(docId, options = {}) {
 export function verifyPackageFacts(root, codeFacts, docsModel) {
   if (codeFacts.package.version !== codeFacts.lock.version || codeFacts.package.version !== codeFacts.lock.rootVersion) throw new DocsGateError(`package.json version ${codeFacts.package.version} does not match package-lock versions ${codeFacts.lock.version}/${codeFacts.lock.rootVersion}`);
   const pkg = readJson(root, 'package.json');
+  for (const mandatory of ['BACKGROUND-TASKS-INSTRUCTIONS.md', 'logo.png']) {
+    if (!existsSync(packagePath(root, mandatory))) {
+      throw new DocsGateError(`mandatory package adoption file is missing: ${mandatory}`);
+    }
+    if (!Array.isArray(pkg.files) || !pkg.files.includes(mandatory)) {
+      throw new DocsGateError(`package.json files must include mandatory ${mandatory}`);
+    }
+  }
   const image = pkg.pi?.image;
   if (!image || !/^https:\/\/raw\.githubusercontent\.com\/ismailsaleekh\/pi-background-tasks\/main\/logo\.png$/u.test(image)) throw new DocsGateError('package pi.image must be the GitHub raw main logo.png URL');
   const texts = markdownEntries(root, docsModel);
@@ -1801,9 +1941,7 @@ function assertSvgSafe(root, rel) {
 
 export function checkPayloadFiles(files, root = PACKAGE_ROOT) {
   const fileSet = new Set(files);
-  const requiredRoots = ['extensions/background-tasks.ts', 'extensions/delegate-child.ts', 'extensions/fusion-child.ts', 'README.md', 'TESTING.md', 'TEST_PLAN.md', 'PUBLISHING.md', 'LICENSE', 'package.json'];
-  if (existsSync(packagePath(root, 'BACKGROUND-TASKS-INSTRUCTIONS.md'))) requiredRoots.push('BACKGROUND-TASKS-INSTRUCTIONS.md');
-  if (existsSync(packagePath(root, 'logo.png'))) requiredRoots.push('logo.png');
+  const requiredRoots = ['extensions/background-tasks.ts', 'extensions/delegate-child.ts', 'extensions/fusion-child.ts', 'README.md', 'TESTING.md', 'TEST_PLAN.md', 'PUBLISHING.md', 'BACKGROUND-TASKS-INSTRUCTIONS.md', 'logo.png', 'LICENSE', 'package.json'];
   for (const f of requiredRoots) if (!fileSet.has(f)) throw new DocsGateError(`packed payload missing ${f}`);
   for (const f of walkFiles(root, 'src', () => true)) if (!fileSet.has(f)) throw new DocsGateError(`packed payload missing ${f}`);
   for (const f of walkFiles(root, 'extensions', () => true)) if (!fileSet.has(f)) throw new DocsGateError(`packed payload missing ${f}`);
@@ -1889,6 +2027,45 @@ export function assertRegistrationFixture(source) {
   const sf = ts.createSourceFile('fixture.ts', source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
   const surfaces = [];
   const visit = (node) => {
+    if (
+      ts.isVariableDeclaration(node) &&
+      node.initializer?.getText(sf) === 'pi'
+    ) {
+      throw new DocsGateError('fixture aliasing the Pi registration host is unsupported');
+    }
+    if (
+      ts.isElementAccessExpression(node) &&
+      node.expression.getText(sf) === 'pi'
+    ) {
+      const key = node.argumentExpression;
+      if (
+        key &&
+        (ts.isStringLiteral(key) || ts.isNoSubstitutionTemplateLiteral(key)) &&
+        key.text.startsWith('register')
+      ) {
+        throw new DocsGateError(`fixture element-access registration ${key.text} is unsupported`);
+      }
+    }
+    if (
+      ts.isPropertyAccessExpression(node) &&
+      node.expression.getText(sf) === 'pi' &&
+      node.name.text.startsWith('register') &&
+      !(ts.isCallExpression(node.parent) && node.parent.expression === node)
+    ) {
+      throw new DocsGateError(
+        `fixture registration API ${node.name.text} must be called directly and must not be aliased or bound`,
+      );
+    }
+    if (
+      ts.isCallExpression(node) &&
+      node.arguments.some((argument) => argument.getText(sf) === 'pi') &&
+      !(
+        ts.isPropertyAccessExpression(node.expression) &&
+        node.expression.expression.getText(sf) === 'pi'
+      )
+    ) {
+      throw new DocsGateError('fixture unsupported helper invocation receives the Pi registration host');
+    }
     if (ts.isCallExpression(node) && ts.isPropertyAccessExpression(node.expression) && node.expression.expression.getText(sf) === 'pi') {
       const method = node.expression.name.text;
       if (method === 'registerCommand' || method === 'registerShortcut' || method === 'registerMessageRenderer') {

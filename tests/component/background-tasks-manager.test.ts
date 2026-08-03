@@ -9,7 +9,7 @@ import {
   BackgroundTasksManager,
   type BackgroundTaskForUi,
 } from '../../src/ui/background-tasks-manager.js';
-import { stripAnsi } from '../../src/testing/normalize.js';
+import { stripAnsi } from '../helpers/normalize.js';
 
 const themeColors: readonly ThemeColor[] = [
   'accent',

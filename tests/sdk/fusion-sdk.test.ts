@@ -28,7 +28,7 @@ import {
   type FusionResultDetails,
 } from '../../src/core/fusion/types.js';
 import { installFusionFakePi } from '../helpers/fusion-fake-pi.js';
-import { isolatedTestEnv, stripAnsi } from '../../src/testing/normalize.js';
+import { isolatedTestEnv, stripAnsi } from '../helpers/normalize.js';
 
 const backgroundTasksExtensionPath = resolve('extensions/background-tasks.ts');
 const roots: string[] = [];

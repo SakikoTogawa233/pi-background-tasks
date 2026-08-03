@@ -3,7 +3,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
-import { isolatedTestEnv } from '../src/testing/normalize.js';
+import { isolatedTestEnv } from '../tests/helpers/normalize.js';
 
 // `URL.pathname` yields `/D:/...` on Windows, which then joins into `D:\D:\...`.
 const root = fileURLToPath(new URL('../', import.meta.url));

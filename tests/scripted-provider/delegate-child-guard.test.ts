@@ -12,7 +12,7 @@ import {
   SessionManager,
   SettingsManager,
 } from '@earendil-works/pi-coding-agent';
-import { isolatedTestEnv } from '../../src/testing/normalize.js';
+import { isolatedTestEnv } from '../helpers/normalize.js';
 import { buildDelegateSeed } from '../../src/core/delegate/seed.js';
 import { verifyDelegateResultPackage } from '../../src/core/delegate/result-package.js';
 import { DelegateError, type DelegateLimits, type DelegatePinnedRoute } from '../../src/core/delegate/types.js';

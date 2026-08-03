@@ -5,7 +5,7 @@ import { existsSync } from 'node:fs';
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
-import { isolatedTestEnv, stripAnsi } from '../../src/testing/normalize.js';
+import { isolatedTestEnv, stripAnsi } from '../helpers/normalize.js';
 import { installFusionFakePi } from '../helpers/fusion-fake-pi.js';
 
 const extensionPath = resolve('extensions/background-tasks.ts');

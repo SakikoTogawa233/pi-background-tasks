@@ -14,7 +14,7 @@ import { piLaunchArgv, resolvePiLaunch } from '../../src/core/pi-launch.js';
 // the Pi package bin and launches it through Node; reusing that resolver keeps this
 // harness aligned with real launch behaviour on every platform.
 const piLaunch = resolvePiLaunch();
-import { isolatedTestEnv } from '../../src/testing/normalize.js';
+import { isolatedTestEnv } from '../helpers/normalize.js';
 
 const backgroundTasksExtensionPath = resolve('extensions/background-tasks.ts');
 const scriptedProviderPath = resolve('tests/scripted-provider/scripted-provider-extension.ts');

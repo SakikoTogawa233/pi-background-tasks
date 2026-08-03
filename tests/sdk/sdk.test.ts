@@ -1592,8 +1592,10 @@ console.log(JSON.stringify({ type: "message_end", message: secondMessage }));
       assert.match(message, /pi install npm:pi-background-tasks@999\.0\.0/);
       assert.match(
         message,
-        /pi install git:github\.com\/ismailsaleekh\/pi-background-tasks@v999\.0\.0/,
+        /pi install git:github\.com\/ismailsaleekh\/pi-background-tasks@main/,
       );
+      assert.match(message, /first verify the tag exists/);
+      assert.doesNotMatch(message, /pi-background-tasks@v999\.0\.0/);
       assert.match(message, /999\.0\.0 is the latest published version/);
       assert.match(message, /does not install or self-update/);
     } finally {

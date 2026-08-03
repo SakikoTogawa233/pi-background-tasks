@@ -12,10 +12,10 @@ covers_sources: []
 This authored section defines the boundary: documentation facts are extracted from package metadata and TypeScript ASTs, then generated into docs and the manifest. Unsupported syntax fails the gate rather than falling back to regex or stale hand-maintained inventories.
 
 <!-- pi-docs:begin name="docs-freshness-gate" generator="scripts/docs/generate.mjs" -->
-- Canonical package version: `1.0.2`
+- Canonical package version: `1.0.3`
 - Governed markdown docs: 40
 - Public surfaces extracted: 30
-- Governed production sources: 45
+- Governed production sources: 44
 - Tool contracts extracted: 11
 - Schema IDs extracted: 37
 - Environment variable references extracted: 46

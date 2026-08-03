@@ -53,11 +53,12 @@ The notification includes current installed version and, when known, latest publ
 ```text
 pi install npm:pi-background-tasks@latest
 pi install npm:pi-background-tasks@<version>
-pi install git:github.com/ismailsaleekh/pi-background-tasks@v<tag>
+pi install git:github.com/ismailsaleekh/pi-background-tasks@main
+For a pinned git release, first verify the tag exists, then use git:github.com/ismailsaleekh/pi-background-tasks@<existing-tag>.
 This command only prints update instructions; it does not install or self-update.
 ```
 
-If no latest version is known, placeholders `<version>` and `<tag>` are printed for pinned commands.
+If no latest npm version is known, `<version>` is printed for the pinned npm command. The command never derives a git tag from the npm version: npm releases and repository tags are independent, and a pinned git tag must be verified separately.
 
 ## Errors
 

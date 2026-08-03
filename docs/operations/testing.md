@@ -2,10 +2,10 @@
 doc_id: operations/testing
 audience: maintainer
 mode: authored
-review_policy: behavioral
+review_policy: contract
 stability: evolving
 covers_surfaces: []
-covers_sources: [src/testing/normalize.ts]
+covers_sources: []
 ---
 # Testing operations
 

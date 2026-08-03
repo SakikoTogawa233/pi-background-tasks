@@ -559,7 +559,6 @@ export default function backgroundTasksExtension(pi: ExtensionAPI): void {
       const current = PACKAGE_VERSION ?? 'unknown';
       const latest = latestKnownVersion;
       const pinnedNpm = latest ? `${PACKAGE_NAME}@${latest}` : `${PACKAGE_NAME}@<version>`;
-      const pinnedGit = latest ? `${GIT_INSTALL_TARGET}@v${latest}` : `${GIT_INSTALL_TARGET}@<tag>`;
       const lines = [
         latest
           ? `pi-background-tasks ${current} is installed; ${latest} is the latest published version.`
@@ -567,8 +566,9 @@ export default function backgroundTasksExtension(pi: ExtensionAPI): void {
         'Update from npm:',
         `  pi install npm:${PACKAGE_NAME}@latest`,
         `  pi install npm:${pinnedNpm}`,
-        'Or update from git tags:',
-        `  pi install ${pinnedGit}`,
+        'Git releases are independent of npm versions; use main only when you want current repository state:',
+        `  pi install ${GIT_INSTALL_TARGET}@main`,
+        `For a pinned git release, first verify the tag exists, then use ${GIT_INSTALL_TARGET}@<existing-tag>.`,
         'This command only prints update instructions; it does not install or self-update.',
       ];
       ctx.ui.notify(lines.join('\n'), 'info');

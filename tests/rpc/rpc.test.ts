@@ -6,7 +6,7 @@ import { join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { parseJsonText } from '../../src/core/common.js';
 import { piLaunchArgv, resolvePiLaunch } from '../../src/core/pi-launch.js';
-import { isolatedTestEnv } from '../../src/testing/normalize.js';
+import { isolatedTestEnv } from '../helpers/normalize.js';
 
 // npm installs `pi` as a pi.cmd shim on Windows, and a shell-less spawn does not
 // consult PATHEXT, so spawning the bare name fails with ENOENT. Production solves

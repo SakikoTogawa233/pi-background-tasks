@@ -73,6 +73,13 @@ mustThrow('stale/unknown surface', () => assertCoverage(codeFacts, { docs: [{ re
 mustThrow('new uncovered source', () => assertCoverage({ ...codeFacts, governed_sources: [...codeFacts.governed_sources, 'src/new-source.ts'] }, docsModel), /src\/new-source\.ts has no primary doc/);
 
 mustThrow('duplicate owner', () => assertCoverage(codeFacts, { docs: [docsModel.docs[0], { ...docsModel.docs[0], rel: 'docs/dup.md', doc_id: 'dup' }] }), /duplicate primary docs/);
+const behavioralOwner = docsModel.docs.find((doc) => doc.frontmatter.covers_sources.length > 0);
+assert.ok(behavioralOwner, 'fixture requires one source-owning doc');
+mustThrow('non-behavioral source owner', () => assertCoverage(codeFacts, {
+  docs: docsModel.docs.map((doc) => doc.doc_id === behavioralOwner.doc_id
+    ? { ...doc, frontmatter: { ...doc.frontmatter, review_policy: 'contract' } }
+    : doc),
+}), /source owners must use review_policy behavioral/);
 
 mustThrow('broken link/anchor', () => verifyLinksAndReachability(process.cwd(), { docs: [{ rel: 'docs/INDEX.md', doc_id: 'INDEX', body: '# Hi\n[bad](./missing.md)', text: '---\n---\n# Hi\n[bad](./missing.md)', frontmatter: { covers_surfaces: [], covers_sources: [] } }] }), /broken link/);
 mustThrow('broken reference-style link', () => verifyLinksAndReachability(process.cwd(), { docs: [{ rel: 'docs/INDEX.md', doc_id: 'INDEX', body: '# Hi\n[bad][missing-doc]\n\n[missing-doc]: ./missing.md', text: '---\n---\n# Hi\n[bad][missing-doc]\n\n[missing-doc]: ./missing.md', frontmatter: { covers_surfaces: [], covers_sources: [] } }] }), /broken link/);
@@ -93,7 +100,11 @@ try {
   rmSync(linkRoot, { recursive: true, force: true });
 }
 
-mustThrow('stale receipt', () => verifyAttestations(process.cwd(), { docs: [{ rel: 'docs/behavior.md', doc_id: 'behavior', body: 'body', frontmatter: { review_policy: 'behavioral', covers_sources: ['package.json'] } }] }, { schema_version: 'pi-background-tasks.docs-attestations.v1', receipts: [{ schema_version: 'pi-background-tasks.docs-attestation.v1', doc_id: 'behavior', verdict: 'PASS', reviewer: 'fixture-reviewer', notes: 'fixture stale receipt notes', authored_body_sha256: sha256('other'), covers_sources: ['package.json'], source_sha256: {} }] }), /stale attestation authored prose hash/);
+const attestationFixtureDoc = { rel: 'docs/behavior.md', doc_id: 'behavior', body: 'body', frontmatter: { review_policy: 'behavioral', covers_sources: ['package.json'] } };
+const attestationFixtureReceipt = { schema_version: 'pi-background-tasks.docs-attestation.v1', doc_id: 'behavior', verdict: 'PASS', reviewer: 'fixture-reviewer', notes: 'fixture stale receipt notes', authored_body_sha256: sha256('other'), covers_sources: ['package.json'], source_sha256: {} };
+mustThrow('stale receipt', () => verifyAttestations(process.cwd(), { docs: [attestationFixtureDoc] }, { schema_version: 'pi-background-tasks.docs-attestations.v1', receipts: [attestationFixtureReceipt] }), /stale attestation authored prose hash/);
+mustThrow('duplicate receipt', () => verifyAttestations(process.cwd(), { docs: [attestationFixtureDoc] }, { schema_version: 'pi-background-tasks.docs-attestations.v1', receipts: [attestationFixtureReceipt, { ...attestationFixtureReceipt }] }), /duplicate receipt/);
+mustThrow('orphan receipt', () => verifyAttestations(process.cwd(), { docs: [attestationFixtureDoc] }, { schema_version: 'pi-background-tasks.docs-attestations.v1', receipts: [{ ...attestationFixtureReceipt, doc_id: 'removed-owner' }] }), /orphan receipt/);
 
 mustThrow('unsupported extraction', () => assertRegistrationFixture('export default function x(pi){ pi.registerCommand(makeName(), {}); }'), /unsupported registerCommand/);
 mustThrow('duplicate public registration', () => assertRegistrationFixture("export default function x(pi){ pi.registerCommand('same', {}); pi.registerCommand('same', {}); }"), /duplicate public registration/);
@@ -101,7 +112,13 @@ mustThrow('invalid tool string metadata', () => assertRegistrationFixture("expor
 mustThrow('invalid tool guidelines metadata', () => assertRegistrationFixture("export default function x(pi){ pi.registerTool({ name: 'fixture', promptGuidelines: ['valid', 42] }); }"), /promptGuidelines must be a literal string array/);
 mustThrow('shorthand tool metadata', () => assertRegistrationFixture("export default function x(pi){ const description = 'hidden'; pi.registerTool({ name: 'fixture', description }); }"), /public field description must be an explicit property assignment/);
 mustThrow('spread tool metadata', () => assertRegistrationFixture("export default function x(pi){ const metadata = { description: 'hidden' }; pi.registerTool({ name: 'fixture', ...metadata }); }"), /must not use object spread/);
+mustThrow('aliased registration method', () => assertRegistrationFixture("export default function x(pi){ const register = pi.registerCommand; register('hidden', {}); }"), /must be called directly/);
+mustThrow('bound registration method', () => assertRegistrationFixture("export default function x(pi){ const register = pi.registerTool.bind(pi); register({ name: 'hidden' }); }"), /unsupported helper invocation|must be called directly/);
+mustThrow('element-access registration', () => assertRegistrationFixture("export default function x(pi){ pi['registerCommand']('hidden', {}); }"), /element-access registration/);
+mustThrow('aliased registration host', () => assertRegistrationFixture("export default function x(pi){ const host = pi; host.registerCommand('hidden', {}); }"), /aliasing the Pi registration host/);
+mustThrow('unknown registration helper', () => assertRegistrationFixture("function hidden(host){} export default function x(pi){ hidden(pi); }"), /unsupported helper invocation receives the Pi registration host/);
 
+mustThrow('mandatory gateway missing', () => checkPayloadFiles(['package.json', 'README.md', 'TESTING.md', 'TEST_PLAN.md', 'PUBLISHING.md', 'LICENSE', 'logo.png', 'extensions/background-tasks.ts', 'extensions/delegate-child.ts', 'extensions/fusion-child.ts']), /packed payload missing BACKGROUND-TASKS-INSTRUCTIONS\.md/);
 mustThrow('missing packed doc', () => checkPayloadFiles(['package.json', 'README.md', 'TESTING.md', 'TEST_PLAN.md', 'PUBLISHING.md', 'LICENSE', 'BACKGROUND-TASKS-INSTRUCTIONS.md', 'logo.png', 'extensions/background-tasks.ts', 'extensions/delegate-child.ts', 'extensions/fusion-child.ts']), /packed payload missing/);
 
 mustThrow('release check requires explicit tag ref', () => checkReleaseVersion(process.cwd(), undefined, undefined), /requires an explicit tag ref/);

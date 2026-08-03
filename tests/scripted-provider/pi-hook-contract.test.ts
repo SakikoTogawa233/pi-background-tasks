@@ -13,7 +13,7 @@ import {
   SettingsManager,
 } from '@earendil-works/pi-coding-agent';
 import { parseJsonText } from '../../src/core/common.js';
-import { isolatedTestEnv } from '../../src/testing/normalize.js';
+import { isolatedTestEnv } from '../helpers/normalize.js';
 import {
   HOOK_PROBE_INJECTED_TEXT,
   HOOK_PROBE_REPLACED_TOOL_TEXT,

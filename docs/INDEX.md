@@ -46,7 +46,7 @@ Generated navigation for every package-local documentation page. This index inte
 | [api/eventbus-v1](./api/eventbus-v1.md) | mixed | behavioral | evolving |
 | [operations/configuration](./operations/configuration.md) | authored | contract | stable |
 | [operations/releasing](./operations/releasing.md) | authored | contract | evolving |
-| [operations/testing](./operations/testing.md) | authored | behavioral | evolving |
+| [operations/testing](./operations/testing.md) | authored | contract | evolving |
 | [operations/troubleshooting](./operations/troubleshooting.md) | authored | contract | evolving |
 | [reference/runtime-contracts](./reference/runtime-contracts.md) | mixed | contract | evolving |
 | [subsystems/attested-pi-runs](./subsystems/attested-pi-runs.md) | authored | behavioral | evolving |

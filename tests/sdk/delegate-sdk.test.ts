@@ -12,7 +12,7 @@ import {
   SettingsManager,
   type AgentSession,
 } from '@earendil-works/pi-coding-agent';
-import { isolatedTestEnv } from '../../src/testing/normalize.js';
+import { isolatedTestEnv } from '../helpers/normalize.js';
 import { verifyDelegateResultPackage } from '../../src/core/delegate/result-package.js';
 import type { DelegateErrorCode } from '../../src/core/delegate/types.js';
 import { DELEGATE_INLINE_ANSWER_BYTES } from '../../src/core/delegate/budget.js';

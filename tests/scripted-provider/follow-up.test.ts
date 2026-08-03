@@ -14,7 +14,7 @@ import {
   type AgentSession,
 } from '@earendil-works/pi-coding-agent';
 import { parseJsonText } from '../../src/core/common.js';
-import { isolatedTestEnv } from '../../src/testing/normalize.js';
+import { isolatedTestEnv } from '../helpers/normalize.js';
 
 const backgroundExtensionPath = resolve('extensions/background-tasks.ts');
 const scriptedProviderPath = resolve('tests/scripted-provider/scripted-provider-extension.ts');
