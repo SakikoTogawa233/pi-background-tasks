@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { closeSync, fsyncSync, openSync, writeSync } from 'node:fs';
+import { closeSync, fsyncSync, lstatSync, openSync, readFileSync, writeSync } from 'node:fs';
 import type { Usage } from '@earendil-works/pi-ai';
 import type { ExtensionAPI } from '@earendil-works/pi-coding-agent';
 import { Type, type Static } from 'typebox';
@@ -13,12 +13,18 @@ import {
   FusionWebFetchError,
   FUSION_WEB_FETCH_TIMEOUT_MS,
 } from './core/fusion/web-fetch.js';
+import {
+  canonicalizeFusionPublicUrl,
+  parseFusionSourcePolicy,
+} from './core/fusion/source-policy.js';
 
 export const FUSION_CHILD_RESULT_SCHEMA_VERSION =
   'pi-background-tasks.fusion-child-result.v2' as const;
 export const FUSION_CHILD_RESULT_PREFIX = '\u001ePI_FUSION_CHILD_RESULT ';
 export const FUSION_TOOL_CALL_LOG_PATH_ENV = 'PI_FUSION_TOOL_CALL_LOG_PATH';
 export const FUSION_RESEARCH_ENABLED_ENV = 'PI_FUSION_RESEARCH_ENABLED';
+export const FUSION_SOURCE_POLICY_PATH_ENV = 'PI_FUSION_SOURCE_POLICY_PATH';
+export const FUSION_SOURCE_POLICY_SHA256_ENV = 'PI_FUSION_SOURCE_POLICY_SHA256';
 
 /**
  * Aggregate ceiling on tool-result bytes a single candidate child may accumulate.
@@ -222,6 +228,24 @@ function fetchAuditMetadataFromError(error: unknown, fallbackUrl: string): Fusio
   return fetchAuditMetadataFromObject(error, fallbackUrl);
 }
 
+
+function loadDeclaredResearchUrls(): ReadonlySet<string> {
+  const policyPath = process.env[FUSION_SOURCE_POLICY_PATH_ENV];
+  const expectedHash = process.env[FUSION_SOURCE_POLICY_SHA256_ENV];
+  if (policyPath === undefined || expectedHash === undefined) {
+    throw new Error(`${FUSION_WEB_FETCH_TOOL_NAME} research mode requires source policy path and sha256`);
+  }
+  if (!/^[0-9a-f]{64}$/.test(expectedHash)) throw new Error('fusion source policy hash is malformed');
+  const stats = lstatSync(policyPath);
+  if (!stats.isFile()) throw new Error(`fusion source policy at ${policyPath} is not a regular file`);
+  const bytes = readFileSync(policyPath);
+  if (sha256(bytes) !== expectedHash) throw new Error('fusion source policy hash mismatch');
+  const text = bytes.toString('utf8');
+  if (!Buffer.from(text, 'utf8').equals(bytes)) throw new Error('fusion source policy is not UTF-8');
+  const parsed = parseFusionSourcePolicy(JSON.parse(text));
+  return new Set(parsed.sources.map((source) => source.canonical_url));
+}
+
 function fusionWebFetchResultText(result: Awaited<ReturnType<typeof fusionWebFetch>>): string {
   return JSON.stringify(
     {
@@ -255,6 +279,7 @@ export default function fusionChildExtension(pi: ExtensionAPI): void {
   if (researchEnabled === '1' && toolCallLogPath === undefined) {
     throw new Error(`${FUSION_WEB_FETCH_TOOL_NAME} research mode requires ${FUSION_TOOL_CALL_LOG_PATH_ENV}`);
   }
+  const declaredResearchUrls = researchEnabled === '1' ? loadDeclaredResearchUrls() : undefined;
   const fetchAuditMetadata = new Map<string, FusionWebFetchAuditMetadata>();
   if (toolCallLogPath !== undefined) {
     // Create the log immediately, before tools can run. Without this, an absent file
@@ -332,10 +357,14 @@ export default function fusionChildExtension(pi: ExtensionAPI): void {
       },
       async execute(toolCallId, params) {
         try {
+          const canonicalUrl = canonicalizeFusionPublicUrl(params.url);
+          if (declaredResearchUrls === undefined || !declaredResearchUrls.has(canonicalUrl)) {
+            throw new Error(`${FUSION_WEB_FETCH_TOOL_NAME} URL was not declared in the research source policy: ${canonicalUrl}`);
+          }
           const result = await fusionWebFetch(
             params.extract === undefined
-              ? { url: params.url }
-              : { url: params.url, extract: params.extract },
+              ? { url: canonicalUrl }
+              : { url: canonicalUrl, extract: params.extract },
           );
           fetchAuditMetadata.set(toolCallId, fetchAuditMetadataFromObject(result, params.url));
           return {

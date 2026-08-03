@@ -22,10 +22,11 @@ import {
   type AnonymousFusionCandidate,
 } from './prompts.js';
 import {
-  FUSION_BRAINSTORM_WORKFLOW,
-  resolveWorkflowCapability,
+  assertWorkflowCapability,
+  fusionWorkflowProfile,
   type FusionWorkflowProfile,
 } from './workflows.js';
+import { buildFusionSourcePolicy, sourcePolicyCanonicalBytes } from './source-policy.js';
 import {
   FUSION_NO_TOOLS_CAPABILITY,
   FUSION_RESULT_SCHEMA_VERSION,
@@ -62,11 +63,11 @@ export interface FusionWorkflowInput {
   sessionId?: string | undefined;
   canonicalInput: FusionCanonicalInputV3;
   canonicalInputSerialized: string;
-  contextLedger: FusionContextOmissionLedgerV2;
+  contextLedger?: FusionContextOmissionLedgerV2 | undefined;
   config: FusionModelConfigV1;
   models: ResolvedFusionModels;
   candidateCapability?: FusionCapability | undefined;
-  /** Stage framing and capability policy. Defaults to the brainstorm workflow. */
+  /** Mandatory v5 workflow profile. */
   profile?: FusionWorkflowProfile | undefined;
   signal?: AbortSignal | undefined;
   onProgress?: FusionProgressSink | undefined;
@@ -191,6 +192,7 @@ function childOptions(
   signal: AbortSignal,
   slot?: CandidateSlot,
   toolCallLogPath?: string,
+  sourcePolicy?: { path: string; sha256: string },
 ): RunPiChildOptions {
   const out: RunPiChildOptions = {
     stage,
@@ -204,6 +206,7 @@ function childOptions(
   };
   if (slot !== undefined) out.slot = slot;
   if (toolCallLogPath !== undefined) out.toolCallLogPath = toolCallLogPath;
+  if (sourcePolicy !== undefined) out.sourcePolicy = sourcePolicy;
   return out;
 }
 
@@ -334,11 +337,22 @@ export class FusionOrchestrator {
   }
 
   async run(input: FusionWorkflowInput): Promise<FusionRunResult> {
-    const profile = input.profile ?? FUSION_BRAINSTORM_WORKFLOW;
-    // Workflow policy, not caller input: a fixed-capability workflow rejects each
-    // other capability here, before a single child exists, rather than silently
-    // substituting its own and running a review that never read the code.
-    const candidateCapability = resolveWorkflowCapability(profile, input.candidateCapability);
+    if (input.profile === undefined) {
+      throw new FusionError('fusion workflow profile is required; no default workflow is allowed', {
+        code: 'orchestration_failed',
+        childCreated: false,
+      });
+    }
+    const profile = fusionWorkflowProfile(input.profile.id);
+    const inputWorkflow = input.canonicalInput.workflow ?? profile.id;
+    const inputContextKind = input.canonicalInput.context?.kind ?? 'session_projection';
+    if (inputWorkflow !== profile.id || inputContextKind !== profile.contextKind) {
+      throw new FusionError(
+        `fusion workflow profile ${profile.id} is incompatible with canonical input workflow=${String(inputWorkflow)} context=${String(inputContextKind)}`,
+        { code: 'orchestration_failed', childCreated: false },
+      );
+    }
+    const candidateCapability = assertWorkflowCapability(profile, input.candidateCapability);
     const storeOptions: CreateFusionArtifactStoreOptions = {
       cwd: input.cwd,
       profile,
@@ -359,12 +373,36 @@ export class FusionOrchestrator {
     const calibrationWarnings: FusionCalibrationViolation[] = [];
     try {
       await store.writeCanonicalInput(input.canonicalInputSerialized);
-      await store.writeContextLedger(input.contextLedger);
+      if (inputContextKind === 'session_projection') {
+        if (input.contextLedger === undefined) {
+          throw new FusionError('session-projection fusion input requires an omission ledger artifact', {
+            code: 'orchestration_failed',
+            childCreated: false,
+          });
+        }
+        await store.writeContextLedger(input.contextLedger);
+      } else if (input.contextLedger !== undefined) {
+        throw new FusionError('clean-task fusion input must not carry a parent omission ledger', {
+          code: 'orchestration_failed',
+          childCreated: false,
+        });
+      }
+      if (profile.id === 'research') {
+        const cleanContext = input.canonicalInput.context;
+        if (cleanContext?.kind !== 'clean_task') {
+          throw new FusionError('research workflow requires a clean-task canonical input', {
+            code: 'orchestration_failed',
+            childCreated: false,
+          });
+        }
+        const policy = buildFusionSourcePolicy(input.cwd, cleanContext.declared_sources);
+        await store.writeSourcePolicy(sourcePolicyCanonicalBytes(policy));
+      }
       // Deterministic size accounting for the whole workflow, performed before
       // a single child process exists. A rejection here launches zero children.
       const budget = new FusionBudget(
         input.models,
-        input.canonicalInput.conversation_projection.policy.id,
+        input.canonicalInput.context?.policy_id ?? 'fusion-session-projection-v1',
         candidateCapability,
         profile,
       );
@@ -458,6 +496,8 @@ export class FusionOrchestrator {
           source: input.source,
           status: 'completed',
           artifact_dir: store.artifactDir,
+          context: { kind: inputContextKind, policy_id: input.canonicalInput.context?.policy_id ?? 'fusion-session-projection-v1' },
+          tool_policy: { candidate_tools: profile.candidateTools, evaluation_tools: [], merge_tools: [] },
           models: store.snapshot().models,
           evaluator_attempts: store
             .snapshot()
@@ -753,6 +793,10 @@ export class FusionOrchestrator {
         capability !== 'reason'
           ? store.childToolCallLogPath(stage, slot, logicalAttempt)
           : undefined;
+      const sourcePolicy =
+        capability === 'research'
+          ? store.sourcePolicyLaunchReference()
+          : undefined;
       try {
         return await this.childRunner(
           childOptions(
@@ -766,6 +810,7 @@ export class FusionOrchestrator {
             signal,
             slot,
             toolCallLogPath,
+            sourcePolicy,
           ),
         );
       } catch (error) {

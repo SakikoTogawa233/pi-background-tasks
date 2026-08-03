@@ -17,7 +17,7 @@ export const FUSION_CANONICAL_INPUT_GUIDE = `The JSON input contains the parent 
 
 request.text is the verbatim request. When request.authority is "explicit_text" it is fully authoritative and self-contained, and the projected conversation is only supporting background. When it is "directive_over_projected_conversation" the projected conversation is the subject matter and request.text directs how to treat it.
 
-conversation_projection.entries is a strict source-order array of positional tuples:
+When a conversation_projection is present, conversation_projection.entries is a strict source-order array of positional tuples:
 - Text tuple: ["t", role, sourceOrdinal, blockOrdinal, text]. role is "u" for user or "a" for assistant. sourceOrdinal and blockOrdinal identify the exact retained source block. text is verbatim visible conversation text.
 - Omission tuple: ["o", [firstSourceOrdinal, lastSourceOrdinal], bytes, [assistantThinking, toolCalls, toolResultTexts]]. The span is inclusive, bytes is the total omitted non-image payload byte count for that run, and the count tuple order is exactly assistant thinking blocks, tool calls, then tool-result text blocks.
 
@@ -33,11 +33,11 @@ Produce the strongest direct answer you can for the request using that context.
 
 Do not invent process metadata. Do not mention provider names, model names, slots, or hidden workflow details. Do not specialize the answer; each child receives the same instruction. Output only the answer text.`;
 
-export const FUSION_INSPECT_CANONICAL_INPUT_GUIDE = `The JSON input contains the parent system prompt, the current working directory, a request object, and a conversation_projection.
+export const FUSION_INSPECT_CANONICAL_INPUT_GUIDE = `The JSON input contains workflow, cwd, request, and context. For clean-task workflows (investigate/validate) context.kind is "clean_task" and no parent system prompt, parent messages, active tool metadata, or omission ledger is present. For legacy/session-projection readability, a conversation_projection may be present.
 
 request.text is the verbatim request. When request.authority is "explicit_text" it is fully authoritative and self-contained, and the projected conversation is only supporting background. When it is "directive_over_projected_conversation" the projected conversation is the subject matter and request.text directs how to treat it.
 
-conversation_projection.entries is a strict source-order array of positional tuples:
+When a conversation_projection is present, conversation_projection.entries is a strict source-order array of positional tuples:
 - Text tuple: ["t", role, sourceOrdinal, blockOrdinal, text]. role is "u" for user or "a" for assistant. sourceOrdinal and blockOrdinal identify the exact retained source block. text is verbatim visible conversation text.
 - Omission tuple: ["o", [firstSourceOrdinal, lastSourceOrdinal], bytes, [assistantThinking, toolCalls, toolResultTexts]]. The span is inclusive, bytes is the total omitted non-image payload byte count for that run, and the count tuple order is exactly assistant thinking blocks, tool calls, then tool-result text blocks.
 
@@ -53,11 +53,11 @@ Produce the strongest direct answer you can for the request using that context.
 
 Do not invent process metadata. Do not mention provider names, model names, slots, or hidden workflow details. Do not specialize the answer; each child receives the same instruction. Output only the answer text.`;
 
-export const FUSION_RESEARCH_CANONICAL_INPUT_GUIDE = `The JSON input contains the parent system prompt, the current working directory, a request object, and a conversation_projection.
+export const FUSION_RESEARCH_CANONICAL_INPUT_GUIDE = `The JSON input contains workflow, cwd, request, and context. Research uses context.kind "clean_task" with declared_sources: the only public URLs fusion_web_fetch may initiate. No parent system prompt, parent messages, active tool metadata, or omission ledger is present.
 
 request.text is the verbatim request. When request.authority is "explicit_text" it is fully authoritative and self-contained, and the projected conversation is only supporting background. When it is "directive_over_projected_conversation" the projected conversation is the subject matter and request.text directs how to treat it.
 
-conversation_projection.entries is a strict source-order array of positional tuples:
+When a conversation_projection is present, conversation_projection.entries is a strict source-order array of positional tuples:
 - Text tuple: ["t", role, sourceOrdinal, blockOrdinal, text]. role is "u" for user or "a" for assistant. sourceOrdinal and blockOrdinal identify the exact retained source block. text is verbatim visible conversation text.
 - Omission tuple: ["o", [firstSourceOrdinal, lastSourceOrdinal], bytes, [assistantThinking, toolCalls, toolResultTexts]]. The span is inclusive, bytes is the total omitted non-image payload byte count for that run, and the count tuple order is exactly assistant thinking blocks, tool calls, then tool-result text blocks.
 
@@ -182,7 +182,7 @@ Classify each issue at exactly one severity:
 - high: a real defect that will cause failure, incorrect behaviour, or unmaintainable state under plausible rather than exotic conditions.
 - minor: a genuine but low-impact defect. A narrow edge case, a missing test, unclear naming, or an inconsistency with the surrounding code.
 
-For every issue state the exact location as a file path plus a symbol or line range, what is wrong, the concrete evidence you read, and why it matters at that severity.
+For every issue state the exact location as a file path plus a symbol or line range, what is wrong, the concrete evidence you read, and why it matters at that severity. Emit candidate finding records in a closed, self-describing form when possible: severity, location, evidence, impact, and summary; the host will assign stable IDs such as A-F001 during blind accounting.
 
 Do not inflate severity and do not invent issues to appear thorough. If the work is correct, say so plainly and state exactly what you verified and how you verified it. A report with no findings that names the evidence behind that conclusion is a valid and valuable result; a padded report is not.
 
@@ -204,7 +204,7 @@ export const FUSION_VALIDATE_EVALUATOR_SYSTEM_PROMPT = `You are a strict blind e
 
 Treat each distinct defect claim as a unit. Two reports describing the same defect at the same location are one finding. A defect raised by only one report is still a finding.
 
-synthesis_plan.must_include must name every distinct defect claim that survives your analysis, including claims raised by only one report. Use conflicts for disagreements about whether something is a defect at all or about how severe it is, and give both the resolution and the reason for it. Use must_avoid only for claims you determined are unsupported by the evidence the reports actually cite, never merely because a claim was raised once.
+Mechanically account for every source finding exactly once: include or exclude it with rationale. Preserve singleton findings. When grouping duplicates, keep the member source IDs visible in the rationale. synthesis_plan.must_include must name every distinct defect claim that survives your analysis, including claims raised by only one report. Use conflicts for disagreements about whether something is a defect at all or about how severe it is, and give both the resolution and the reason for it. Use must_avoid only for claims you determined are unsupported by the evidence the reports actually cite, never merely because a claim was raised once.
 
 ${FUSION_EVALUATION_SCHEMA_CONTRACT}`;
 
@@ -212,7 +212,7 @@ export const FUSION_VALIDATE_MERGER_SYSTEM_PROMPT = `You are the final synthesis
 
 Produce the direct final validation report for the user. Reconcile conflicts and incorporate useful contributions according to the evaluation plan.
 
-Preserve findings. Merge duplicates that describe the same defect at the same location into one finding, keeping the best-supported severity and the clearest evidence. Do not drop a finding because only one report raised it. Do not add a finding that no report raised.
+Preserve findings. Merge duplicates that describe the same defect at the same location into one finding, keeping the best-supported severity and the clearest evidence. Do not drop a finding because only one report raised it. Do not add a finding that no report raised. If the evaluator accounted for source finding IDs, cover every included ID exactly once and do not render excluded or invented IDs.
 
 Where the reports disagreed about whether something is a defect or about how severe it is, state the resolution and the reason for it rather than silently choosing a side.
 

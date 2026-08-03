@@ -11,11 +11,15 @@ import type {
 export type FusionThinkingLevel = 'off' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max';
 
 export const FUSION_MODEL_CONFIG_SCHEMA_VERSION = 'pi-background-tasks.fusion-models.v1';
-export const FUSION_INPUT_SCHEMA_VERSION = 'pi-background-tasks.fusion-input.v4';
+export const FUSION_LEGACY_INPUT_SCHEMA_VERSION = 'pi-background-tasks.fusion-input.v4';
+export const FUSION_INPUT_SCHEMA_VERSION = 'pi-background-tasks.fusion-input.v5';
 export const FUSION_EVALUATION_SCHEMA_VERSION = 'pi-background-tasks.fusion-evaluation.v1';
-export const FUSION_RESULT_SCHEMA_VERSION = 'pi-background-tasks.fusion-result.v4';
-export const FUSION_MANIFEST_SCHEMA_VERSION = 'pi-background-tasks.fusion-manifest.v3';
+export const FUSION_LEGACY_RESULT_SCHEMA_VERSION = 'pi-background-tasks.fusion-result.v4';
+export const FUSION_RESULT_SCHEMA_VERSION = 'pi-background-tasks.fusion-result.v5';
+export const FUSION_LEGACY_MANIFEST_SCHEMA_VERSION = 'pi-background-tasks.fusion-manifest.v3';
+export const FUSION_MANIFEST_SCHEMA_VERSION = 'pi-background-tasks.fusion-manifest.v4';
 export const FUSION_CONTEXT_LEDGER_SCHEMA_VERSION = 'pi-background-tasks.fusion-context-ledger.v2';
+export const FUSION_SOURCE_POLICY_SCHEMA_VERSION = 'pi-background-tasks.fusion-source-policy.v1';
 export const FUSION_BUDGET_PLAN_SCHEMA_VERSION = 'pi-background-tasks.fusion-budget-plan.v3';
 export const FUSION_CALIBRATION_VIOLATION_SCHEMA_VERSION =
   'pi-background-tasks.fusion-calibration-violation.v1';
@@ -47,25 +51,43 @@ export type FusionStage = (typeof FUSION_STAGE_VALUES)[number];
 export const FUSION_CAPABILITY_VALUES = Object.freeze(['reason', 'inspect', 'research'] as const);
 export type FusionCapability = (typeof FUSION_CAPABILITY_VALUES)[number];
 
-/** Default capability for caller-selectable brainstorm candidate children. */
-export const FUSION_BRAINSTORM_DEFAULT_CAPABILITY: FusionCapability = 'inspect';
-
-/** @deprecated Use `FUSION_BRAINSTORM_DEFAULT_CAPABILITY` for explicit semantics. */
-export const FUSION_DEFAULT_CAPABILITY: FusionCapability = FUSION_BRAINSTORM_DEFAULT_CAPABILITY;
-
-/** Fixed no-tools capability for evaluator, repair, merger, and low-level child defaults. */
+/** No-tools capability for reason candidates, evaluator, repair, and merger. */
 export const FUSION_NO_TOOLS_CAPABILITY: FusionCapability = 'reason';
+/** Legacy default retained for old type imports only. New workflows never default. */
+export const FUSION_BRAINSTORM_DEFAULT_CAPABILITY: FusionCapability = 'inspect';
+/** @deprecated New v5 workflows have no caller capability default. */
+export const FUSION_DEFAULT_CAPABILITY: FusionCapability = FUSION_BRAINSTORM_DEFAULT_CAPABILITY;
 
 export const FUSION_WEB_FETCH_TOOL_NAME = 'fusion_web_fetch' as const;
 export const FUSION_INSPECT_TOOLS = Object.freeze(['read', 'grep', 'find', 'ls'] as const);
+export const FUSION_RESEARCH_TOOLS = Object.freeze([
+  'read',
+  'grep',
+  'find',
+  'ls',
+  FUSION_WEB_FETCH_TOOL_NAME,
+] as const);
 
 /**
  * Workflow identities sharing one orchestrator, one context projection, one
  * evaluation schema, and one artifact store. A workflow selects stage framing and
  * capability policy only; it never changes the canonical input schema.
  */
-export const FUSION_WORKFLOW_IDS = Object.freeze(['brainstorm', 'validate'] as const);
+export const FUSION_WORKFLOW_IDS = Object.freeze([
+  'reason',
+  'investigate',
+  'research',
+  'validate',
+] as const);
 export type FusionWorkflowId = (typeof FUSION_WORKFLOW_IDS)[number];
+export const FUSION_PUBLIC_WORKFLOW_NAMES = Object.freeze([
+  'fusion_reason',
+  'fusion_investigate',
+  'fusion_research',
+  'fusion_validate',
+] as const);
+export type FusionPublicWorkflowName = (typeof FUSION_PUBLIC_WORKFLOW_NAMES)[number];
+export type FusionContextKind = 'session_projection' | 'clean_task';
 
 /**
  * The single capability the validate workflow ever runs candidates with.
@@ -81,6 +103,9 @@ export const FUSION_FORBIDDEN_TOOLS = Object.freeze([
   'edit',
   'write',
   'fusion_brainstorm',
+  'fusion_reason',
+  'fusion_investigate',
+  'fusion_research',
   'fusion_validate',
   'bg_delegate',
   'bg_result',
@@ -309,15 +334,73 @@ export interface FusionConversationProjectionV4 {
 
 export type FusionConversationProjectionV3 = FusionConversationProjectionV4;
 
-export interface FusionCanonicalInputV4 {
+export interface FusionDeclaredSourceV1 {
+  url: string;
+  canonical_url: string;
+  purpose: string;
+  sha256: string;
+}
+
+export interface FusionCleanTaskContextV1 {
+  kind: 'clean_task';
+  policy_id: 'fusion-clean-task-v1';
+  declared_sources: readonly FusionDeclaredSourceV1[];
+}
+
+export interface FusionSessionProjectionContextV1 {
+  kind: 'session_projection';
+  policy_id: 'fusion-session-projection-v1';
+  system_prompt: string;
+  conversation_projection: FusionConversationProjectionV4;
+}
+
+export interface FusionCanonicalInputV5Base {
   schema_version: typeof FUSION_INPUT_SCHEMA_VERSION;
+  workflow?: FusionWorkflowId | undefined;
+  cwd: string;
+  request: FusionCanonicalRequestV3;
+  /** @deprecated v4 readability alias. Present only for session-projection inputs at runtime. */
+  system_prompt: string;
+  /** @deprecated v4 readability alias. Present only for session-projection inputs at runtime. */
+  conversation_projection: FusionConversationProjectionV4;
+}
+
+export interface FusionSessionProjectionCanonicalInputV5 extends FusionCanonicalInputV5Base {
+  workflow?: FusionWorkflowId | undefined;
+  context?: FusionSessionProjectionContextV1 | undefined;
+}
+
+export interface FusionCleanTaskCanonicalInputV5 extends FusionCanonicalInputV5Base {
+  workflow: Exclude<FusionWorkflowId, 'reason'>;
+  context: FusionCleanTaskContextV1;
+}
+
+export type FusionCanonicalInputV5 =
+  | FusionSessionProjectionCanonicalInputV5
+  | FusionCleanTaskCanonicalInputV5;
+
+/** Legacy v4 shape retained for frozen golden fixtures/readability only. */
+export interface FusionCanonicalInputV4 {
+  schema_version: typeof FUSION_LEGACY_INPUT_SCHEMA_VERSION;
   cwd: string;
   system_prompt: string;
   request: FusionCanonicalRequestV3;
   conversation_projection: FusionConversationProjectionV4;
 }
 
-export type FusionCanonicalInputV3 = FusionCanonicalInputV4;
+export type FusionCanonicalInputV3 = FusionCanonicalInputV5;
+
+export interface FusionSourcePolicyV1 {
+  schema_version: typeof FUSION_SOURCE_POLICY_SCHEMA_VERSION;
+  workflow: 'research';
+  cwd: string;
+  sources: readonly FusionDeclaredSourceV1[];
+  root_sha256: string;
+}
+
+export interface FusionSourcePolicyArtifactRef extends FusionArtifactRef {
+  root_sha256: string;
+}
 
 export interface CandidateAssessment {
   candidate_id: FusionCandidateId;
@@ -427,6 +510,8 @@ export interface FusionResultDetails {
   workflow: FusionWorkflowId;
   source: FusionSource;
   status: 'completed';
+  context: { kind: FusionContextKind; policy_id: string };
+  tool_policy: { candidate_tools: readonly string[]; evaluation_tools: readonly []; merge_tools: readonly [] };
   artifact_dir: string;
   models: {
     candidates: readonly [string, string, string];
@@ -683,6 +768,8 @@ export interface FusionArtifactManifest {
     evaluation: FusionCapability;
     merge: FusionCapability;
   };
+  context: { kind: FusionContextKind; policy_id: string; ledger_artifact?: string; source_policy_artifact?: string };
+  tool_policy: { candidate_tools: readonly string[]; evaluation_tools: readonly []; merge_tools: readonly [] };
   usage: FusionUsage;
   attempts: readonly FusionAttemptArtifactRecord[];
   artifacts: Readonly<Record<string, FusionArtifactRef>>;

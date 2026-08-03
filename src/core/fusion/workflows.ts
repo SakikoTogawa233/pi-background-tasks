@@ -9,83 +9,156 @@ import {
   fusionValidateCandidateSystemPrompt,
 } from './prompts.js';
 import {
-  FUSION_BRAINSTORM_DEFAULT_CAPABILITY,
+  FUSION_INSPECT_TOOLS,
+  FUSION_NO_TOOLS_CAPABILITY,
+  FUSION_RESEARCH_TOOLS,
   FUSION_VALIDATE_CAPABILITY,
   FusionError,
   type FusionCapability,
+  type FusionContextKind,
+  type FusionPublicWorkflowName,
   type FusionWorkflowId,
 } from './types.js';
 
-export const FUSION_BRAINSTORM_TOOL_NAME = 'fusion_brainstorm';
-export const FUSION_VALIDATE_TOOL_NAME = 'fusion_validate';
+export const FUSION_REASON_TOOL_NAME = 'fusion_reason' as const;
+export const FUSION_INVESTIGATE_TOOL_NAME = 'fusion_investigate' as const;
+export const FUSION_RESEARCH_TOOL_NAME = 'fusion_research' as const;
+export const FUSION_VALIDATE_TOOL_NAME = 'fusion_validate' as const;
 
-/**
- * How a workflow decides which capability its candidate children run with.
- *
- * `caller_selected` lets the tool schema offer a capability argument and applies
- * the workflow's documented default. `fixed` pins one capability for every run and
- * makes each other value a loud orchestration failure rather than a silent
- * downgrade.
- */
-export type FusionCapabilityPolicy = 'caller_selected' | 'fixed';
+/** @deprecated v4 recursion-denylist compatibility only; do not register new public APIs with this name. */
+export const FUSION_BRAINSTORM_TOOL_NAME = 'fusion_brainstorm' as const;
 
-/**
- * Stage framing for one Fusion workflow.
- *
- * Everything a workflow can vary lives here: the four system prompts, the
- * capability policy, and presentation strings. Everything else - the conversation
- * projection, canonical input schema, budget policy, evaluation schema, artifact
- * store, and state machine - is shared and must never be branched per workflow.
- */
 export interface FusionWorkflowProfile {
   readonly id: FusionWorkflowId;
-  readonly toolName: string;
-  /** First character of the run id, so artifact directories are self-describing. */
-  readonly runIdPrefix: string;
-  readonly capabilityPolicy: FusionCapabilityPolicy;
-  /** The only capability permitted when `capabilityPolicy` is `fixed`. */
-  readonly fixedCapability: FusionCapability | undefined;
-  readonly defaultCapability: FusionCapability;
+  readonly publicName: FusionPublicWorkflowName;
+  readonly toolName: FusionPublicWorkflowName;
+  /** Human-readable run-id prefix, e.g. `reason-<hex>`. */
+  readonly runIdPrefix: `${FusionWorkflowId}-`;
+  readonly contextKind: FusionContextKind;
+  readonly candidateCapability: FusionCapability;
+  readonly candidateTools: readonly string[];
+  /** @deprecated v4 profile compatibility only. */
+  readonly capabilityPolicy?: 'fixed' | 'caller_selected';
+  /** @deprecated v4 profile compatibility only. */
+  readonly fixedCapability?: FusionCapability | undefined;
+  /** @deprecated v4 profile compatibility only. */
+  readonly defaultCapability?: FusionCapability | undefined;
+  readonly evaluatorCapability: typeof FUSION_NO_TOOLS_CAPABILITY;
+  readonly evaluatorTools: readonly [];
+  readonly mergeCapability: typeof FUSION_NO_TOOLS_CAPABILITY;
+  readonly mergeTools: readonly [];
   readonly candidateSystemPrompt: (capability: FusionCapability) => string;
   readonly evaluatorSystemPrompt: string;
   readonly evaluationRepairSystemPrompt: string;
   readonly mergerSystemPrompt: string;
-  /** Human-readable noun used in progress lines and rendered results. */
   readonly label: string;
 }
 
-export const FUSION_BRAINSTORM_WORKFLOW: FusionWorkflowProfile = Object.freeze({
-  id: 'brainstorm',
-  toolName: FUSION_BRAINSTORM_TOOL_NAME,
-  runIdPrefix: 'f',
-  capabilityPolicy: 'caller_selected',
-  fixedCapability: undefined,
-  defaultCapability: FUSION_BRAINSTORM_DEFAULT_CAPABILITY,
+function freezeProfile(profile: FusionWorkflowProfile): FusionWorkflowProfile {
+  const empty = Object.freeze([]) as readonly [];
+  return Object.freeze({
+    ...profile,
+    candidateTools: Object.freeze([...profile.candidateTools]),
+    capabilityPolicy: 'fixed',
+    fixedCapability: profile.candidateCapability,
+    defaultCapability: profile.candidateCapability,
+    evaluatorTools: empty,
+    mergeTools: empty,
+  });
+}
+
+export const FUSION_REASON_WORKFLOW = freezeProfile({
+  id: 'reason',
+  publicName: FUSION_REASON_TOOL_NAME,
+  toolName: FUSION_REASON_TOOL_NAME,
+  runIdPrefix: 'reason-',
+  contextKind: 'session_projection',
+  candidateCapability: FUSION_NO_TOOLS_CAPABILITY,
+  candidateTools: [],
+  evaluatorCapability: FUSION_NO_TOOLS_CAPABILITY,
+  evaluatorTools: [],
+  mergeCapability: FUSION_NO_TOOLS_CAPABILITY,
+  mergeTools: [],
   candidateSystemPrompt: fusionCandidateSystemPrompt,
   evaluatorSystemPrompt: FUSION_EVALUATOR_SYSTEM_PROMPT,
   evaluationRepairSystemPrompt: FUSION_EVALUATION_REPAIR_SYSTEM_PROMPT,
   mergerSystemPrompt: FUSION_MERGER_SYSTEM_PROMPT,
-  label: 'fusion',
+  label: 'fusion reason',
 });
 
-export const FUSION_VALIDATE_WORKFLOW: FusionWorkflowProfile = Object.freeze({
+export const FUSION_INVESTIGATE_WORKFLOW = freezeProfile({
+  id: 'investigate',
+  publicName: FUSION_INVESTIGATE_TOOL_NAME,
+  toolName: FUSION_INVESTIGATE_TOOL_NAME,
+  runIdPrefix: 'investigate-',
+  contextKind: 'clean_task',
+  candidateCapability: 'inspect',
+  candidateTools: FUSION_INSPECT_TOOLS,
+  evaluatorCapability: FUSION_NO_TOOLS_CAPABILITY,
+  evaluatorTools: [],
+  mergeCapability: FUSION_NO_TOOLS_CAPABILITY,
+  mergeTools: [],
+  candidateSystemPrompt: fusionCandidateSystemPrompt,
+  evaluatorSystemPrompt: FUSION_EVALUATOR_SYSTEM_PROMPT,
+  evaluationRepairSystemPrompt: FUSION_EVALUATION_REPAIR_SYSTEM_PROMPT,
+  mergerSystemPrompt: FUSION_MERGER_SYSTEM_PROMPT,
+  label: 'fusion investigate',
+});
+
+export const FUSION_RESEARCH_WORKFLOW = freezeProfile({
+  id: 'research',
+  publicName: FUSION_RESEARCH_TOOL_NAME,
+  toolName: FUSION_RESEARCH_TOOL_NAME,
+  runIdPrefix: 'research-',
+  contextKind: 'clean_task',
+  candidateCapability: 'research',
+  candidateTools: FUSION_RESEARCH_TOOLS,
+  evaluatorCapability: FUSION_NO_TOOLS_CAPABILITY,
+  evaluatorTools: [],
+  mergeCapability: FUSION_NO_TOOLS_CAPABILITY,
+  mergeTools: [],
+  candidateSystemPrompt: fusionCandidateSystemPrompt,
+  evaluatorSystemPrompt: FUSION_EVALUATOR_SYSTEM_PROMPT,
+  evaluationRepairSystemPrompt: FUSION_EVALUATION_REPAIR_SYSTEM_PROMPT,
+  mergerSystemPrompt: FUSION_MERGER_SYSTEM_PROMPT,
+  label: 'fusion research',
+});
+
+export const FUSION_VALIDATE_WORKFLOW = freezeProfile({
   id: 'validate',
+  publicName: FUSION_VALIDATE_TOOL_NAME,
   toolName: FUSION_VALIDATE_TOOL_NAME,
-  runIdPrefix: 'v',
-  capabilityPolicy: 'fixed',
-  fixedCapability: FUSION_VALIDATE_CAPABILITY,
-  defaultCapability: FUSION_VALIDATE_CAPABILITY,
+  runIdPrefix: 'validate-',
+  contextKind: 'clean_task',
+  candidateCapability: FUSION_VALIDATE_CAPABILITY,
+  candidateTools: FUSION_INSPECT_TOOLS,
+  evaluatorCapability: FUSION_NO_TOOLS_CAPABILITY,
+  evaluatorTools: [],
+  mergeCapability: FUSION_NO_TOOLS_CAPABILITY,
+  mergeTools: [],
   candidateSystemPrompt: fusionValidateCandidateSystemPrompt,
   evaluatorSystemPrompt: FUSION_VALIDATE_EVALUATOR_SYSTEM_PROMPT,
   evaluationRepairSystemPrompt: FUSION_VALIDATE_EVALUATION_REPAIR_SYSTEM_PROMPT,
   mergerSystemPrompt: FUSION_VALIDATE_MERGER_SYSTEM_PROMPT,
-  label: 'validate',
+  label: 'fusion validate',
 });
 
+/** @deprecated v4 name retained as a source-compatible alias for reason-only callers. */
+export const FUSION_BRAINSTORM_WORKFLOW = FUSION_REASON_WORKFLOW;
+
 const PROFILES_BY_ID: Readonly<Record<FusionWorkflowId, FusionWorkflowProfile>> = Object.freeze({
-  brainstorm: FUSION_BRAINSTORM_WORKFLOW,
+  reason: FUSION_REASON_WORKFLOW,
+  investigate: FUSION_INVESTIGATE_WORKFLOW,
+  research: FUSION_RESEARCH_WORKFLOW,
   validate: FUSION_VALIDATE_WORKFLOW,
 });
+
+export const FUSION_WORKFLOW_PROFILES = Object.freeze([
+  FUSION_REASON_WORKFLOW,
+  FUSION_INVESTIGATE_WORKFLOW,
+  FUSION_RESEARCH_WORKFLOW,
+  FUSION_VALIDATE_WORKFLOW,
+] as const);
 
 export function fusionWorkflowProfile(id: FusionWorkflowId): FusionWorkflowProfile {
   const profile = PROFILES_BY_ID[id];
@@ -98,33 +171,18 @@ export function fusionWorkflowProfile(id: FusionWorkflowId): FusionWorkflowProfi
   return profile;
 }
 
-/**
- * Resolve the candidate capability for one run under its workflow's policy.
- *
- * A `fixed` workflow rejects each other capability instead of quietly substituting
- * its own: silently accepting `reason` for a validation run would produce a review
- * that never read the code, which is exactly the failure this workflow exists to
- * prevent.
- */
-export function resolveWorkflowCapability(
+export function assertWorkflowCapability(
   profile: FusionWorkflowProfile,
   requested: FusionCapability | undefined,
 ): FusionCapability {
-  if (profile.capabilityPolicy === 'caller_selected') {
-    return requested ?? profile.defaultCapability;
-  }
-  const fixed = profile.fixedCapability;
-  if (fixed === undefined) {
+  if (requested !== undefined && requested !== profile.candidateCapability) {
     throw new FusionError(
-      `fusion workflow ${profile.id} declares a fixed capability policy without a capability`,
+      `fusion workflow ${profile.id} always runs candidates with the ${profile.candidateCapability} capability; received ${String(requested)}`,
       { code: 'orchestration_failed', childCreated: false },
     );
   }
-  if (requested !== undefined && requested !== fixed) {
-    throw new FusionError(
-      `fusion workflow ${profile.id} always runs candidates with the ${fixed} capability; received ${String(requested)}`,
-      { code: 'orchestration_failed', childCreated: false },
-    );
-  }
-  return fixed;
+  return profile.candidateCapability;
 }
+
+/** @deprecated v5 workflows do not default; retained for old tests/imports. */
+export const resolveWorkflowCapability = assertWorkflowCapability;

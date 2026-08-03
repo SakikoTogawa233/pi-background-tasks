@@ -9,6 +9,8 @@ import {
   FUSION_CHILD_RESULT_PREFIX,
   FUSION_CHILD_RESULT_SCHEMA_VERSION,
   FUSION_RESEARCH_ENABLED_ENV,
+  FUSION_SOURCE_POLICY_PATH_ENV,
+  FUSION_SOURCE_POLICY_SHA256_ENV,
   FUSION_TOOL_CALL_LOG_PATH_ENV,
   type FusionChildResultMetadata,
 } from '../../fusion-child-extension.js';
@@ -16,6 +18,7 @@ import {
   FUSION_FORBIDDEN_TOOLS,
   FUSION_NO_TOOLS_CAPABILITY,
   FUSION_INSPECT_TOOLS,
+  FUSION_RESEARCH_TOOLS,
   FUSION_TOOL_CALL_LOG_SCHEMA_VERSION,
   FUSION_WEB_FETCH_TOOL_NAME,
   FusionError,
@@ -32,6 +35,7 @@ import {
   type ResolvedFusionModel,
 } from './types.js';
 import { isJsonObject, parseJsonText } from '../common.js';
+import { canonicalizeFusionPublicUrl } from './source-policy.js';
 import {
   assertWindowsCommandLineWithinLimit,
   piLaunchArgv,
@@ -64,6 +68,10 @@ export const FUSION_CHILD_REMOVED_ENV_KEYS = [
   'PI_PROVIDER',
   'PI_MODEL',
   'PI_REASONING_LEVEL',
+  FUSION_TOOL_CALL_LOG_PATH_ENV,
+  FUSION_RESEARCH_ENABLED_ENV,
+  FUSION_SOURCE_POLICY_PATH_ENV,
+  FUSION_SOURCE_POLICY_SHA256_ENV,
 ] as const;
 
 interface FusionReadableStream {
@@ -127,6 +135,7 @@ export interface RunPiChildOptions {
   sigkillWaitMs?: number | undefined;
   piLaunchDependencies?: PiLaunchDependencies | undefined;
   toolCallLogPath?: string | undefined;
+  sourcePolicy?: { path: string; sha256: string } | undefined;
 }
 
 interface CloseRecord {
@@ -334,7 +343,7 @@ export function assertFusionToolPolicyDisjoint(
 }
 
 function researchToolAllowlist(): readonly string[] {
-  return [...FUSION_INSPECT_TOOLS, FUSION_WEB_FETCH_TOOL_NAME];
+  return FUSION_RESEARCH_TOOLS;
 }
 
 function fusionToolArgv(capability: FusionCapability): string[] {
@@ -691,6 +700,26 @@ export function parseFusionToolCallLog(bytes: Buffer): FusionToolCallTrace {
       trace_complete: true,
     },
   };
+}
+
+
+function assertCompletedToolPolicy(
+  trace: FusionToolCallTrace,
+  capability: FusionCapability,
+  sourcePolicy: { path: string; sha256: string } | undefined,
+): void {
+  const allowed = capability === 'inspect' ? FUSION_INSPECT_TOOLS : capability === 'research' ? FUSION_RESEARCH_TOOLS : [];
+  const allowedSet = new Set<string>(allowed);
+  for (const record of trace.records) {
+    if (!allowedSet.has(record.tool_name)) {
+      throw new Error(`fusion child used non-allowlisted tool ${record.tool_name}`);
+    }
+    if (capability === 'research' && record.tool_name === FUSION_WEB_FETCH_TOOL_NAME) {
+      if (sourcePolicy === undefined) throw new Error('fusion research source policy missing during audit');
+      if (record.url === undefined) throw new Error('fusion research fetch audit is missing url');
+      canonicalizeFusionPublicUrl(record.url);
+    }
+  }
 }
 
 function isNotFound(error: unknown): boolean {
@@ -1098,7 +1127,14 @@ export async function runPiChild(options: RunPiChildOptions): Promise<FusionChil
       );
     }
     env[FUSION_TOOL_CALL_LOG_PATH_ENV] = options.toolCallLogPath;
-    if (capability === 'research') env[FUSION_RESEARCH_ENABLED_ENV] = '1';
+    if (capability === 'research') {
+      if (options.sourcePolicy === undefined) {
+        throw childError('fusion research child requires a source-policy path and hash', 'orchestration_failed', options, false, false);
+      }
+      env[FUSION_RESEARCH_ENABLED_ENV] = '1';
+      env[FUSION_SOURCE_POLICY_PATH_ENV] = options.sourcePolicy.path;
+      env[FUSION_SOURCE_POLICY_SHA256_ENV] = options.sourcePolicy.sha256;
+    }
   }
   const stdoutLimit = options.stdoutLimitBytes ?? FUSION_CHILD_STDOUT_LIMIT_BYTES;
   const stderrLimit = options.stderrLimitBytes ?? FUSION_CHILD_STDERR_LIMIT_BYTES;
@@ -1346,6 +1382,7 @@ export async function runPiChild(options: RunPiChildOptions): Promise<FusionChil
       }
       try {
         toolCallTrace = await readFusionToolCallLog(logPath);
+        assertCompletedToolPolicy(toolCallTrace, capability, options.sourcePolicy);
       } catch (error) {
         throw new FusionChildRunError(
           withCleanupErrors(

@@ -27,13 +27,13 @@ import {
   type FusionWorkflowId,
   type ResolvedFusionModels,
 } from './types.js';
-import { FUSION_BRAINSTORM_WORKFLOW, type FusionWorkflowProfile } from './workflows.js';
+import { fusionWorkflowProfile, type FusionWorkflowProfile } from './workflows.js';
 
 /**
  * Run ids are prefixed by workflow so an artifact directory is self-describing.
  * The prefix set is closed: an unknown prefix must fail rather than be accepted.
  */
-const RUN_ID_PATTERN = /^[fv][0-9a-f]{32}$/;
+const RUN_ID_PATTERN = /^(reason|investigate|research|validate)-[0-9a-f]{32}$/;
 
 interface MutableFusionArtifactManifest {
   schema_version: typeof FUSION_MANIFEST_SCHEMA_VERSION;
@@ -56,6 +56,8 @@ interface MutableFusionArtifactManifest {
     evaluation: FusionCapability;
     merge: FusionCapability;
   };
+  context: { kind: import('./types.js').FusionContextKind; policy_id: string; ledger_artifact?: string; source_policy_artifact?: string };
+  tool_policy: { candidate_tools: readonly string[]; evaluation_tools: readonly []; merge_tools: readonly [] };
   usage: FusionUsage;
   attempts: FusionAttemptArtifactRecord[];
   artifacts: Record<string, FusionArtifactRef>;
@@ -177,6 +179,8 @@ function publicManifest(manifest: MutableFusionArtifactManifest): FusionArtifact
     config: manifest.config,
     models: manifest.models,
     capabilities: manifest.capabilities,
+    context: { ...manifest.context },
+    tool_policy: { candidate_tools: [...manifest.tool_policy.candidate_tools], evaluation_tools: [], merge_tools: [] },
     usage: cloneFusionUsage(manifest.usage),
     attempts: [...manifest.attempts],
     artifacts: { ...manifest.artifacts },
@@ -224,7 +228,8 @@ export class FusionArtifactStore {
   }
 
   static async create(options: CreateFusionArtifactStoreOptions): Promise<FusionArtifactStore> {
-    const profile = options.profile ?? FUSION_BRAINSTORM_WORKFLOW;
+    if (options.profile === undefined) throw errorForArtifact('fusion artifact store requires an explicit workflow profile');
+    const profile = fusionWorkflowProfile(options.profile.id);
     const runId = options.runId ?? makeRunId(profile);
     if (!RUN_ID_PATTERN.test(runId)) throw errorForArtifact(`invalid fusion run id: ${runId}`);
     if (!runId.startsWith(profile.runIdPrefix)) {
@@ -257,6 +262,8 @@ export class FusionArtifactStore {
         evaluation: 'reason',
         merge: 'reason',
       },
+      context: { kind: profile.contextKind, policy_id: profile.contextKind === 'session_projection' ? 'fusion-session-projection-v1' : 'fusion-clean-task-v1' },
+      tool_policy: { candidate_tools: profile.candidateTools, evaluation_tools: [], merge_tools: [] },
       usage: cloneFusionUsage(EMPTY_FUSION_USAGE),
       attempts: [],
       artifacts: {},
@@ -331,7 +338,23 @@ export class FusionArtifactStore {
    * while the full omission accounting stays locally auditable.
    */
   async writeContextLedger(ledger: FusionContextOmissionLedgerV2): Promise<void> {
-    await this.writeArtifact('context-omission-ledger.json', canonicalJson(ledger));
+    const ref = await this.writeArtifact('context-omission-ledger.json', canonicalJson(ledger));
+    await this.updateManifest((manifest) => {
+      manifest.context.ledger_artifact = ref.path;
+    });
+  }
+
+  async writeSourcePolicy(serialized: string): Promise<void> {
+    const ref = await this.writeArtifact('source-policy.private.json', serialized);
+    await this.updateManifest((manifest) => {
+      manifest.context.source_policy_artifact = ref.path;
+    });
+  }
+
+  sourcePolicyLaunchReference(): { path: string; sha256: string } {
+    const ref = this.manifest.artifacts['source-policy.private.json'];
+    if (ref === undefined) throw errorForArtifact('research source policy has not been written');
+    return { path: this.artifactPath(ref.path), sha256: ref.sha256 };
   }
 
   /** Route capacities and the pre-candidate whole-workflow feasibility decision. */

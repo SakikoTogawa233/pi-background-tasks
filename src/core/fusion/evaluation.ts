@@ -360,3 +360,93 @@ export function boundedEvaluationErrors(errors: readonly string[]): readonly str
 export function formatEvaluationErrors(errors: readonly string[]): string {
   return boundedEvaluationErrors(errors).join('; ');
 }
+
+export type FusionValidationSeverity = 'critical' | 'high' | 'minor';
+
+export interface FusionValidationFindingRecord {
+  id: string;
+  candidate_id: FusionCandidateId;
+  severity: FusionValidationSeverity;
+  location: string;
+  evidence: string;
+  impact: string;
+  summary: string;
+}
+
+export interface FusionValidationFindingDecision {
+  source_id: string;
+  disposition: 'include' | 'exclude';
+  rationale: string;
+  group_id?: string | undefined;
+}
+
+export interface FusionValidationFindingAccounting {
+  findings: readonly FusionValidationFindingRecord[];
+  decisions: readonly FusionValidationFindingDecision[];
+}
+
+export function stableFusionFindingId(candidateId: FusionCandidateId, ordinal: number): string {
+  if (!Number.isSafeInteger(ordinal) || ordinal <= 0) {
+    throw new FusionError('validation finding ordinal must be a positive integer', {
+      code: 'evaluation_invalid',
+      stage: 'evaluation',
+    });
+  }
+  return `${candidateId}-F${String(ordinal).padStart(3, '0')}`;
+}
+
+export function validateFusionFindingAccounting(
+  accounting: FusionValidationFindingAccounting,
+): readonly string[] {
+  const errors: string[] = [];
+  const sourceIds = new Set<string>();
+  for (const [index, finding] of accounting.findings.entries()) {
+    const label = `finding[${String(index)}]`;
+    if (finding.id !== stableFusionFindingId(finding.candidate_id, index + 1)) {
+      errors.push(`${label}.id must be the stable host id for its candidate and ordinal`);
+    }
+    if (!['critical', 'high', 'minor'].includes(finding.severity)) errors.push(`${label}.severity invalid`);
+    for (const key of ['location', 'evidence', 'impact', 'summary'] as const) {
+      if (finding[key].trim().length === 0) errors.push(`${label}.${key} must be non-blank`);
+    }
+    if (sourceIds.has(finding.id)) errors.push(`${label}.id duplicate`);
+    sourceIds.add(finding.id);
+  }
+  const accounted = new Set<string>();
+  for (const [index, decision] of accounting.decisions.entries()) {
+    const label = `decision[${String(index)}]`;
+    if (!sourceIds.has(decision.source_id)) errors.push(`${label}.source_id does not name a candidate finding`);
+    if (accounted.has(decision.source_id)) errors.push(`${label}.source_id accounted more than once`);
+    accounted.add(decision.source_id);
+    if (decision.disposition !== 'include' && decision.disposition !== 'exclude') errors.push(`${label}.disposition invalid`);
+    if (decision.rationale.trim().length === 0) errors.push(`${label}.rationale must be non-blank`);
+    if (decision.disposition === 'include' && (decision.group_id === undefined || decision.group_id.trim().length === 0)) {
+      errors.push(`${label}.group_id required for included findings`);
+    }
+  }
+  for (const id of sourceIds) {
+    if (!accounted.has(id)) errors.push(`source finding ${id} was not accounted exactly once`);
+  }
+  return errors;
+}
+
+export function assertMergerFindingCoverage(
+  accounting: FusionValidationFindingAccounting,
+  renderedSourceIds: readonly string[],
+): void {
+  const errors = [...validateFusionFindingAccounting(accounting)];
+  const included = new Set(
+    accounting.decisions
+      .filter((decision) => decision.disposition === 'include')
+      .map((decision) => decision.source_id),
+  );
+  const rendered = new Set(renderedSourceIds);
+  for (const id of included) if (!rendered.has(id)) errors.push(`merger dropped included finding ${id}`);
+  for (const id of rendered) if (!included.has(id)) errors.push(`merger invented or revived finding ${id}`);
+  if (errors.length > 0) {
+    throw new FusionError(`validation finding preservation failed: ${formatEvaluationErrors(errors)}`, {
+      code: 'evaluation_invalid',
+      stage: 'merge',
+    });
+  }
+}

@@ -22,11 +22,10 @@ import {
   buildMergePrompt,
   type AnonymousFusionCandidate,
 } from './prompts.js';
-import { FUSION_BRAINSTORM_WORKFLOW, type FusionWorkflowProfile } from './workflows.js';
+import { FUSION_REASON_WORKFLOW, type FusionWorkflowProfile } from './workflows.js';
 import {
   FUSION_BUDGET_PLAN_SCHEMA_VERSION,
   FUSION_CALIBRATION_VIOLATION_SCHEMA_VERSION,
-  FUSION_BRAINSTORM_DEFAULT_CAPABILITY,
   FUSION_EVALUATION_SCHEMA_VERSION,
   FusionError,
   type FusionBudgetBlocker,
@@ -455,16 +454,20 @@ function replaceRequestText(input: FusionCanonicalInputV3, text: string): Fusion
 }
 
 function visibleTextBytes(input: FusionCanonicalInputV3): number {
+  const projection = input.context?.kind === 'session_projection' ? input.context.conversation_projection : input.conversation_projection;
+  if (projection === undefined) return 0;
   let total = 0;
-  for (const entry of input.conversation_projection.entries) {
+  for (const entry of projection.entries) {
     if (entry[0] === 't') total += utf8Bytes(JSON.stringify(entry[4]));
   }
   return total;
 }
 
 function omissionReceiptBytes(input: FusionCanonicalInputV3): number {
+  const projection = input.context?.kind === 'session_projection' ? input.context.conversation_projection : input.conversation_projection;
+  if (projection === undefined) return 0;
   let total = 0;
-  for (const entry of input.conversation_projection.entries) {
+  for (const entry of projection.entries) {
     if (entry[0] === 'o') total += utf8Bytes(JSON.stringify(entry));
   }
   return total;
@@ -682,8 +685,8 @@ export class FusionBudget {
   constructor(
     models: ResolvedFusionModels,
     contextPolicyId: string,
-    candidateCapability: FusionCapability = FUSION_BRAINSTORM_DEFAULT_CAPABILITY,
-    profile: FusionWorkflowProfile = FUSION_BRAINSTORM_WORKFLOW,
+    candidateCapability: FusionCapability = FUSION_REASON_WORKFLOW.candidateCapability,
+    profile: FusionWorkflowProfile = FUSION_REASON_WORKFLOW,
   ) {
     this.routes = fusionRouteCapacities(models);
     this.limiting = fusionLimitingRoute(this.routes);

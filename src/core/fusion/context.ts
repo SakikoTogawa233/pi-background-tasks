@@ -13,7 +13,7 @@ import {
   type ReadonlyParentSessionManager,
 } from '../context/parent-snapshot.js';
 import type { Message } from '@earendil-works/pi-ai';
-import { FUSION_BRAINSTORM_TOOL_NAME as FUSION_BRAINSTORM_TOOL_NAME_VALUE } from './workflows.js';
+import { FUSION_REASON_TOOL_NAME } from './workflows.js';
 import {
   FUSION_BRANCH_FILTER_ID,
   FUSION_COMMAND_CONTEXT_POLICY_ID,
@@ -25,6 +25,8 @@ import {
   type FusionBranchFilterDescriptor,
   type FusionCanonicalInputV3,
   type FusionCanonicalRequestV3,
+  type FusionSessionProjectionCanonicalInputV5,
+  type FusionWorkflowId,
   type FusionContextOmissionLedgerV2,
   type FusionContextPolicyDescriptor,
   type FusionConversationProjectionV3,
@@ -38,7 +40,13 @@ import {
  * Re-exported from the workflow registry, which owns every workflow's tool name.
  * Kept here so existing importers of this module keep working unchanged.
  */
-export { FUSION_BRAINSTORM_TOOL_NAME, FUSION_VALIDATE_TOOL_NAME } from './workflows.js';
+export {
+  FUSION_BRAINSTORM_TOOL_NAME,
+  FUSION_REASON_TOOL_NAME,
+  FUSION_INVESTIGATE_TOOL_NAME,
+  FUSION_RESEARCH_TOOL_NAME,
+  FUSION_VALIDATE_TOOL_NAME,
+} from './workflows.js';
 
 /** Retained for source compatibility; Fusion's session access is the shared adapter. */
 export type FusionReadonlySessionManager = ReadonlyParentSessionManager;
@@ -49,6 +57,7 @@ export interface BuildFusionCanonicalInputOptions {
   request: string;
   toolCallId?: string;
   toolName?: string;
+  workflow?: FusionWorkflowId;
 }
 
 export interface BuiltFusionCanonicalInput {
@@ -207,7 +216,14 @@ export function buildFusionCanonicalInput(
       childCreated: false,
     });
   }
-  const toolName = options.toolName ?? FUSION_BRAINSTORM_TOOL_NAME_VALUE;
+  const workflow = options.workflow ?? 'reason';
+  if (workflow !== 'reason') {
+    throw new FusionError('parent session projection is available only to the reason workflow', {
+      code: 'context_capture_failed',
+      childCreated: false,
+    });
+  }
+  const toolName = options.toolName ?? FUSION_REASON_TOOL_NAME;
   const snapshotOptions: ParentSnapshotOptions = {
     toolName,
     excludeActiveToolCallLeaf: options.source === 'tool',
@@ -227,12 +243,19 @@ export function buildFusionCanonicalInput(
     text: options.request,
     sha256: sha256Text(options.request),
   };
-  const input: FusionCanonicalInputV3 = {
+  const input: FusionSessionProjectionCanonicalInputV5 = {
     schema_version: FUSION_INPUT_SCHEMA_VERSION,
+    workflow: 'reason',
     cwd: ctx.cwd,
-    system_prompt: ctx.getSystemPrompt(),
     request,
+    system_prompt: ctx.getSystemPrompt(),
     conversation_projection: projected.projection,
+    context: {
+      kind: 'session_projection',
+      policy_id: 'fusion-session-projection-v1',
+      system_prompt: ctx.getSystemPrompt(),
+      conversation_projection: projected.projection,
+    },
   };
   return {
     input,
