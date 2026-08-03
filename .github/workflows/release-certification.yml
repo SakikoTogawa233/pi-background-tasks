@@ -1,0 +1,50 @@
+name: Release certification
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag name to certify (must equal package version as vX.Y.Z)'
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  certify:
+    name: Certify tagged package payload
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+          ref: ${{ inputs.tag && format('refs/tags/{0}', inputs.tag) || github.ref }}
+
+      - name: Set up Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: '22.19.0'
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Check tag matches package version
+        run: npm run release:check-version
+        env:
+          GITHUB_REF_TYPE: tag
+          GITHUB_REF_NAME: ${{ inputs.tag || github.ref_name }}
+
+      - name: Docs freshness
+        run: npm run docs:verify
+
+      - name: Payload closure
+        run: npm run payload:check
+
+      - name: Certification note
+        run: echo "Release certification complete; this workflow never publishes."

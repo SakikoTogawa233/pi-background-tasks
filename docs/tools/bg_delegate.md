@@ -1,0 +1,193 @@
+---
+doc_id: tools/bg_delegate
+audience: agent
+mode: mixed
+review_policy: contract
+stability: stable
+covers_surfaces: [tool:bg_delegate]
+covers_sources: []
+---
+# `bg_delegate`
+
+<!-- pi-docs:begin name="tool-contract-bg_delegate" generator="scripts/docs/generate.mjs" -->
+- Label: **Background Delegate**
+- Source: `src/delegate-extension.ts:265`
+- Description: Launch one background Pi agent seeded with a frozen projection of the current conversation, then return a launch receipt immediately. The child has its own session, a route pinned at launch that is never substituted, and read-only tools. Retrieve its verified answer with bg_result.
+- Root schema: `object`; additionalProperties: `false`
+
+| Field | Required | Type | Description | Constraints |
+| --- | --- | --- | --- | --- |
+| `autoDeliver` | no | `string` | Whether the completion notification carries the answer: never \| when_small \| always. Default never; retrieve with bg_result. |  |
+| `capability` | no | `string` | Capability profile. Only "inspect" (read/search/list, no shell, no writes, no network, no recursion) is supported. |  |
+| `maxToolCalls` | no | `number` | Maximum tool calls. Default 120. |  |
+| `maxTurns` | no | `number` | Maximum agent turns. Default 24. |  |
+| `name` | yes | `string` | Short human-readable task name shown in the bg footer dock. Use 2-6 words. |  |
+| `notifyOnCompletion` | no | `boolean` | Deliver the durable terminal notification. Default true. |  |
+| `prompt` | yes | `string` | Authoritative instruction for the delegate. The projected conversation is supporting background only. |  |
+| `route` | no | `object` | Explicit route. Defaults to the current model. | additionalProperties: false |
+| `route.model` | yes | `string` | Exact provider-local model id to pin. |  |
+| `route.provider` | yes | `string` | Exact provider name to pin. |  |
+| `timeoutSeconds` | no | `number` | Wall-clock timeout. Default 1200. |  |
+| `triggerOnCompletion` | no | `boolean` | Let that notification start a follow-up turn. Default true. |  |
+
+<details>
+<summary>Normalized TypeBox contract</summary>
+
+
+```json
+{
+  "additionalProperties": false,
+  "properties": {
+    "autoDeliver": {
+      "description": "Whether the completion notification carries the answer: never | when_small | always. Default never; retrieve with bg_result.",
+      "type": "string"
+    },
+    "capability": {
+      "description": "Capability profile. Only \"inspect\" (read/search/list, no shell, no writes, no network, no recursion) is supported.",
+      "type": "string"
+    },
+    "maxToolCalls": {
+      "description": "Maximum tool calls. Default 120.",
+      "type": "number"
+    },
+    "maxTurns": {
+      "description": "Maximum agent turns. Default 24.",
+      "type": "number"
+    },
+    "name": {
+      "description": "Short human-readable task name shown in the bg footer dock. Use 2-6 words.",
+      "type": "string"
+    },
+    "notifyOnCompletion": {
+      "description": "Deliver the durable terminal notification. Default true.",
+      "type": "boolean"
+    },
+    "prompt": {
+      "description": "Authoritative instruction for the delegate. The projected conversation is supporting background only.",
+      "type": "string"
+    },
+    "route": {
+      "additionalProperties": false,
+      "description": "Explicit route. Defaults to the current model.",
+      "properties": {
+        "model": {
+          "description": "Exact provider-local model id to pin.",
+          "type": "string"
+        },
+        "provider": {
+          "description": "Exact provider name to pin.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "model",
+        "provider"
+      ],
+      "type": "object"
+    },
+    "timeoutSeconds": {
+      "description": "Wall-clock timeout. Default 1200.",
+      "type": "number"
+    },
+    "triggerOnCompletion": {
+      "description": "Let that notification start a follow-up turn. Default true.",
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "name",
+    "prompt"
+  ],
+  "type": "object"
+}
+```
+
+</details>
+<!-- pi-docs:end name="tool-contract-bg_delegate" -->
+
+`bg_delegate` launches one background Pi child for one read-only investigation and returns a launch receipt immediately. Retrieve the answer later with [`bg_result`](bg_result.md).
+
+## Public arguments
+
+Required:
+
+- `name: string` — non-empty after trimming. Used for task display.
+- `prompt: string` — non-blank after trimming. The exact string is preserved as `directive.text` and is authoritative.
+
+Optional:
+
+- `route: {provider: string, model: string}` — exact route pin. If omitted, the parent session's current `ctx.model.provider` and `ctx.model.id` are used.
+- `capability: "inspect"` — default `"inspect"`; this is the only v1 capability.
+- `maxTurns: positive integer` — default `24`.
+- `maxToolCalls: positive integer` — default `120`.
+- `timeoutSeconds: positive integer` — default `1200`.
+- `autoDeliver: "never" | "when_small" | "always"` — default `"never"`. Current runtime records and reports this setting in launch/task facts; retrieval remains through `bg_result`. The generic terminal notification path does not currently inline delegate answers.
+- `notifyOnCompletion: boolean` — default `true`.
+- `triggerOnCompletion: boolean` — default `true`; only meaningful when notification is enabled.
+
+The TypeBox schema is closed (`additionalProperties: false`), and preparation validates required/enum/integer fields before launch.
+
+## What the child sees
+
+The child receives a frozen delegate seed built from `visible-conversation-ledger-v2`:
+
+- user text: verbatim;
+- assistant text: verbatim;
+- user images: marker text only, not raw bytes;
+- assistant thinking, tool-call arguments, tool-result text/images: omitted from visible context and recorded in a hash-accounted omission ledger;
+- unknown block types: loud projection failure;
+- the assistant message containing the active `bg_delegate` call is excluded as a whole, so sibling tool calls in that same message are also excluded.
+
+The prompt/directive has explicit authority over projected history. Projected history is supporting, untrusted context. Facts that existed only in omitted parent tool output are not available to the child; restate them in `prompt`.
+
+## Isolation and route guarantees
+
+The child does not share the parent session. Launch argv gives it a random `--session-id` (`delegate-<32 hex>`) and a task-owned `--session-dir` under the delegate artifact directory.
+
+Route resolution is pin-only:
+
+- omitted `route` pins the parent current model;
+- explicit `route` must exactly exist in the current model registry;
+- no unavailable route is substituted;
+- no fallback list or retry-on-other-model exists;
+- routes with no declared context window are refused before child creation;
+- the child records provider/model attestations for assistant messages, and a mismatch prevents a successful result commit.
+
+## Inspect-only tool boundary
+
+The v1 capability is enforced by child argv and Pi's tool registry, not merely by prompt text:
+
+- enabled tools: `read`, `grep`, `find`, `ls`, `delegate_read_artifact`;
+- `--no-builtin-tools` is used with the explicit allowlist;
+- forbidden tools include shell/write/background/delegate/Fusion surfaces (`bash`, `edit`, `write`, `bg_run`, `bg_delegate`, `bg_result`, `bg_run_pi_attested`, Fusion tools, etc.);
+- ambient discovery is disabled with `--no-extensions`, `--no-skills`, `--no-prompt-templates`, `--no-themes`, `--no-context-files`;
+- only the package-owned delegate child extension is loaded explicitly.
+
+There is no shell, edit/write, network tool, recursive delegation, Fusion, or ambient project resource loading in the child tool set.
+
+## Admission, budgets, and artifacts
+
+Public admission resolves the route and package-owned child guard extension before entering `preflightDelegateLaunch()`. Within that preflight, the hook contract is checked before capability/limit/seed/budget admission. Every refusal still occurs before child process, child session directory, or artifact root creation, leaving zero child processes and zero delegate artifacts; callers should not depend on a single absolute error-precedence order across route, guard-extension, and hook checks.
+
+Budgets and limits:
+
+- route capacity is the declared context window minus reserves: `16,384` output, `8,192` framing, `4,096` safety tokens;
+- minimum usable input is `8,192` tokens;
+- launch admission measures the child system prompt plus the exact child prompt bytes that carry the seed;
+- runtime context is measured before each model call;
+- per-tool-result transcript cap: `64 KiB`;
+- aggregate tool-output cap: `64 MiB`;
+- answer capture cap value in the seed: `4 MiB`; current child code carries this limit but does not separately enforce it before packaging;
+- timeout defaults to `1200s`.
+
+Artifacts are under `.pi/delegate/<session-id>-<pid>/<task-id>/` and include `seed.json`, `child-prompt.txt`, `context-omission-ledger.json`, `budget-plan.json`, `manifest.json`, `child-session/`, `spill/`, and later `result.json` / `outcome.json` when produced. Child stdout/stderr are captured through the background task output path; the delegate artifact constants include child stream filenames, but current launch/finalize code does not mirror streams into those delegate files.
+
+## Spilled tool output
+
+Oversized child tool results are written in full to `spill/...` artifacts and replaced in the transcript by receipts carrying path, byte length, SHA-256, tool name, call id, turn sequence, and source call index. The raw oversized payload is not forwarded as a fallback and is not truncated.
+
+Inside the child, `delegate_read_artifact({artifact, offset, length})` reads an exact byte range. It refuses path escape, negative/non-integer offsets, non-positive lengths, and reads past EOF rather than returning a short/clamped range.
+
+## Completion
+
+`bg_delegate` returns a receipt with task id, route, child session id, artifact dir, seed hash/size, budget source, limits, auto-deliver setting, and notification/wake settings. With default notification settings, the parent receives the generic durable `background-task-notification` after terminal state and may then call `bg_result`. Do not poll solely to wait.

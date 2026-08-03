@@ -53,7 +53,7 @@ interface PackageJson {
   name: string;
   type: string;
   keywords: string[];
-  pi: { extensions: string[] };
+  pi: { extensions: string[]; image?: string | undefined };
   scripts: Record<string, string>;
   files: string[];
   peerDependencies: Record<string, string>;
@@ -119,7 +119,10 @@ function parsePackageJson(value: unknown): PackageJson {
     name,
     type,
     keywords: requireStringArray(field(value, 'keywords'), 'keywords'),
-    pi: { extensions: requireStringArray(field(pi, 'extensions'), 'pi.extensions') },
+    pi: {
+      extensions: requireStringArray(field(pi, 'extensions'), 'pi.extensions'),
+      image: typeof field(pi, 'image') === 'string' ? (field(pi, 'image') as string) : undefined,
+    },
     scripts: Object.fromEntries(
       Object.entries(scripts).filter(
         (entry): entry is [string, string] => typeof entry[1] === 'string',
@@ -162,6 +165,17 @@ async function walkSourceTree(dir: string): Promise<string[]> {
     else if (/\.ts$/.test(entry.name)) files.push(path);
   }
   return files;
+}
+
+async function readMarkdownTree(dir: string): Promise<string> {
+  const entries = await readdir(dir, { withFileTypes: true });
+  const parts: string[] = [];
+  for (const entry of entries) {
+    const path = join(dir, entry.name);
+    if (entry.isDirectory()) parts.push(await readMarkdownTree(path));
+    else if (entry.name.endsWith('.md')) parts.push(await readFile(path, 'utf8'));
+  }
+  return parts.join('\n');
 }
 
 function stripComments(source: string): string {
@@ -313,7 +327,13 @@ function offlineNpmEnv(rootDir: string): NodeJS.ProcessEnv {
 }
 
 function parsePackEntries(stdout: string): NpmPackEntry[] {
-  const parsed = parseJsonValue(stdout);
+  const trimmed = stdout.trim();
+  const arrayStart = trimmed.startsWith('[') ? 0 : stdout.lastIndexOf('\n[') + 1;
+  assert.ok(
+    arrayStart > 0 || trimmed.startsWith('['),
+    `npm pack output must end with a JSON array; received ${JSON.stringify(stdout.slice(0, 160))}`,
+  );
+  const parsed = parseJsonValue(arrayStart === 0 ? trimmed : stdout.slice(arrayStart).trim());
   assert.ok(Array.isArray(parsed), 'npm pack output must be an array');
   return parsed.map((entry): NpmPackEntry => {
     assert.ok(isObject(entry), 'pack entry must be an object');
@@ -339,17 +359,27 @@ void describe('package', () => {
     assert.ok(p.keywords.includes('pi-package'));
     assert.ok(p.keywords.includes('pi-extension'));
     assert.deepEqual(p.pi.extensions, ['./extensions/background-tasks.ts']);
+    assert.equal(p.pi.image, 'https://raw.githubusercontent.com/ismailsaleekh/pi-background-tasks/main/logo.png');
     assert.match(p.scripts['test:agent-loop'] ?? '', /scripted-provider/);
     assert.match(p.scripts['test:full'] ?? '', /test:agent-loop/);
     assert.match(p.scripts['test:compat'] ?? '', /test-compat/);
     assert.ok(p.files.includes('extensions/'));
     assert.ok(p.files.includes('src/'));
+    assert.ok(p.files.includes('docs/'));
+    assert.ok(p.files.includes('BACKGROUND-TASKS-INSTRUCTIONS.md'));
+    assert.ok(p.files.includes('logo.png'));
     assert.ok(!p.files.includes('scripts/'));
+    assert.equal(p.scripts['docs:generate'], 'node scripts/docs/generate.mjs');
+    assert.equal(p.scripts['docs:verify'], 'node scripts/docs/verify.mjs');
+    assert.match(p.scripts['prepack'] ?? '', /docs:verify/);
+    assert.match(p.scripts['prepack'] ?? '', /payload:check/);
     assert.ok(p.peerDependencies['@earendil-works/pi-coding-agent']);
     assert.ok(p.peerDependencies['@earendil-works/pi-tui']);
     assert.ok(p.peerDependencies['typebox']);
     for (const f of [
       'README.md',
+      'BACKGROUND-TASKS-INSTRUCTIONS.md',
+      'logo.png',
       'TESTING.md',
       'TEST_PLAN.md',
       'PUBLISHING.md',
@@ -399,6 +429,7 @@ void describe('package', () => {
       'the default gate must include the Pi hook characterisation gate',
     );
     const readme = await text('README.md');
+    const documentationInventory = `${readme}\n${await readMarkdownTree(fileURLToPath(new URL('docs/', root)))}`;
     const plan = await text('TEST_PLAN.md');
     for (const surface of [
       '/bg',
@@ -419,9 +450,6 @@ void describe('package', () => {
       'pi-background-tasks:request:v1',
       'pi-background-tasks:response:v1',
       'pi-background-tasks:terminal:v1',
-      'src/core/extension-api.ts',
-      'Shift+Down',
-      'Ctrl+Alt+C',
       '/fusion',
       '/fusion-models',
       'fusion_reason',
@@ -438,9 +466,9 @@ void describe('package', () => {
       'prompt_budget_exceeded_measured',
     ]) {
       assert.match(
-        readme,
+        documentationInventory,
         new RegExp(surface.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')),
-        `README missing ${surface}`,
+        `README/generated docs inventory missing ${surface}`,
       );
       assert.match(
         plan,
@@ -448,6 +476,11 @@ void describe('package', () => {
         `TEST_PLAN missing ${surface}`,
       );
     }
+    const eventBusDocs = await text('docs/api/eventbus-v1.md');
+    assert.match(eventBusDocs, /src\/core\/extension-api\.ts/);
+    const shortcutDocs = await text('docs/reference/shortcuts-and-dock.md');
+    assert.match(shortcutDocs, /Shift\+Down/);
+    assert.match(shortcutDocs, /Ctrl\+Alt\+C/);
   });
 
   void it('validates Fusion v1 public tool arguments loudly', () => {
@@ -1163,10 +1196,20 @@ void describe('package', () => {
       'src/core/fusion/web-fetch.ts',
       'src/testing/normalize.ts',
       'README.md',
+      'BACKGROUND-TASKS-INSTRUCTIONS.md',
+      'logo.png',
       'TESTING.md',
       'TEST_PLAN.md',
       'PUBLISHING.md',
       'LICENSE',
+      'docs/INDEX.md',
+      'docs/read-before-edit.md',
+      'docs/manifest.json',
+      'docs/attestations.json',
+      'docs/assets/architecture.svg',
+      'docs/assets/footer-dock.svg',
+      'docs/assets/logo.svg',
+      'docs/subsystems/docs-freshness-gate.md',
       'package.json',
     ])
       assert.ok(files.includes(f), f);
@@ -1224,6 +1267,15 @@ void describe('package', () => {
       );
       for (const f of [
         'package.json',
+        'BACKGROUND-TASKS-INSTRUCTIONS.md',
+        'logo.png',
+        'docs/INDEX.md',
+        'docs/read-before-edit.md',
+        'docs/manifest.json',
+        'docs/attestations.json',
+        'docs/assets/architecture.svg',
+        'docs/assets/footer-dock.svg',
+        'docs/assets/logo.svg',
         'extensions/background-tasks.ts',
         'extensions/fusion-child.ts',
         'src/extension.ts',

@@ -350,7 +350,7 @@ void describe('delegate limits', () => {
     const limits = resolveDelegateLimits(route(200_000));
     assert.equal(limits.max_turns, 24);
     assert.equal(limits.max_tool_calls, 120);
-    assert.equal(limits.timeout_seconds, 900);
+    assert.equal(limits.timeout_seconds, 1200);
     assert.equal(limits.allowed_input_tokens, delegateAllowedInputTokens(route(200_000)));
   });
 

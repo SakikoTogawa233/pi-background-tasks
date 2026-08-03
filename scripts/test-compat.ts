@@ -303,8 +303,17 @@ async function readPersistedFusionToolResult(
 }
 
 function parsePack(text: string): PackFileEntry {
-  const parsed = parseJsonText(text);
-  if (!Array.isArray(parsed)) throw new Error('npm pack JSON output must be an array');
+  const trimmed = text.trim();
+  const arrayStart = trimmed.startsWith('[') ? 0 : text.lastIndexOf('\n[') + 1;
+  if (arrayStart <= 0 && !trimmed.startsWith('[')) {
+    throw new Error(
+      `npm pack output must end with a JSON array; received ${JSON.stringify(text.slice(0, 160))}`,
+    );
+  }
+  const parsed = parseJsonText(arrayStart === 0 ? trimmed : text.slice(arrayStart).trim());
+  if (!Array.isArray(parsed) || parsed.length !== 1) {
+    throw new Error('npm pack JSON output must contain exactly one package entry');
+  }
   const first = parsed[0];
   if (!isRecord(first)) throw new Error('npm pack JSON entry must be an object');
   return { filename: requireString(first['filename'], 'pack filename') };

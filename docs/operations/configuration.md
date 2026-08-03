@@ -1,0 +1,110 @@
+---
+doc_id: operations/configuration
+audience: maintainer
+mode: authored
+review_policy: contract
+stability: stable
+covers_surfaces: []
+covers_sources: []
+---
+# Configuration
+
+This page lists operator-facing configuration found in source. It intentionally does not invent undocumented environment variables.
+
+## Update check
+
+At `session_start`, the extension performs a one-shot, time-boxed npm latest-version lookup. Failures are offline-safe: the footer simply shows no update segment.
+
+| Variable | Effect |
+|---|---|
+| `PI_BG_DISABLE_UPDATE_CHECK=1` | Skip the update check. |
+| `PI_OFFLINE=1` | Skip the update check. |
+| `PI_BG_REGISTRY_URL=<url>` | Use a registry mirror instead of `https://registry.npmjs.org`. |
+
+`/bg-update` only prints update commands; it does not install or self-update.
+
+## Shell selection
+
+### POSIX
+
+For ordinary `bg_run` and `/bg` shell commands, non-Windows platforms use `SHELL` when it is set, otherwise `/bin/sh`.
+
+### Windows
+
+Windows defaults to `cmd.exe`/`ComSpec`. The generic `SHELL` variable is ignored on Windows so existing `cmd` syntax does not silently change language.
+
+| Variable | Effect |
+|---|---|
+| `PI_BG_SHELL=cmd` | Use Windows `cmd` dialect. |
+| `PI_BG_SHELL=bash` | Use POSIX-style `bash -c` on Windows. |
+| `PI_BG_SHELL_PATH=<absolute .exe/.com>` | Explicit shell path; requires `PI_BG_SHELL`. |
+
+Invalid Windows shell settings fail loudly instead of falling back. `bash` is invoked with `-c`, not `-lc`.
+
+## Output and log caps
+
+| Setting/surface | Value/behavior |
+|---|---|
+| `PI_BG_MAX_OUTPUT_BYTES` | Optional environment override for task output cap. Default is 20 MiB. Exceeding it fails/kills the task rather than claiming success. |
+| `bg_logs.maxBytes` / `/logs <id> [maxBytes]` | Bounded model-visible read. The package cap is 50 KiB. |
+| Full output | Written under `.pi/tasks/<session-id>-<pid>/<task-id>.output`. |
+
+Bounded logs are for context safety; they point to the full local output file when more bytes exist.
+
+## Pi-agent telemetry opt-out
+
+| Variable | Effect |
+|---|---|
+| `PI_BG_DISABLE_PI_TELEMETRY=1` | Do not wrap shell commands that appear to launch `pi -p ...` or `pi --mode json ...` when `isAgent:true`. Raw stdout is preserved. |
+
+Telemetry wrapping is best-effort and task-owned. Missing telemetry is reported as unavailable, never as zero. Under Windows `cmd`, safe interception is unavailable and the command is left unchanged.
+
+## Fusion model configuration
+
+Fusion model slots are stored globally under the Pi agent directory as:
+
+```text
+fusion-models.json
+```
+
+Use `/fusion-models` in TUI mode to configure five slots:
+
+- Candidate 1
+- Candidate 2
+- Candidate 3
+- Evaluator
+- Merger
+
+Missing config means all five slots are `$current`. Config entries are qualified `provider/model` selections or `$current`; malformed config, stale explicit models, unavailable current models, and concurrent selector conflicts fail loudly before child inference.
+
+Fusion accepts frontier-model routes only through Pi Anthropic or Codex subscription OAuth where `ModelRegistry.isUsingOAuth` confirms the route. Metered frontier API-key/base-URL paths are rejected before child creation, and relevant metered environment variables are stripped from Fusion children.
+
+## Fusion runtime limits
+
+These are source constants, not documented operator env knobs:
+
+| Limit | Value |
+|---|---:|
+| Child absolute timeout | 30 minutes |
+| Child stale-output watchdog | 20 minutes |
+| Child stdout cap | 32 MiB |
+| Child stderr cap | 4 MiB |
+| Candidate output contract | 48 KiB JSON-rendered bytes |
+| Evaluator output contract | 64 KiB JSON-rendered bytes |
+| Merger output contract | 64 KiB JSON-rendered bytes |
+| `fusion_web_fetch` timeout | 60 seconds |
+| `fusion_web_fetch` response body cap | 2 MiB |
+| `fusion_web_fetch` returned content cap | 32 KiB |
+| `fusion_web_fetch` redirect cap | 5 hops |
+
+Oversized Fusion outputs fail loudly and are preserved in local artifacts where applicable. They are not forwarded or silently truncated.
+
+## Offline behavior
+
+- Update checks skip when `PI_OFFLINE=1` and degrade to no footer update segment on any lookup failure.
+- Background shell commands may still do whatever the command does; the package does not block their network access.
+- Fusion child model calls require configured Pi model routes. `fusion_research` additionally requires network access to the caller-supplied public URLs it fetches.
+
+## Durability and platform note
+
+Task metadata, delegate/Fusion artifacts, attestation sidecars, and `fusion-models.json` use durable write helpers. Ordinary task `.output` streams are ended and drained before terminal publication but are not explicitly fsynced. POSIX performs directory `fsync` after atomic replacement. Windows still flushes replaced file contents before rename and treats rename failures as fatal, but it does not get the same portable directory-entry crash-durability guarantee.

@@ -1,0 +1,8 @@
+# Documentation generation is timestamp-free and byte-stable; normalize line endings.
+*.md text eol=lf
+*.json text eol=lf
+*.mjs text eol=lf
+*.ts text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+*.svg text eol=lf

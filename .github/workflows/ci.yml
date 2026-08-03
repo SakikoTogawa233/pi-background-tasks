@@ -43,6 +43,9 @@ jobs:
       - name: Typecheck
         run: npm run typecheck
 
+      - name: Docs freshness gate
+        run: npm run docs:verify
+
       - name: Type-safety standard
         run: npm run test:type-safety
 

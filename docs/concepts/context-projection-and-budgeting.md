@@ -1,0 +1,79 @@
+---
+doc_id: concepts/context-projection-and-budgeting
+audience: agent
+mode: authored
+review_policy: behavioral
+stability: evolving
+covers_surfaces: []
+covers_sources: [src/core/context/parent-snapshot.ts, src/core/context/token-budget.ts, src/core/context/visible-conversation-v2.ts]
+---
+# Context projection and budgeting
+
+Primary sources: `src/core/context/parent-snapshot.ts`, `src/core/context/visible-conversation-v2.ts`, and `src/core/context/token-budget.ts`.
+
+## Shared visible conversation transform
+
+`VISIBLE_CONVERSATION_TRANSFORM_ID` is `visible-conversation-ledger-v2`. It is shared by Fusion reason and delegate seeding so each consumer gets the same disposition for the same parent session bytes.
+
+The transform has no behavioral knobs:
+
+- user text: retained verbatim;
+- assistant text: retained verbatim;
+- assistant thinking: omitted into the ledger;
+- tool-call arguments: omitted into the ledger;
+- tool-result text: omitted into the ledger;
+- tool-result images: ledger-only;
+- user images: marker-only text (`[Image omitted from fusion text transcript: <mime>]`);
+- empty text blocks: counted, not serialized;
+- unknown roles/block types: loud `UnsupportedConversationBlockError`.
+
+Each omitted event records source ordinal, block ordinal, kind, payload byte length, payload SHA-256, and optional tool/mime metadata. The ledger root is hash-framed and independent of consumer envelopes, so Fusion and delegate can seal the same transform output into different schemas without changing the underlying omitted-event commitment.
+
+## Parent snapshot and branch exclusion
+
+`parent-snapshot.ts` adapts Pi `SessionManager` entries into LLM messages. Tool callers can exclude the active assistant leaf that contains the in-flight tool call; this prevents the child from seeing its own request and sibling calls as completed parent history. Commands do not exclude a leaf.
+
+Callers must snapshot once and complete downstream launch/admission from that frozen snapshot. Re-reading the parent session during launch would allow seed drift.
+
+## Reason input vs clean input
+
+- Fusion `reason` uses the parent visible-conversation projection. Its canonical input includes the system prompt, request authority, projection entries, accounting, and a separate `context-omission-ledger.json` artifact.
+- Fusion `investigate`, `research`, and `validate` use clean-task input. They carry the explicit request and declared sources where applicable; they intentionally do not carry parent system prompt, conversation projection, or omission ledger.
+- Delegate uses the shared projection inside its seed, but its directive text is marked authoritative and projected history is supporting/untrusted.
+
+No path silently truncates parent context. Oversized projections or prompts must be rejected with budget details or represented by hashed artifact receipts where that consumer defines a receipt protocol.
+
+## Token estimator concepts
+
+`token-budget.ts` is byte arithmetic, not a tokenizer. It produces upper-bound style estimates from UTF-8 byte classes:
+
+- `normal` known text/json bytes;
+- `multibyte` bytes;
+- `dense_ascii` bytes;
+- `unknown_output_contract` bytes.
+
+Families are `anthropic`, `openai-codex`, and `unknown`. Exact model overrides currently include Anthropic Opus/Fable routes and OpenAI Codex GPT routes. Unknown providers and unbacked models fall to a provable 1.00 B/token floor.
+
+Calibration facts in code:
+
+- calibration id: `pi-background-tasks.input-token-calibration.v1`;
+- large-prompt floor: 50 KiB;
+- affine fixed reserve: 512 tokens;
+- observed large Fusion prompt corpus: 882 prompts, dated 2026-08-02;
+- Anthropic configured rate: 1.73 B/token after haircut;
+- OpenAI Codex configured rate: 2.89 B/token after haircut;
+- conservative/floor rates are used for delegate scope, small prompts, unbacked models, unknown providers, capacity guards, and dense-ASCII out-of-domain cases.
+
+The dense-ASCII gate is explicitly a low-whitespace heuristic proxy, not a tokenizer guarantee. Calibration applies only when the input is in the measured domain and the route capacity can hold that domain.
+
+## Budget invariants
+
+- `allowedInputTokens()` returns a signed number and never clamps unusable routes to zero.
+- Callers must reject unusable or too-small context windows before spawning children.
+- Multibyte bytes cannot bypass accounting.
+- Unknown output contracts are charged separately; future output cannot be assumed to be cheap.
+- Rate-source warnings are part of the contract and should be surfaced in refusal details.
+
+## No silent truncation
+
+Model-visible context may be compacted only by explicit policy receipts with exact accounting and hashes. It must never be clipped, head/tail previewed, route-substituted, or hidden behind a fallback estimator without reporting the source and limitation.

@@ -58,10 +58,10 @@ export const FUSION_CHILD_TIMEOUT_MS = 30 * 60 * 1000;
  * the final assistant message, so a single slow model turn is genuinely silent on both
  * streams. The threshold must therefore exceed the longest plausible single turn, not the
  * longest plausible tool call: a value tuned to tool latency would kill healthy children
- * mid-reasoning. 900s stays well inside the 30-minute absolute cap while leaving a wide
+ * mid-reasoning. 1200s stays inside the 30-minute absolute cap while leaving a wide
  * margin over observed turn latency.
  */
-export const FUSION_CHILD_IDLE_TIMEOUT_MS = 15 * 60 * 1000;
+export const FUSION_CHILD_IDLE_TIMEOUT_MS = 20 * 60 * 1000;
 export const FUSION_CHILD_KILL_GRACE_MS = 3000;
 export const FUSION_CHILD_SIGKILL_WAIT_MS = 5000;
 const FUSION_PI_CHILD_O_NOFOLLOW = typeof constants.O_NOFOLLOW === 'number' ? constants.O_NOFOLLOW : 0;

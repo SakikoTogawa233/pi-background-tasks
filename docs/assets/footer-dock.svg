@@ -1,0 +1,47 @@
+<svg xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="title desc" viewBox="0 0 1200 560">
+  <title id="title">pi-background-tasks footer dock illustration</title>
+  <desc id="desc">A stable illustrative Pi terminal footer and focused background task dock with running, completed, and failed tasks plus controls.</desc>
+  <defs>
+    <linearGradient id="screen" x1="0" x2="1" y1="0" y2="1">
+      <stop offset="0" stop-color="#061528"/>
+      <stop offset="1" stop-color="#0b294b"/>
+    </linearGradient>
+    <linearGradient id="footer" x1="0" x2="1">
+      <stop offset="0" stop-color="#b7e7ff"/>
+      <stop offset="1" stop-color="#7df4ff"/>
+    </linearGradient>
+    <style>
+      .screen{fill:url(#screen)}.dock{fill:#071a30;stroke:#50e5ff;stroke-width:2}.row{fill:#0c2847;stroke:#1f6d89;stroke-width:1}.row2{fill:#0a223d;stroke:#1f6d89;stroke-width:1}.footer{fill:url(#footer)}.text{font-family:ui-sans-serif,system-ui,-apple-system,Segoe UI,sans-serif;fill:#effcff}.muted{fill:#a7c3d6}.navy{fill:#093456}.cyan{fill:#64edff}.amber{fill:#ffbd4b}.green{fill:#5ff2b3}.red{fill:#ff6b7a}.small{font-size:22px}.tiny{font-size:18px}.label{font-size:26px;font-weight:700}.mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+    </style>
+  </defs>
+  <rect class="screen" x="34" y="34" width="1132" height="492" rx="34"/>
+  <rect x="74" y="78" width="1052" height="310" rx="18" fill="#041120" stroke="#173956"/>
+  <text class="text small mono" x="104" y="126">› Working in your project while background tasks run…</text>
+  <text class="muted small mono" x="104" y="170">The main conversation stays usable.</text>
+  <text class="muted small mono" x="104" y="214">Completion arrives as a durable task notification.</text>
+
+  <rect class="footer" x="74" y="410" width="1052" height="48" rx="18"/>
+  <text class="navy label" x="104" y="442">bg 1 running · 1 done · Shift↓ · /bg-clear</text>
+  <circle cx="1074" cy="434" r="10" fill="#093456" opacity=".75"/>
+
+  <rect class="dock" x="178" y="206" width="844" height="260" rx="26"/>
+  <text class="text label" x="218" y="254">Background tasks</text>
+  <text class="muted small" x="218" y="290">focused bottom dock · stable task controls</text>
+
+  <rect class="row" x="218" y="318" width="764" height="46" rx="14"/>
+  <circle class="cyan" cx="244" cy="341" r="8"/>
+  <text class="text small" x="266" y="348">Docs preview</text>
+  <text class="muted tiny" x="520" y="347">running · ctx — · output tail available</text>
+
+  <rect class="row2" x="218" y="374" width="764" height="46" rx="14"/>
+  <path d="M237 397 l8 9 l18 -22" fill="none" stroke="#5ff2b3" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/>
+  <text class="text small" x="266" y="404">Config audit</text>
+  <text class="muted tiny" x="520" y="403">completed · verified result ready</text>
+
+  <rect class="row2" x="218" y="430" width="764" height="46" rx="14"/>
+  <path d="M236 442 l22 22 M258 442 l-22 22" stroke="#ff6b7a" stroke-width="5" stroke-linecap="round"/>
+  <text class="text small" x="266" y="460">Old watcher</text>
+  <text class="muted tiny" x="520" y="459">failed · open logs for details</text>
+
+  <text class="muted tiny" x="218" y="504">↑/↓ select · Enter details · k stop · R rerun · c path · Esc close</text>
+</svg>

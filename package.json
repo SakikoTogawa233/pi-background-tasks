@@ -1,7 +1,7 @@
 {
   "name": "pi-background-tasks",
   "version": "1.0.2",
-  "description": "Pi extension package for background shell tasks plus Fusion v1 fixed-purpose tools: bg_run tools, bg_delegate, /bg commands, /fusion, fusion_reason, fusion_investigate, fusion_research, fusion_validate, model selector UI, bounded logs, kill/timeout safety, and completion wakeups.",
+  "description": "Pi extension for durable background shell tasks, read-only delegated agents, local attested Pi runs, and fixed-purpose Fusion workflows through child Pi processes.",
   "type": "module",
   "license": "ISC",
   "author": "Ismail <ismailsalikhodjaev@gmail.com>",
@@ -16,11 +16,15 @@
     "coding-agent",
     "shell",
     "tasks",
+    "delegate",
+    "attestation",
     "fusion",
     "reason",
     "investigate",
     "research",
-    "multi-model"
+    "multi-model",
+    "task-manager",
+    "pi-dev"
   ],
   "homepage": "https://github.com/ismailsaleekh/pi-background-tasks#readme",
   "repository": {
@@ -37,7 +41,10 @@
     "TESTING.md",
     "TEST_PLAN.md",
     "PUBLISHING.md",
-    "LICENSE"
+    "LICENSE",
+    "docs/",
+    "BACKGROUND-TASKS-INSTRUCTIONS.md",
+    "logo.png"
   ],
   "scripts": {
     "typecheck": "tsc --noEmit",
@@ -58,9 +65,18 @@
     "lint": "cd ../.. && npm run quality:ts:lint",
     "format:check": "cd ../.. && npm run quality:ts:format",
     "test:compat": "tsx scripts/test-compat.ts",
-    "test:hook-contract": "tsx --test --test-concurrency=1 tests/scripted-provider/pi-hook-contract.test.ts"
+    "test:hook-contract": "tsx --test --test-concurrency=1 tests/scripted-provider/pi-hook-contract.test.ts",
+    "docs:generate": "node scripts/docs/generate.mjs",
+    "docs:verify": "node scripts/docs/verify.mjs",
+    "docs:attest/record": "node scripts/docs/attest.mjs",
+    "docs:attest": "npm run docs:attest/record",
+    "test:docs": "tsx --test tests/unit/docs-gate.test.ts tests/package/docs-contract.test.ts",
+    "payload:check": "node scripts/check-package-payload.mjs",
+    "release:check-version": "node scripts/check-release-version.mjs",
+    "prepack": "npm run docs:verify && npm run payload:check"
   },
   "pi": {
+    "image": "https://raw.githubusercontent.com/ismailsaleekh/pi-background-tasks/main/logo.png",
     "extensions": [
       "./extensions/background-tasks.ts"
     ]

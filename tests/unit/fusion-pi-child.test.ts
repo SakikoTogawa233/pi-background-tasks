@@ -8,6 +8,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { SpawnOptions } from 'node:child_process';
 import {
+  FUSION_CHILD_IDLE_TIMEOUT_MS,
+  FUSION_CHILD_TIMEOUT_MS,
   FusionChildRunError,
   FusionPiCompactResultParser,
   assertFusionToolPolicyDisjoint,
@@ -222,6 +224,11 @@ async function delay(ms: number): Promise<void> {
 }
 
 void describe('fusion Pi child runner', () => {
+  void it('pins the absolute and stale-output watchdog timeouts', () => {
+    assert.equal(FUSION_CHILD_TIMEOUT_MS, 30 * 60 * 1000);
+    assert.equal(FUSION_CHILD_IDLE_TIMEOUT_MS, 20 * 60 * 1000);
+  });
+
   void it('BUG-182 preserves the complete Pi Usage cost contract in compact metadata', () => {
     const piUsage: Usage = {
       input: 11,
