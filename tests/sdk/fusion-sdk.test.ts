@@ -832,13 +832,12 @@ void describe('fusion SDK integration', { concurrency: false }, () => {
         undefined,
         h.session.extensionRunner.createContext(),
       );
-      assert.equal(
-        result.content[0]?.type === 'text' ? result.content[0].text : '',
-        'SDK fused answer.',
-      );
+      const validateText = result.content[0]?.type === 'text' ? result.content[0].text : '';
+      assert.match(validateText, /^# Validation report/);
+      assert.match(validateText, /Location: README\.md:1/);
       assert.ok(isFusionResultDetails(result.details));
       assert.equal(result.details.workflow, 'validate');
-      assert.ok(result.details.run_id.startsWith('v'));
+      assert.ok(result.details.run_id.startsWith('validate-'));
 
       const calls = await invocations(h.fakeLogPath);
       assert.equal(calls.length, 5, 'validate must make exactly five child calls');
@@ -863,9 +862,9 @@ void describe('fusion SDK integration', { concurrency: false }, () => {
         assert.ok(call.args.includes('--no-tools'), `${call.stage} must run with --no-tools`);
         assert.ok(!call.args.includes('--tools'));
       }
-      // The child sees the projected conversation, never a raw transcript.
+      // Validate is clean by construction: no parent projection/transcript enters child prompts.
       for (const call of calls) {
-        assert.ok(call.stdin.includes('conversation_projection'));
+        assert.ok(!call.stdin.includes('conversation_projection'));
         assert.ok(!call.stdin.includes('conversation_transcript'));
         assert.ok(call.stdin.includes(FUSION_INPUT_SCHEMA_VERSION));
       }

@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import { lstat, readFile } from 'node:fs/promises';
+import { isIP } from 'node:net';
 import { canonicalJson } from '../attested-pi-run.js';
 import { isJsonObject, parseJsonText } from '../common.js';
 import {
@@ -15,22 +16,62 @@ function sha256Text(value: string): string {
   return createHash('sha256').update(value, 'utf8').digest('hex');
 }
 
-function isPrivateIp(host: string): boolean {
-  const ipv4 = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(host);
-  if (ipv4 !== null) {
-    const parts = ipv4.slice(1).map(Number);
-    if (parts.some((part) => !Number.isInteger(part) || part < 0 || part > 255)) return true;
-    const [a = 0, b = 0] = parts;
-    return (
-      a === 0 ||
-      a === 10 ||
-      a === 127 ||
-      (a === 169 && b === 254) ||
-      (a === 172 && b >= 16 && b <= 31) ||
-      (a === 192 && b === 168)
-    );
-  }
-  return false;
+function stripIpv6Brackets(hostname: string): string {
+  return hostname.startsWith('[') && hostname.endsWith(']') ? hostname.slice(1, -1) : hostname;
+}
+
+function isBlockedHostname(hostname: string): boolean {
+  const lower = hostname.toLowerCase();
+  return (
+    lower === 'localhost' ||
+    lower.endsWith('.localhost') ||
+    lower === 'metadata' ||
+    lower === 'metadata.local' ||
+    lower === 'metadata.google.internal' ||
+    lower === 'metadata.goog' ||
+    lower === 'instance-data' ||
+    lower === 'instance-data.ec2.internal'
+  );
+}
+
+function isBlockedIpv4(host: string): boolean {
+  const parts = host.split('.').map((part) => Number.parseInt(part, 10));
+  if (parts.length !== 4 || parts.some((part) => !Number.isInteger(part) || part < 0 || part > 255))
+    return true;
+  const [a = 0, b = 0, c = 0] = parts;
+  if (a === 0 || a === 10 || a === 127) return true;
+  if (a === 100 && b >= 64 && b <= 127) return true;
+  if (a === 169 && b === 254) return true;
+  if (a === 172 && b >= 16 && b <= 31) return true;
+  if (a === 192 && b === 168) return true;
+  if (a === 192 && b === 0 && c === 0) return true;
+  if (a === 192 && b === 0 && c === 2) return true;
+  if (a === 198 && (b === 18 || b === 19)) return true;
+  if (a === 198 && b === 51 && c === 100) return true;
+  if (a === 203 && b === 0 && c === 113) return true;
+  if (a >= 224) return true;
+  return host === '255.255.255.255' || host === '168.63.129.16';
+}
+
+function isBlockedIpv6(host: string): boolean {
+  const lower = host.toLowerCase();
+  return (
+    lower === '::' ||
+    lower === '::1' ||
+    lower.startsWith('::ffff:') ||
+    lower.startsWith('64:ff9b:1:') ||
+    lower.startsWith('100:') ||
+    lower.startsWith('2001:2:') ||
+    lower.startsWith('2001:db8:') ||
+    lower.startsWith('2002:') ||
+    lower.startsWith('fc') ||
+    lower.startsWith('fd') ||
+    lower.startsWith('fe8') ||
+    lower.startsWith('fe9') ||
+    lower.startsWith('fea') ||
+    lower.startsWith('feb') ||
+    lower.startsWith('ff')
+  );
 }
 
 export function canonicalizeFusionPublicUrl(value: string): string {
@@ -58,9 +99,17 @@ export function canonicalizeFusionPublicUrl(value: string): string {
   url.username = '';
   url.password = '';
   url.hash = '';
-  url.hostname = url.hostname.toLowerCase();
-  if (url.hostname === 'localhost' || url.hostname.endsWith('.localhost') || isPrivateIp(url.hostname)) {
-    throw new FusionError('fusion research source URL must be public, not localhost/private', {
+  const normalizedHost = stripIpv6Brackets(url.hostname.toLowerCase().replace(/\.+$/u, ''));
+  url.hostname = normalizedHost;
+  if (isBlockedHostname(normalizedHost)) {
+    throw new FusionError('fusion research source URL must be public, not localhost/metadata', {
+      code: 'orchestration_failed',
+      childCreated: false,
+    });
+  }
+  const ipKind = isIP(normalizedHost);
+  if ((ipKind === 4 && isBlockedIpv4(normalizedHost)) || (ipKind === 6 && isBlockedIpv6(normalizedHost))) {
+    throw new FusionError('fusion research source URL must be public, not private/reserved', {
       code: 'orchestration_failed',
       childCreated: false,
     });
@@ -68,7 +117,6 @@ export function canonicalizeFusionPublicUrl(value: string): string {
   if ((url.protocol === 'http:' && url.port === '80') || (url.protocol === 'https:' && url.port === '443')) {
     url.port = '';
   }
-  if (url.pathname === '') url.pathname = '/';
   return url.toString();
 }
 

@@ -362,7 +362,7 @@ function assertBundledTypeBox(temp: string, version: string, expectedRange: stri
 function expectedTypeBoxLine(version: string): { spec: string; prefix: string } {
   return version.startsWith('0.83')
     ? { spec: 'typebox@1.3.7', prefix: '1.3.' }
-    : { spec: 'typebox@^1.1.38', prefix: '1.1.' };
+    : { spec: 'typebox@~1.1.38', prefix: '1.1.' };
 }
 
 async function smokeVersion(version: string, tarballPath: string): Promise<void> {

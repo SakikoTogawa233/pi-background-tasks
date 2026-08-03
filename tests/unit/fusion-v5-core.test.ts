@@ -128,7 +128,7 @@ void describe('fusion v5 core workflow contracts', () => {
     assert.equal(first.input.context?.kind, 'clean_task');
     assert.equal('conversation_projection' in first.input, false);
     assert.equal('system_prompt' in first.input, false);
-    assert.equal(first.ledger, undefined as never);
+    assert.equal('ledger' in first, false);
   });
 
   void it('normalizes and hashes research declared-source policies', () => {

@@ -143,9 +143,6 @@ export const FUSION_VALIDATE_WORKFLOW = freezeProfile({
   label: 'fusion validate',
 });
 
-/** @deprecated v4 name retained as a source-compatible alias for reason-only callers. */
-export const FUSION_BRAINSTORM_WORKFLOW = FUSION_REASON_WORKFLOW;
-
 const PROFILES_BY_ID: Readonly<Record<FusionWorkflowId, FusionWorkflowProfile>> = Object.freeze({
   reason: FUSION_REASON_WORKFLOW,
   investigate: FUSION_INVESTIGATE_WORKFLOW,
@@ -184,5 +181,13 @@ export function assertWorkflowCapability(
   return profile.candidateCapability;
 }
 
-/** @deprecated v5 workflows do not default; retained for old tests/imports. */
+/** @deprecated v4 artifact/testing alias. The retired public tool is never registered. */
+export const FUSION_BRAINSTORM_WORKFLOW = FUSION_REASON_WORKFLOW;
+
+export const FUSION_REASON = FUSION_REASON_WORKFLOW;
+export const FUSION_INVESTIGATE = FUSION_INVESTIGATE_WORKFLOW;
+export const FUSION_RESEARCH = FUSION_RESEARCH_WORKFLOW;
+export const FUSION_VALIDATE = FUSION_VALIDATE_WORKFLOW;
+
+/** @deprecated v5 workflows do not default; retained for old imports. */
 export const resolveWorkflowCapability = assertWorkflowCapability;

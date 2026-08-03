@@ -7,7 +7,6 @@ import {
   type FusionCanonicalRequestV3,
   type FusionCleanTaskCanonicalInputV5,
   type FusionDeclaredSourceV1,
-  type FusionContextOmissionLedgerV2,
   type FusionSource,
   type FusionWorkflowId,
 } from './types.js';
@@ -20,10 +19,16 @@ export interface BuildFusionCleanTaskInputOptions {
   declaredSources?: readonly DeclaredFusionSourceInput[] | undefined;
 }
 
+/**
+ * Public v1 clean builder. It is deliberately pure: callers provide cwd and
+ * normalized request text explicitly, and this module has no dependency on Pi
+ * session, snapshot, parent-context, or visible-conversation APIs.
+ */
+export const buildCleanFusionCanonicalInput = buildFusionCleanTaskCanonicalInput;
+
 export interface BuiltFusionCleanTaskCanonicalInput {
   input: FusionCleanTaskCanonicalInputV5;
   serialized: string;
-  ledger?: FusionContextOmissionLedgerV2 | undefined;
   declaredSources: readonly FusionDeclaredSourceV1[];
   transcriptLeafId: null;
 }
@@ -60,7 +65,7 @@ export function buildFusionCleanTaskCanonicalInput(
     text: options.request,
     sha256: sha256Text(options.request),
   };
-  const input = {
+  const input: FusionCleanTaskCanonicalInputV5 = {
     schema_version: FUSION_INPUT_SCHEMA_VERSION,
     workflow: options.workflow,
     cwd: options.cwd,
@@ -70,7 +75,7 @@ export function buildFusionCleanTaskCanonicalInput(
       policy_id: 'fusion-clean-task-v1',
       declared_sources: declaredSources,
     },
-  } as FusionCleanTaskCanonicalInputV5;
+  };
   return {
     input,
     serialized: canonicalJson(input),

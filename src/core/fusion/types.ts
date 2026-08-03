@@ -14,6 +14,7 @@ export const FUSION_MODEL_CONFIG_SCHEMA_VERSION = 'pi-background-tasks.fusion-mo
 export const FUSION_LEGACY_INPUT_SCHEMA_VERSION = 'pi-background-tasks.fusion-input.v4';
 export const FUSION_INPUT_SCHEMA_VERSION = 'pi-background-tasks.fusion-input.v5';
 export const FUSION_EVALUATION_SCHEMA_VERSION = 'pi-background-tasks.fusion-evaluation.v1';
+export const FUSION_VALIDATE_CANDIDATE_SCHEMA_VERSION = 'pi-background-tasks.fusion-validation-candidate.v1';
 export const FUSION_LEGACY_RESULT_SCHEMA_VERSION = 'pi-background-tasks.fusion-result.v4';
 export const FUSION_RESULT_SCHEMA_VERSION = 'pi-background-tasks.fusion-result.v5';
 export const FUSION_LEGACY_MANIFEST_SCHEMA_VERSION = 'pi-background-tasks.fusion-manifest.v3';
@@ -359,14 +360,14 @@ export interface FusionCanonicalInputV5Base {
   workflow?: FusionWorkflowId | undefined;
   cwd: string;
   request: FusionCanonicalRequestV3;
-  /** @deprecated v4 readability alias. Present only for session-projection inputs at runtime. */
-  system_prompt: string;
-  /** @deprecated v4 readability alias. Present only for session-projection inputs at runtime. */
-  conversation_projection: FusionConversationProjectionV4;
 }
 
 export interface FusionSessionProjectionCanonicalInputV5 extends FusionCanonicalInputV5Base {
   workflow?: FusionWorkflowId | undefined;
+  /** @deprecated v4 readability alias. Present only for session-projection inputs at runtime. */
+  system_prompt: string;
+  /** @deprecated v4 readability alias. Present only for session-projection inputs at runtime. */
+  conversation_projection: FusionConversationProjectionV4;
   context?: FusionSessionProjectionContextV1 | undefined;
 }
 
@@ -433,12 +434,44 @@ export interface FusionSynthesisPlan {
   must_avoid: readonly string[];
 }
 
+export type FusionValidationSeverity = 'critical' | 'high' | 'minor';
+
+export interface FusionValidationFindingRecord {
+  id: string;
+  candidate_id: FusionCandidateId;
+  severity: FusionValidationSeverity;
+  location: string;
+  evidence: string;
+  impact: string;
+  summary: string;
+}
+
+export interface FusionValidationFindingDecision {
+  source_id: string;
+  disposition: 'include' | 'exclude';
+  rationale: string;
+  group_id?: string | undefined;
+}
+
+export interface FusionValidationFindingAccounting {
+  findings: readonly FusionValidationFindingRecord[];
+  decisions: readonly FusionValidationFindingDecision[];
+}
+
+export interface FusionValidationCandidateReportV1 {
+  schema_version: typeof FUSION_VALIDATE_CANDIDATE_SCHEMA_VERSION;
+  findings: readonly Omit<FusionValidationFindingRecord, 'id' | 'candidate_id'>[];
+  verified: readonly string[];
+  limitations: readonly string[];
+}
+
 export interface FusionEvaluationV1 {
   schema_version: typeof FUSION_EVALUATION_SCHEMA_VERSION;
   candidate_assessments: readonly [CandidateAssessment, CandidateAssessment, CandidateAssessment];
   agreements: readonly string[];
   conflicts: readonly FusionConflict[];
   synthesis_plan: FusionSynthesisPlan;
+  validation_accounting?: FusionValidationFindingAccounting | undefined;
 }
 
 /** Exact Pi usage contract used at the child, artifact, and host tool-result boundaries. */
@@ -688,6 +721,8 @@ export interface FusionToolCallLogRecord {
   status: FusionToolCallLogStatus;
   duration_ms: number;
   url?: string | undefined;
+  /** SHA-256 of a rejected attempted fetch URL; raw rejected URLs are never persisted. */
+  rejected_url_sha256?: string | undefined;
   final_url?: string | undefined;
   http_status?: number | undefined;
   response_bytes?: number | undefined;
@@ -850,6 +885,9 @@ export interface FusionBudgetEmptyRequestVerdict {
 
 export interface FusionBudgetPlanV1 {
   schema_version: typeof FUSION_BUDGET_PLAN_SCHEMA_VERSION;
+  workflow: FusionWorkflowId;
+  context: { kind: FusionContextKind; policy_id: string };
+  fixed_candidate_policy: { capability: FusionCapability; tools: readonly string[] };
   policy: FusionBudgetPolicyDescriptor;
   routes: readonly FusionRouteCapacity[];
   stages: readonly FusionStageBudgetPlanEntry[];

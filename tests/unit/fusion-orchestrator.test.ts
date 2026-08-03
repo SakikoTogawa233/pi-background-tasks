@@ -5,9 +5,10 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { parseJsonText } from '../../src/core/common.js';
 import { FusionOrchestrator, type FusionChildRunner } from '../../src/core/fusion/orchestrator.js';
+import { buildFusionCleanTaskCanonicalInput } from '../../src/core/fusion/clean-context.js';
+import { FUSION_RESEARCH_WORKFLOW } from '../../src/core/fusion/workflows.js';
 import { defaultFusionModelConfig } from '../../src/core/fusion/config.js';
 import {
-  FUSION_CANDIDATE_INSPECT_SYSTEM_PROMPT,
   FUSION_CANDIDATE_RESEARCH_SYSTEM_PROMPT,
   FUSION_CANDIDATE_SYSTEM_PROMPT,
 } from '../../src/core/fusion/prompts.js';
@@ -435,14 +436,11 @@ void describe('fusion orchestrator', () => {
       const defaultCandidates = calls.filter((call) => call.stage === 'candidate');
       assert.deepEqual(
         defaultCandidates.map((call) => call.capability),
-        ['inspect', 'inspect', 'inspect'],
+        ['reason', 'reason', 'reason'],
       );
-      for (const [index, call] of defaultCandidates.entries()) {
-        assert.equal(call.systemPrompt, FUSION_CANDIDATE_INSPECT_SYSTEM_PROMPT);
-        assert.match(
-          (call.toolCallLogPath ?? '').replaceAll('\\', '/'),
-          new RegExp(`candidate-${String(index + 1)}\\.attempt-1\\.tool-calls\\.jsonl$`),
-        );
+      for (const call of defaultCandidates) {
+        assert.equal(call.systemPrompt, FUSION_CANDIDATE_SYSTEM_PROMPT);
+        assert.equal(call.toolCallLogPath, undefined);
       }
       assert.deepEqual(
         calls.filter((call) => call.stage !== 'candidate').map((call) => call.capability),
@@ -488,16 +486,21 @@ void describe('fusion orchestrator', () => {
         childRunner: runner,
         randomBytes: () => Buffer.from([0, 0, 0, 0]),
       });
-      const canonical = canonicalInput();
+      const built = buildFusionCleanTaskCanonicalInput({
+        cwd: root,
+        source: 'tool',
+        workflow: 'research',
+        request: 'research declared source',
+        declaredSources: [{ url: 'https://example.com/source', purpose: 'unit' }],
+      });
       await orchestrator.run({
         source: 'tool',
         cwd: root,
-        canonicalInput: canonical,
-        canonicalInputSerialized: JSON.stringify(canonical),
-        contextLedger: ledger,
+        canonicalInput: built.input,
+        canonicalInputSerialized: built.serialized,
         config: defaultFusionModelConfig(),
         models: models(),
-        candidateCapability: 'research',
+        profile: FUSION_RESEARCH_WORKFLOW,
       });
       const candidateCalls = calls.filter((call) => call.stage === 'candidate');
       assert.deepEqual(

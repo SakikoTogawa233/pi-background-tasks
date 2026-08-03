@@ -35,7 +35,7 @@ import {
   type ResolvedFusionModel,
 } from './types.js';
 import { isJsonObject, parseJsonText } from '../common.js';
-import { canonicalizeFusionPublicUrl } from './source-policy.js';
+import { canonicalizeFusionPublicUrl, readFusionSourcePolicyFile } from './source-policy.js';
 import {
   assertWindowsCommandLineWithinLimit,
   piLaunchArgv,
@@ -620,7 +620,7 @@ function parseToolCallLogRecord(value: unknown, label: string): FusionToolCallLo
       'status',
       'duration_ms',
     ],
-    ['url', 'final_url', 'http_status', 'response_bytes', 'content_sha256'],
+    ['url', 'rejected_url_sha256', 'final_url', 'http_status', 'response_bytes', 'content_sha256'],
     label,
   );
   if (record['schema_version'] !== FUSION_TOOL_CALL_LOG_SCHEMA_VERSION) {
@@ -640,6 +640,8 @@ function parseToolCallLogRecord(value: unknown, label: string): FusionToolCallLo
     duration_ms: requireUsageInteger(record, 'duration_ms', label),
   };
   if (record['url'] !== undefined) parsedRecord.url = requireNonBlankString(record, 'url', label);
+  if (record['rejected_url_sha256'] !== undefined)
+    parsedRecord.rejected_url_sha256 = requireSha256(record, 'rejected_url_sha256', label);
   if (record['final_url'] !== undefined)
     parsedRecord.final_url = requireNonBlankString(record, 'final_url', label);
   if (record['http_status'] !== undefined)
@@ -703,21 +705,30 @@ export function parseFusionToolCallLog(bytes: Buffer): FusionToolCallTrace {
 }
 
 
-function assertCompletedToolPolicy(
+async function assertCompletedToolPolicy(
   trace: FusionToolCallTrace,
   capability: FusionCapability,
   sourcePolicy: { path: string; sha256: string } | undefined,
-): void {
+): Promise<void> {
   const allowed = capability === 'inspect' ? FUSION_INSPECT_TOOLS : capability === 'research' ? FUSION_RESEARCH_TOOLS : [];
   const allowedSet = new Set<string>(allowed);
+  const declared =
+    capability === 'research' && sourcePolicy !== undefined
+      ? new Set((await readFusionSourcePolicyFile(sourcePolicy.path, sourcePolicy.sha256)).sources.map((source) => source.canonical_url))
+      : undefined;
   for (const record of trace.records) {
     if (!allowedSet.has(record.tool_name)) {
       throw new Error(`fusion child used non-allowlisted tool ${record.tool_name}`);
     }
     if (capability === 'research' && record.tool_name === FUSION_WEB_FETCH_TOOL_NAME) {
-      if (sourcePolicy === undefined) throw new Error('fusion research source policy missing during audit');
-      if (record.url === undefined) throw new Error('fusion research fetch audit is missing url');
-      canonicalizeFusionPublicUrl(record.url);
+      if (sourcePolicy === undefined || declared === undefined) throw new Error('fusion research source policy missing during audit');
+      if (record.status === 'ok') {
+        if (record.url === undefined) throw new Error('fusion research fetch audit is missing url');
+        const canonicalUrl = canonicalizeFusionPublicUrl(record.url);
+        if (!declared.has(canonicalUrl)) throw new Error('fusion research fetch audit URL was not declared');
+      } else if (record.url !== undefined) {
+        throw new Error('fusion research rejected fetch audit must not persist raw URL');
+      }
     }
   }
 }
@@ -1382,7 +1393,7 @@ export async function runPiChild(options: RunPiChildOptions): Promise<FusionChil
       }
       try {
         toolCallTrace = await readFusionToolCallLog(logPath);
-        assertCompletedToolPolicy(toolCallTrace, capability, options.sourcePolicy);
+        await assertCompletedToolPolicy(toolCallTrace, capability, options.sourcePolicy);
       } catch (error) {
         throw new FusionChildRunError(
           withCleanupErrors(

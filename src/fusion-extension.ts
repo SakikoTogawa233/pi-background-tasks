@@ -1,4 +1,3 @@
-import { isIP } from 'node:net';
 import type { Usage } from '@earendil-works/pi-ai';
 import type {
   AgentToolResult,
@@ -20,11 +19,23 @@ import {
 } from './core/fusion/config.js';
 import * as FusionContextModule from './core/fusion/context.js';
 import type { BuiltFusionCanonicalInput } from './core/fusion/context.js';
-import * as FusionWorkflowModule from './core/fusion/workflows.js';
-import type { FusionWorkflowProfile } from './core/fusion/workflows.js';
+import {
+  FUSION_INVESTIGATE,
+  FUSION_REASON,
+  FUSION_RESEARCH,
+  FUSION_VALIDATE,
+  type FusionWorkflowProfile,
+} from './core/fusion/workflows.js';
+import {
+  buildCleanFusionCanonicalInput,
+  type BuiltFusionCleanTaskCanonicalInput,
+} from './core/fusion/clean-context.js';
+import { canonicalizeFusionPublicUrl } from './core/fusion/source-policy.js';
+import { canonicalJson } from './core/attested-pi-run.js';
 import type { JsonObject } from './core/common.js';
 import { FusionOrchestrator } from './core/fusion/orchestrator.js';
 import {
+  FUSION_LEGACY_RESULT_SCHEMA_VERSION,
   FUSION_RESULT_SCHEMA_VERSION,
   FusionError,
   cloneFusionUsage,
@@ -48,8 +59,6 @@ const FUSION_REQUEST_SCHEMA_VERSION = 'pi-background-tasks.fusion-request.v1';
 const FUSION_COMMAND_USAGE =
   'Usage: /fusion <prompt> (or run /fusion with no arguments to open the multiline editor).';
 const FUSION_MODEL_COMMAND_NAME = 'fusion-models';
-const LEGACY_CORE_TEST_ENV = 'PI_BG_ALLOW_LEGACY_FUSION_CORE_FOR_TESTS';
-
 export const FUSION_REASON_TOOL_NAME = 'fusion_reason';
 export const FUSION_INVESTIGATE_TOOL_NAME = 'fusion_investigate';
 export const FUSION_RESEARCH_TOOL_NAME = 'fusion_research';
@@ -72,8 +81,6 @@ type CommandDialogResult =
   | { type: 'completed'; result: FusionRunResult }
   | { type: 'failed'; error: unknown };
 
-type InternalCandidateCapability = 'reason' | 'inspect' | 'research';
-
 interface FusionProgressDetails {
   schema_version: typeof FUSION_PROGRESS_SCHEMA_VERSION;
   status: string;
@@ -91,7 +98,6 @@ interface FusionRunRequest {
   request: FusionPublicRequest;
   profile: FusionWorkflowProfile;
   toolName: FusionPublicToolName;
-  legacyCandidateCapability?: InternalCandidateCapability | undefined;
   signal?: AbortSignal | undefined;
   toolCallId?: string | undefined;
   onProgress?: ((event: FusionProgressEvent) => void) | undefined;
@@ -104,6 +110,7 @@ interface FusionRequestDetails {
 }
 
 type FusionPublicToolName = (typeof CURRENT_FUSION_TOOL_NAMES)[number];
+type BuiltFusionWorkflowInput = BuiltFusionCanonicalInput | BuiltFusionCleanTaskCanonicalInput;
 
 export interface FusionReasonRequest {
   prompt: string;
@@ -286,45 +293,11 @@ function toolFailureMessage(error: unknown): string {
   return `Fusion failed${location}: ${errorMessage(error)}${errorArtifactSuffix(error)}`;
 }
 
-function workflowExport(name: string): unknown {
-  return Object.getOwnPropertyDescriptor(FusionWorkflowModule, name)?.value;
-}
-
-function isFusionWorkflowProfile(value: unknown): value is FusionWorkflowProfile {
-  return (
-    isRecord(value) &&
-    typeof value['id'] === 'string' &&
-    typeof value['toolName'] === 'string' &&
-    typeof value['runIdPrefix'] === 'string' &&
-    typeof value['label'] === 'string' &&
-    typeof value['candidateSystemPrompt'] === 'function' &&
-    typeof value['evaluatorSystemPrompt'] === 'string' &&
-    typeof value['evaluationRepairSystemPrompt'] === 'string' &&
-    typeof value['mergerSystemPrompt'] === 'string'
-  );
-}
-
-function allowLegacyCoreForTests(): boolean {
-  return process.env[LEGACY_CORE_TEST_ENV] === '1';
-}
-
-function fusionWorkflow(primaryName: string, fallbackName: string): FusionWorkflowProfile {
-  const primary = workflowExport(primaryName);
-  if (isFusionWorkflowProfile(primary)) return primary;
-  const fallback = workflowExport(fallbackName);
-  if (allowLegacyCoreForTests() && isFusionWorkflowProfile(fallback)) return fallback;
-  throw new Error(
-    `core fusion workflow export ${primaryName} is missing; expected Fusion v1 core exports FUSION_REASON, FUSION_INVESTIGATE, FUSION_RESEARCH, FUSION_VALIDATE and buildCleanFusionCanonicalInput`,
-  );
-}
-
 function profileForTool(toolName: FusionPublicToolName): FusionWorkflowProfile {
-  if (toolName === FUSION_REASON_TOOL_NAME) return fusionWorkflow('FUSION_REASON', 'FUSION_BRAINSTORM_WORKFLOW');
-  if (toolName === FUSION_INVESTIGATE_TOOL_NAME)
-    return fusionWorkflow('FUSION_INVESTIGATE', 'FUSION_BRAINSTORM_WORKFLOW');
-  if (toolName === FUSION_RESEARCH_TOOL_NAME)
-    return fusionWorkflow('FUSION_RESEARCH', 'FUSION_BRAINSTORM_WORKFLOW');
-  return fusionWorkflow('FUSION_VALIDATE', 'FUSION_VALIDATE_WORKFLOW');
+  if (toolName === FUSION_REASON_TOOL_NAME) return FUSION_REASON;
+  if (toolName === FUSION_INVESTIGATE_TOOL_NAME) return FUSION_INVESTIGATE;
+  if (toolName === FUSION_RESEARCH_TOOL_NAME) return FUSION_RESEARCH;
+  return FUSION_VALIDATE;
 }
 
 function progressText(event: FusionProgressEvent, label = 'fusion'): string {
@@ -409,7 +382,8 @@ function renderProgressResult(details: FusionProgressDetails, theme: Theme) {
 function isFusionResultDetails(value: unknown): value is FusionResultDetails {
   if (!isRecord(value)) return false;
   return (
-    value['schema_version'] === FUSION_RESULT_SCHEMA_VERSION &&
+    (value['schema_version'] === FUSION_RESULT_SCHEMA_VERSION ||
+      value['schema_version'] === FUSION_LEGACY_RESULT_SCHEMA_VERSION) &&
     typeof value['run_id'] === 'string' &&
     typeof value['workflow'] === 'string' &&
     ['brainstorm', 'reason', 'investigate', 'research', 'validate'].includes(value['workflow']) &&
@@ -528,88 +502,13 @@ export function prepareFusionInvestigateArguments(args: unknown): FusionInvestig
   return prepareInvestigateBase(args, FUSION_INVESTIGATE_TOOL_NAME);
 }
 
-function isBlockedHostname(hostname: string): boolean {
-  const lower = hostname.toLowerCase();
-  return (
-    lower === 'localhost' ||
-    lower.endsWith('.localhost') ||
-    lower === 'metadata.google.internal' ||
-    lower === 'metadata' ||
-    lower === '169.254.169.254'
-  );
-}
-
-function stripIpv6Brackets(hostname: string): string {
-  return hostname.startsWith('[') && hostname.endsWith(']') ? hostname.slice(1, -1) : hostname;
-}
-
-function isPrivateIpv4(host: string): boolean {
-  const parts = host.split('.').map((part) => Number.parseInt(part, 10));
-  if (parts.length !== 4 || parts.some((part) => !Number.isInteger(part) || part < 0 || part > 255))
-    return true;
-  const [a = 0, b = 0, c = 0] = parts;
-  if (a === 0 || a === 10 || a === 127) return true;
-  if (a === 100 && b >= 64 && b <= 127) return true;
-  if (a === 169 && b === 254) return true;
-  if (a === 172 && b >= 16 && b <= 31) return true;
-  if (a === 192 && b === 168) return true;
-  if (a === 192 && b === 0 && c === 0) return true;
-  if (a === 192 && b === 0 && c === 2) return true;
-  if (a === 198 && (b === 18 || b === 19)) return true;
-  if (a === 198 && b === 51 && c === 100) return true;
-  if (a === 203 && b === 0 && c === 113) return true;
-  if (a >= 224) return true;
-  return host === '255.255.255.255' || host === '168.63.129.16';
-}
-
-function isPrivateIpv6(host: string): boolean {
-  const lower = host.toLowerCase();
-  return (
-    lower === '::' ||
-    lower === '::1' ||
-    lower.startsWith('::ffff:') ||
-    lower.startsWith('64:ff9b:1:') ||
-    lower.startsWith('fc') ||
-    lower.startsWith('fd') ||
-    lower.startsWith('fe8') ||
-    lower.startsWith('fe9') ||
-    lower.startsWith('fea') ||
-    lower.startsWith('feb') ||
-    lower.startsWith('ff') ||
-    lower.startsWith('2001:db8')
-  );
-}
-
 function normalizePublicHttpUrl(value: unknown, label: string): string {
   const raw = normalizeNonBlankString(value, label);
-  let parsed: URL;
   try {
-    parsed = new URL(raw);
+    return canonicalizeFusionPublicUrl(raw);
   } catch (error) {
-    throw new Error(`${label} must be a valid public http(s) URL: ${errorMessage(error)}`);
+    throw new Error(`${label} must be a declared public http(s) URL: ${errorMessage(error)}`);
   }
-  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
-    throw new Error(`${label} must use public http(s), not ${parsed.protocol}`);
-  }
-  if (parsed.username.length > 0 || parsed.password.length > 0) {
-    throw new Error(`${label} must not contain URL credentials, tokens, or secrets`);
-  }
-  if (parsed.hostname.length === 0) throw new Error(`${label} must include a hostname`);
-  const host = stripIpv6Brackets(parsed.hostname);
-  if (host.endsWith('.')) {
-    parsed.hostname = host.replace(/\.+$/u, '');
-  }
-  const normalizedHost = stripIpv6Brackets(parsed.hostname);
-  if (isBlockedHostname(normalizedHost)) throw new Error(`${label} must not target localhost or metadata hosts`);
-  const ipKind = isIP(normalizedHost);
-  if (ipKind === 4 && isPrivateIpv4(normalizedHost)) {
-    throw new Error(`${label} must be a public http(s) URL; private/reserved IPv4 is not allowed`);
-  }
-  if (ipKind === 6 && isPrivateIpv6(normalizedHost)) {
-    throw new Error(`${label} must be a public http(s) URL; private/reserved IPv6 is not allowed`);
-  }
-  parsed.hash = '';
-  return parsed.toString();
 }
 
 function normalizeResearchSources(value: unknown): FusionResearchSourceRequest[] {
@@ -765,50 +664,31 @@ function linkSignal(source: AbortSignal | undefined, target: AbortController): (
 
 function serializePublicRequest(request: FusionPublicRequest): string {
   if ('prompt' in request) return request.prompt;
-  return JSON.stringify(request);
+  return canonicalJson(request);
 }
 
-function buildCleanInput(request: FusionRunRequest): BuiltFusionCanonicalInput {
-  const maybeBuilder = Reflect.get(FusionContextModule, 'buildCleanFusionCanonicalInput');
-  if (typeof maybeBuilder === 'function') {
-    type CleanBuilder = (
-      ctx: ExtensionContext,
-      options: {
-        source: 'command' | 'tool';
-        profile: FusionWorkflowProfile;
-        request: FusionPublicRequest;
-        toolCallId?: string;
-        toolName: FusionPublicToolName;
-      },
-    ) => BuiltFusionCanonicalInput;
-    const cleanBuilder = maybeBuilder as CleanBuilder;
-    const options: {
-      source: 'command' | 'tool';
-      profile: FusionWorkflowProfile;
-      request: FusionPublicRequest;
-      toolCallId?: string;
-      toolName: FusionPublicToolName;
-    } = {
+function declaredSourcesForRequest(request: FusionPublicRequest): readonly FusionResearchSourceRequest[] {
+  return 'sources' in request ? request.sources : [];
+}
+
+function buildFusionInput(request: FusionRunRequest): BuiltFusionWorkflowInput {
+  if (request.profile.contextKind === 'session_projection') {
+    const options: FusionContextModule.BuildFusionCanonicalInputOptions = {
       source: request.source,
-      profile: request.profile,
-      request: request.request,
+      request: serializePublicRequest(request.request),
+      workflow: request.profile.id,
       toolName: request.toolName,
     };
     if (request.toolCallId !== undefined) options.toolCallId = request.toolCallId;
-    return cleanBuilder(request.ctx, options);
+    return FusionContextModule.buildFusionCanonicalInput(request.ctx, options);
   }
-  if (!allowLegacyCoreForTests()) {
-    throw new Error(
-      'core fusion clean builder export buildCleanFusionCanonicalInput is missing; refusing to fall back to legacy canonical input outside tests',
-    );
-  }
-  const fallbackOptions: FusionContextModule.BuildFusionCanonicalInputOptions = {
+  return buildCleanFusionCanonicalInput({
+    cwd: request.ctx.cwd,
     source: request.source,
     request: serializePublicRequest(request.request),
-    toolName: request.toolName,
-  };
-  if (request.toolCallId !== undefined) fallbackOptions.toolCallId = request.toolCallId;
-  return FusionContextModule.buildFusionCanonicalInput(request.ctx, fallbackOptions);
+    workflow: request.profile.id as 'investigate' | 'research' | 'validate',
+    declaredSources: declaredSourcesForRequest(request.request),
+  });
 }
 
 function renderPreview(args: unknown, fields: readonly string[]): string {
@@ -852,7 +732,7 @@ export function registerFusionExtension(pi: ExtensionAPI): void {
     };
     try {
       assertActive();
-      const built = buildCleanInput(request);
+      const built = buildFusionInput(request);
       const cwd = request.ctx.cwd;
       const sessionId = request.ctx.sessionManager.getSessionId();
       const modelRegistry = request.ctx.modelRegistry;
@@ -867,24 +747,19 @@ export function registerFusionExtension(pi: ExtensionAPI): void {
         thinkingLevel,
       });
       assertActive();
-      const runInput = {
+      const runInput: Parameters<FusionOrchestrator['run']>[0] = {
         source: request.source,
         cwd,
         sessionId,
         canonicalInput: built.input,
         canonicalInputSerialized: built.serialized,
-        contextLedger: built.ledger,
         config: loaded.config,
         models,
         profile: request.profile,
         signal: controller.signal,
         onProgress: request.onProgress,
-      } as Parameters<FusionOrchestrator['run']>[0] & {
-        candidateCapability?: InternalCandidateCapability;
       };
-      if (request.legacyCandidateCapability !== undefined) {
-        runInput.candidateCapability = request.legacyCandidateCapability;
-      }
+      if ('ledger' in built) runInput.contextLedger = built.ledger;
       return await orchestrator.run(runInput);
     } finally {
       unlink();
@@ -949,7 +824,6 @@ export function registerFusionExtension(pi: ExtensionAPI): void {
       request,
       profile: profileForTool(FUSION_REASON_TOOL_NAME),
       toolName: FUSION_REASON_TOOL_NAME,
-      legacyCandidateCapability: 'reason',
       onProgress,
     });
   }
@@ -973,7 +847,6 @@ export function registerFusionExtension(pi: ExtensionAPI): void {
           request,
           profile: profileForTool(FUSION_REASON_TOOL_NAME),
           toolName: FUSION_REASON_TOOL_NAME,
-          legacyCandidateCapability: 'reason',
           signal: controller.signal,
           onProgress,
         })
@@ -1095,7 +968,6 @@ export function registerFusionExtension(pi: ExtensionAPI): void {
     parameters: TSchema;
     profile: () => FusionWorkflowProfile;
     progressLabel: string;
-    legacyCandidateCapability: InternalCandidateCapability;
     prepare: (args: unknown) => Request;
     renderFields: readonly string[];
   }): void {
@@ -1119,7 +991,6 @@ export function registerFusionExtension(pi: ExtensionAPI): void {
             request,
             profile,
             toolName: options.name,
-            legacyCandidateCapability: options.legacyCandidateCapability,
             signal,
             toolCallId,
             onProgress: (event) => {
@@ -1171,7 +1042,6 @@ export function registerFusionExtension(pi: ExtensionAPI): void {
     parameters: FusionReasonParams,
     profile: () => profileForTool(FUSION_REASON_TOOL_NAME),
     progressLabel: 'fusion',
-    legacyCandidateCapability: 'reason',
     prepare: prepareFusionReasonArguments,
     renderFields: ['prompt'],
   });
@@ -1189,7 +1059,6 @@ export function registerFusionExtension(pi: ExtensionAPI): void {
     parameters: FusionInvestigateParams,
     profile: () => profileForTool(FUSION_INVESTIGATE_TOOL_NAME),
     progressLabel: 'investigate',
-    legacyCandidateCapability: 'inspect',
     prepare: prepareFusionInvestigateArguments,
     renderFields: ['objective', 'deliverable'],
   });
@@ -1208,7 +1077,6 @@ export function registerFusionExtension(pi: ExtensionAPI): void {
     parameters: FusionResearchParams,
     profile: () => profileForTool(FUSION_RESEARCH_TOOL_NAME),
     progressLabel: 'research',
-    legacyCandidateCapability: 'research',
     prepare: prepareFusionResearchArguments,
     renderFields: ['objective', 'deliverable'],
   });
@@ -1227,7 +1095,6 @@ export function registerFusionExtension(pi: ExtensionAPI): void {
     parameters: FusionValidateParams,
     profile: () => profileForTool(FUSION_VALIDATE_TOOL_NAME),
     progressLabel: 'validate',
-    legacyCandidateCapability: 'inspect',
     prepare: prepareFusionValidateArguments,
     renderFields: ['objective', 'changeSummary'],
   });

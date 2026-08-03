@@ -94,14 +94,27 @@ let stage = 'candidate';
 if (systemPrompt.includes('invalid blind-evaluation JSON response')) stage = 'evaluation-repair';
 else if (systemPrompt.includes('strict blind evaluator')) stage = 'evaluation';
 else if (systemPrompt.includes('final synthesis process')) stage = 'merge';
-const workflow = systemPrompt.includes('validation report') || systemPrompt.includes('validation reports') ? 'validate' : 'brainstorm';
+const workflow = systemPrompt.includes('validation report') || systemPrompt.includes('validation reports') ? 'validate' : 'reason';
 appendFileSync(logPath, JSON.stringify({ stage, workflow, provider, model, args, stdin, systemPrompt, cwd: process.cwd(), env: { PI_SESSION_ID: process.env.PI_SESSION_ID || null, PI_PROVIDER: process.env.PI_PROVIDER || null, PI_MODEL: process.env.PI_MODEL || null, PI_SKIP_VERSION_CHECK: process.env.PI_SKIP_VERSION_CHECK || null } }) + '\\n');
 if (failStage && stage === failStage) {
   console.error('fusion fake pi failing requested stage ' + stage);
   process.exit(42);
 }
+function sourceFindingsFromStdin() {
+  try {
+    const parsed = JSON.parse(stdin);
+    if (!Array.isArray(parsed.candidates)) return [];
+    return parsed.candidates.flatMap((candidate) => {
+      const report = JSON.parse(candidate.response);
+      return (report.findings || []).map((finding, index) => ({ id: candidate.candidate_id + '-F' + String(index + 1).padStart(3, '0'), candidate_id: candidate.candidate_id, ...finding }));
+    });
+  } catch {
+    return [];
+  }
+}
 function evaluationText() {
-  return JSON.stringify({
+  const sourceFindings = workflow === 'validate' ? sourceFindingsFromStdin() : [];
+  const base = {
     schema_version: 'pi-background-tasks.fusion-evaluation.v1',
     candidate_assessments: [
       { candidate_id: 'A', summary: 'A summary', strengths: ['A strength'], limitations: ['A limitation'], useful_contributions: ['A contribution'], risks: ['A risk'] },
@@ -111,12 +124,28 @@ function evaluationText() {
     agreements: ['All address the request'],
     conflicts: [{ topic: 'detail', positions: [{ candidate_id: 'A', position: 'A position' }, { candidate_id: 'B', position: 'B position' }], resolution: 'Combine the useful detail' }],
     synthesis_plan: { must_include: [{ candidate_id: 'A', contribution: 'A contribution' }], must_resolve: ['detail'], must_avoid: ['unsupported claims'] }
+  };
+  if (workflow === 'validate') {
+    base.validation_accounting = {
+      findings: sourceFindings,
+      decisions: sourceFindings.map((finding, index) => ({ source_id: finding.id, disposition: 'include', rationale: 'preserved by fake evaluator', group_id: 'G' + String(index + 1).padStart(3, '0') }))
+    };
+  }
+  return JSON.stringify(base);
+}
+function validationCandidateText() {
+  return JSON.stringify({
+    schema_version: 'pi-background-tasks.fusion-validation-candidate.v1',
+    findings: [{ severity: 'minor', location: 'README.md:1', evidence: 'fake evidence', impact: 'fake impact', summary: 'fake finding' }],
+    verified: ['fake verification'],
+    limitations: ['fake limitation']
   });
 }
 function responseText() {
   if (invalidFirstEvaluation && stage === 'evaluation') return JSON.stringify({ schema_version: 'pi-background-tasks.fusion-evaluation.v1', bad: true });
   if (stage === 'evaluation' || stage === 'evaluation-repair') return evaluationText();
   if (stage === 'merge') return mergedText;
+  if (workflow === 'validate') return validationCandidateText();
   return 'Candidate fake answer from ' + provider + '/' + model + '.';
 }
 function emit() {

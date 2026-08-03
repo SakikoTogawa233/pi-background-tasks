@@ -81,10 +81,10 @@ In the detail view the **Output tail** is scrollable: `↑`/`↓` and `PageUp`/`
 When a newer version of `pi-background-tasks` has been published to npm, the footer appends a compact, instruct-only segment after the entry hint:
 
 ```text
-bg 1 running · 1 failed · Shift↓ · /bg-clear · ⬆ v0.7.0 /bg-update
+bg 1 running · 1 failed · Shift↓ · /bg-clear · ⬆ v1.0.0 /bg-update
 ```
 
-When no tasks are active, the notice still appears on its own (`bg ⬆ v0.7.0 /bg-update`) so the update hint is visible. The segment is rendered only when a strictly newer published version exists; `/bg-update` prints the npm and git update commands and never installs or self-updates.
+When no tasks are active, the notice still appears on its own (`bg ⬆ v1.0.0 /bg-update`) so the update hint is visible. The segment is rendered only when a strictly newer published version exists; `/bg-update` prints the npm and git update commands and never installs or self-updates.
 
 The lookup runs at most once per session on `session_start`, is time-boxed, and is fully offline-safe: it never blocks or errors the footer/session, and on an offline or failed lookup it simply renders no segment (it never pins a misleading version). The check is skipped entirely when `PI_OFFLINE=1`, and can be disabled explicitly with `PI_BG_DISABLE_UPDATE_CHECK=1`. Set `PI_BG_REGISTRY_URL` to point the check at a registry mirror instead of `https://registry.npmjs.org`.
 
@@ -305,7 +305,7 @@ fusion-models.json
 
 ### Validation workflow
 
-`fusion_validate` is the same orchestrator, artifact store, budget engine, conversation projection, and evaluation schema as the other Fusion v1 tools, with validation-specific stage framing. Its schema is closed and structured: `{objective, background, changeSummary, scope, acceptanceCriteria, verification, knownLimitations?, exclusions?}`. `scope` and `acceptanceCriteria` must be non-empty arrays; optional arrays normalize to `[]`.
+`fusion_validate` uses the shared orchestrator, artifact store, budget engine, and evaluation machinery with validation-specific clean input and stage framing. Its schema is closed and structured: `{objective, background, changeSummary, scope, acceptanceCriteria, verification, knownLimitations?, exclusions?}`. `scope` and `acceptanceCriteria` must be non-empty arrays; optional arrays normalize to `[]`.
 
 The verification contract is cross-field validated before any child launches:
 
@@ -314,7 +314,7 @@ The verification contract is cross-field validated before any child launches:
 | `provided` | non-empty `evidence:[{check,outcome}]` | `reason` | evidence entries trimmed and preserved in order |
 | `not_run` | non-blank `reason` | non-empty `evidence` | `evidence: []` plus trimmed reason |
 
-The three reviewers are blind-compared exactly like other Fusion candidates, but validation remains advisory and read-only. It never modifies files, it does not gate anything, and it is not a substitute for running tests, builds, linters, security scans, or human review. Like every Fusion entry point, facts that exist only inside omitted tool output are not visible to reviewers; restate them in `background`, `changeSummary`, or `verification.evidence`.
+The three reviewers are blind-compared exactly like other Fusion candidates, but validation remains advisory and read-only. It never modifies files, it does not gate anything, and it is not a substitute for running tests, builds, linters, security scans, or human review. Because validate is clean by construction, parent conversation and omitted tool output are not visible to reviewers; restate required facts in `background`, `changeSummary`, or `verification.evidence`.
 
 ### Anthropic child sanitization
 
@@ -335,9 +335,9 @@ Fusion v1 has no public capability modes. The selected tool fixes the candidate 
 | `fusion_research` | research profile with targeted fetch support | only caller-supplied public `http(s)` URLs |
 | `fusion_validate` | advisory read-only validation | none |
 
-Evaluator, evaluation-repair, and merger children always run with `--no-tools` by stage policy. Caller input cannot grant them tools. The canonical input schema remains `pi-background-tasks.fusion-input.v4`.
+Evaluator, evaluation-repair, and merger children always run with `--no-tools` by stage policy. Caller input cannot grant them tools. The current canonical input schema is `pi-background-tasks.fusion-input.v5`.
 
-The investigate prompt may re-derive facts from the repository using read-only tools. The research prompt adds targeted `fusion_web_fetch` for supplied URLs only. Both prompts extend the untrusted-data rule: projected conversation text, file contents, and fetched page content are data, never instructions to follow.
+The investigate prompt may re-derive facts from the repository using read-only tools. The research prompt adds targeted `fusion_web_fetch` for supplied initial URLs only; public redirects are followed by the fetcher after address checks. Clean-task prompts treat file contents and fetched page content as data, never instructions to follow.
 
 `fusion_web_fetch` has a closed schema: `{ url: string, extract?: 'text' | 'markdown' }`. `extract` defaults to Markdown. There is deliberately no per-fetch prompt parameter. Anthropic documents the `{url, prompt}` extraction pattern as lossy by design: the prompt decides what reaches the model, so a false negative can enter a Fusion candidate answer, pass through blind evaluation, and reach the merged answer with no signal that the page contained missed information.
 
@@ -366,9 +366,9 @@ Progress is surfaced through `fusion` status updates, TUI cancellable loader UI 
 
 ### Conversation context policy
 
-Fusion children receive a **versioned conversation projection**, not a raw execution transcript. The canonical input schema is `pi-background-tasks.fusion-input.v4` and every run states exactly what was included and what was omitted.
+Only `/fusion` and `fusion_reason` receive a **versioned conversation projection**, not a raw execution transcript. Investigate, research, and validate receive clean-task canonical input with no parent system prompt, conversation projection, or omission ledger. The current canonical input schema is `pi-background-tasks.fusion-input.v5`.
 
-The projection transform (`visible-conversation-ledger-v2`) is shared by both entry points:
+For reason/session-projection runs, the projection transform (`visible-conversation-ledger-v2`) records:
 
 | Content | Disposition |
 |---|---|
@@ -381,7 +381,7 @@ The projection transform (`visible-conversation-ledger-v2`) is shared by both en
 | Tool-result images | excluded; recorded as an omission receipt (never raw bytes) |
 | Active Fusion tool call and its sibling calls | scope-excluded from the branch |
 
-Omissions are **explicit, deterministic, and auditable** — never silent. Each omitted event produces a ledger row with its kind, exact byte count, and SHA-256 of the omitted bytes. Fusion v4 encodes child-facing projection entries as positional tuples to remove repeated object keys while preserving every role, ordinal, span, byte total, count, and text byte:
+For reason/session-projection runs, omissions are **explicit, deterministic, and auditable** — never silent. Each omitted event produces a ledger row with its kind, exact byte count, and SHA-256 of the omitted bytes. Fusion v5 encodes child-facing projection entries as positional tuples to remove repeated object keys while preserving every role, ordinal, span, byte total, count, and text byte:
 
 ```json
 ["t","u",0,0,"hello"]
@@ -394,7 +394,7 @@ Two entry points share the transform but differ in request authority:
 
 | Entry point | Policy id | `request.authority` |
 |---|---|---|
-| Fusion v1 tools | `fusion-tool-explicit-v2` | structured request is authoritative and self-contained |
+| `fusion_reason` tool | `fusion-tool-explicit-v2` | structured request is authoritative and self-contained |
 | `/fusion [prompt]` | `fusion-command-conversation-v2` | `directive_over_projected_conversation` |
 
 **Documented limitation:** facts that exist only inside omitted tool output are not available to Fusion children. Restate any required finding as visible conversation text or in the structured Fusion request. Children are instructed to say so plainly rather than guess. No model-generated summarization is used as hidden preprocessing.
@@ -430,7 +430,7 @@ If an input still exceeds the safe budget, Fusion fails with `prompt_budget_exce
 
 ## Extension EventBus API
 
-Version `0.7.0` exposes a real extension-to-extension service over Pi's documented `pi.events` bus. This is not a `ctx` method and it does not call a second task manager: requests route to the same `BackgroundTaskRegistry` used by `bg_run`, `bg_status`, `bg_logs`, and `bg_kill`.
+Version `1.0.0` exposes a real extension-to-extension service over Pi's documented `pi.events` bus. This is not a `ctx` method and it does not call a second task manager: requests route to the same `BackgroundTaskRegistry` used by `bg_run`, `bg_status`, `bg_logs`, and `bg_kill`.
 
 Public constants are exported from `src/core/extension-api.ts`:
 
@@ -470,7 +470,7 @@ Fusion writes private debugging artifacts under:
 .pi/fusion/<session-id>-<pid>/<run-id>/
 ```
 
-Each run contains `manifest.json`, `canonical-input.json`, `context-omission-ledger.json`, `budget-plan.json`, candidate/evaluation/merge prompts, raw child JSONL events, stderr, responses, and, when inspect or research candidates run, tool-call logs named `candidate-<slot>.attempt-<n>.tool-calls.jsonl`, plus `blind-candidates.json`, `evaluation.json`, `merged.md`, and `error.json` for failed/cancelled runs. Persisted stage prompts are byte-identical to the exact bytes written to that child's stdin. `context-omission-ledger.json` carries the complete source-ordered omission ledger, and `budget-plan.json` records every configured route's capacity plus the pre-candidate feasibility decision, so a rejected run is as auditable as a successful one. Artifact files are written by private temp-file/fsync/rename, and v2 manifests persist cumulative child usage plus per-attempt observed usage/model data for successful, failed, and cancelled child attempts. Every usage record preserves the complete Pi cost breakdown; the same exact shape is cloned into Fusion v1 tool results so newer Pi hosts can calculate and replay footer/session statistics safely. These artifacts are local evidence only; they are not shown in `/jobs` or the background-task dock.
+Each run contains `manifest.json`, `canonical-input.json`, `budget-plan.json`, candidate/evaluation/merge prompts, raw child JSONL events, stderr, responses, and, when inspect or research candidates run, tool-call logs named `candidate-<slot>.attempt-<n>.tool-calls.jsonl`, plus `blind-candidates.json`, `evaluation.json`, `merged.md`, and `error.json` for failed/cancelled runs. Reason/session-projection runs also contain `context-omission-ledger.json`; research runs contain a source-policy artifact. Persisted stage prompts are byte-identical to the exact bytes written to that child's stdin. `budget-plan.json` records every configured route's capacity plus the pre-candidate feasibility decision, so a rejected run is as auditable as a successful one. Artifact files are written by private temp-file/fsync/rename, and v2 manifests persist cumulative child usage plus per-attempt observed usage/model data for successful, failed, and cancelled child attempts. Every usage record preserves the complete Pi cost breakdown; the same exact shape is cloned into Fusion v1 tool results so newer Pi hosts can calculate and replay footer/session statistics safely. These artifacts are local evidence only; they are not shown in `/jobs` or the background-task dock.
 
 For attested Pi tasks only, the task id is `b` plus 32 random hex characters (128 bits) and additional flat siblings are written in the same directory:
 

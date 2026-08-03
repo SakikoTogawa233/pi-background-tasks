@@ -2,6 +2,7 @@ import { parseJsonText, type JsonObject } from '../common.js';
 import {
   FUSION_CANDIDATE_IDS,
   FUSION_EVALUATION_SCHEMA_VERSION,
+  FUSION_VALIDATE_CANDIDATE_SCHEMA_VERSION,
   FusionError,
   type CandidateAssessment,
   type FusionCandidateId,
@@ -10,6 +11,10 @@ import {
   type FusionEvaluationV1,
   type FusionSynthesisContribution,
   type FusionSynthesisPlan,
+  type FusionValidationFindingAccounting,
+  type FusionValidationFindingDecision,
+  type FusionValidationFindingRecord,
+  type FusionValidationSeverity,
 } from './types.js';
 
 const MAX_REPAIR_ERROR_CHARS = 500;
@@ -22,6 +27,10 @@ export type FusionEvaluationValidationResult =
 
 function isRecord(value: unknown): value is JsonObject {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function errorText(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
 
 function closed(
@@ -269,15 +278,80 @@ function parseConflictList(
   return out;
 }
 
+function parseValidationAccounting(value: unknown, label: string, errors: string[]): FusionValidationFindingAccounting | undefined {
+  if (!isRecord(value)) {
+    errors.push(`${label} must be an object`);
+    return undefined;
+  }
+  closed(value, ['findings', 'decisions'], label, errors);
+  const findingsRaw = value['findings'];
+  const decisionsRaw = value['decisions'];
+  const findings: FusionValidationFindingRecord[] = [];
+  if (!Array.isArray(findingsRaw)) errors.push(`${label}.findings must be an array`);
+  else {
+    for (const [index, item] of findingsRaw.entries()) {
+      const itemLabel = `${label}.findings[${String(index)}]`;
+      if (!isRecord(item)) {
+        errors.push(`${itemLabel} must be an object`);
+        continue;
+      }
+      closed(item, ['id', 'candidate_id', 'severity', 'location', 'evidence', 'impact', 'summary'], itemLabel, errors);
+      const id = nonBlankString(item['id'], `${itemLabel}.id`, errors);
+      const candidate = candidateId(item['candidate_id'], `${itemLabel}.candidate_id`, errors);
+      const severity = nonBlankString(item['severity'], `${itemLabel}.severity`, errors) as FusionValidationSeverity | undefined;
+      const location = nonBlankString(item['location'], `${itemLabel}.location`, errors);
+      const evidence = nonBlankString(item['evidence'], `${itemLabel}.evidence`, errors);
+      const impact = nonBlankString(item['impact'], `${itemLabel}.impact`, errors);
+      const summary = nonBlankString(item['summary'], `${itemLabel}.summary`, errors);
+      if (severity !== undefined && !['critical', 'high', 'minor'].includes(severity)) errors.push(`${itemLabel}.severity invalid`);
+      if (id !== undefined && candidate !== undefined && severity !== undefined && location !== undefined && evidence !== undefined && impact !== undefined && summary !== undefined) {
+        findings.push({ id, candidate_id: candidate, severity, location, evidence, impact, summary });
+      }
+    }
+  }
+  const decisions: FusionValidationFindingDecision[] = [];
+  if (!Array.isArray(decisionsRaw)) errors.push(`${label}.decisions must be an array`);
+  else {
+    for (const [index, item] of decisionsRaw.entries()) {
+      const itemLabel = `${label}.decisions[${String(index)}]`;
+      if (!isRecord(item)) {
+        errors.push(`${itemLabel} must be an object`);
+        continue;
+      }
+      const allowedDecisionKeys = new Set(['source_id', 'disposition', 'rationale', 'group_id']);
+      for (const key of Object.keys(item)) {
+        if (!allowedDecisionKeys.has(key)) errors.push(`${itemLabel} contains unknown key ${key}`);
+      }
+      for (const key of ['source_id', 'disposition', 'rationale'] as const) {
+        if (!Object.prototype.hasOwnProperty.call(item, key)) errors.push(`${itemLabel} is missing key ${key}`);
+      }
+      const sourceId = nonBlankString(item['source_id'], `${itemLabel}.source_id`, errors);
+      const disposition = nonBlankString(item['disposition'], `${itemLabel}.disposition`, errors);
+      const rationale = nonBlankString(item['rationale'], `${itemLabel}.rationale`, errors);
+      const group = item['group_id'] === undefined ? undefined : nonBlankString(item['group_id'], `${itemLabel}.group_id`, errors);
+      if (disposition !== undefined && disposition !== 'include' && disposition !== 'exclude') errors.push(`${itemLabel}.disposition invalid`);
+      if (sourceId !== undefined && (disposition === 'include' || disposition === 'exclude') && rationale !== undefined) {
+        const decision: FusionValidationFindingDecision = { source_id: sourceId, disposition, rationale };
+        if (group !== undefined) decision.group_id = group;
+        decisions.push(decision);
+      }
+    }
+  }
+  const accounting = { findings, decisions };
+  errors.push(...validateFusionFindingAccounting(accounting));
+  return accounting;
+}
+
 export function validateFusionEvaluation(value: unknown): FusionEvaluationValidationResult {
   const errors: string[] = [];
   if (!isRecord(value)) return { ok: false, errors: ['evaluation must be a JSON object'] };
-  closed(
-    value,
-    ['schema_version', 'candidate_assessments', 'agreements', 'conflicts', 'synthesis_plan'],
-    'evaluation',
-    errors,
-  );
+  const evaluationAllowed = new Set(['schema_version', 'candidate_assessments', 'agreements', 'conflicts', 'synthesis_plan', 'validation_accounting']);
+  for (const key of Object.keys(value)) {
+    if (!evaluationAllowed.has(key)) errors.push(`evaluation contains unknown key ${key}`);
+  }
+  for (const key of ['schema_version', 'candidate_assessments', 'agreements', 'conflicts', 'synthesis_plan'] as const) {
+    if (!Object.prototype.hasOwnProperty.call(value, key)) errors.push(`evaluation is missing key ${key}`);
+  }
   if (value['schema_version'] !== FUSION_EVALUATION_SCHEMA_VERSION) {
     errors.push('evaluation.schema_version mismatch');
   }
@@ -289,6 +363,9 @@ export function validateFusionEvaluation(value: unknown): FusionEvaluationValida
   const agreements = stringList(value['agreements'], 'evaluation.agreements', errors);
   const conflicts = parseConflictList(value['conflicts'], 'evaluation.conflicts', errors);
   const plan = parseSynthesisPlan(value['synthesis_plan'], 'evaluation.synthesis_plan', errors);
+  const validationAccounting = Object.prototype.hasOwnProperty.call(value, 'validation_accounting')
+    ? parseValidationAccounting(value['validation_accounting'], 'evaluation.validation_accounting', errors)
+    : undefined;
   if (
     errors.length > 0 ||
     assessments === undefined ||
@@ -298,16 +375,15 @@ export function validateFusionEvaluation(value: unknown): FusionEvaluationValida
   ) {
     return { ok: false, errors };
   }
-  return {
-    ok: true,
-    value: {
-      schema_version: FUSION_EVALUATION_SCHEMA_VERSION,
-      candidate_assessments: assessments,
-      agreements,
-      conflicts,
-      synthesis_plan: plan,
-    },
+  const parsedValue: FusionEvaluationV1 = {
+    schema_version: FUSION_EVALUATION_SCHEMA_VERSION,
+    candidate_assessments: assessments,
+    agreements,
+    conflicts,
+    synthesis_plan: plan,
   };
+  if (validationAccounting !== undefined) parsedValue.validation_accounting = validationAccounting;
+  return { ok: true, value: parsedValue };
 }
 
 export function parseFusionEvaluation(text: string): FusionEvaluationV1 {
@@ -361,28 +437,77 @@ export function formatEvaluationErrors(errors: readonly string[]): string {
   return boundedEvaluationErrors(errors).join('; ');
 }
 
-export type FusionValidationSeverity = 'critical' | 'high' | 'minor';
-
-export interface FusionValidationFindingRecord {
-  id: string;
-  candidate_id: FusionCandidateId;
-  severity: FusionValidationSeverity;
-  location: string;
-  evidence: string;
-  impact: string;
-  summary: string;
+function parseValidationCandidateFinding(value: unknown, label: string, errors: string[]): Omit<FusionValidationFindingRecord, 'id' | 'candidate_id'> | undefined {
+  if (!isRecord(value)) {
+    errors.push(`${label} must be an object`);
+    return undefined;
+  }
+  closed(value, ['severity', 'location', 'evidence', 'impact', 'summary'], label, errors);
+  const severity = nonBlankString(value['severity'], `${label}.severity`, errors) as FusionValidationSeverity | undefined;
+  const location = nonBlankString(value['location'], `${label}.location`, errors);
+  const evidence = nonBlankString(value['evidence'], `${label}.evidence`, errors);
+  const impact = nonBlankString(value['impact'], `${label}.impact`, errors);
+  const summary = nonBlankString(value['summary'], `${label}.summary`, errors);
+  if (severity !== undefined && !['critical', 'high', 'minor'].includes(severity)) errors.push(`${label}.severity invalid`);
+  if (severity === undefined || location === undefined || evidence === undefined || impact === undefined || summary === undefined) return undefined;
+  return { severity, location, evidence, impact, summary };
 }
 
-export interface FusionValidationFindingDecision {
-  source_id: string;
-  disposition: 'include' | 'exclude';
-  rationale: string;
-  group_id?: string | undefined;
-}
-
-export interface FusionValidationFindingAccounting {
+export interface ParsedFusionValidationCandidateReport {
   findings: readonly FusionValidationFindingRecord[];
-  decisions: readonly FusionValidationFindingDecision[];
+  verified: readonly string[];
+  limitations: readonly string[];
+}
+
+export function parseFusionValidationCandidateReport(text: string, candidateId: FusionCandidateId): ParsedFusionValidationCandidateReport {
+  let parsed: unknown;
+  try {
+    parsed = parseJsonText(text);
+  } catch (error) {
+    throw new FusionError(
+      `validation candidate ${candidateId} output must be structured JSON only: ${errorText(error)}`,
+      { code: 'evaluation_invalid', stage: 'candidate' },
+    );
+  }
+  const errors: string[] = [];
+  if (!isRecord(parsed)) {
+    errors.push('validation candidate report must be an object');
+  } else {
+    closed(parsed, ['schema_version', 'findings', 'verified', 'limitations'], 'validation candidate report', errors);
+  }
+  if (!isRecord(parsed)) {
+    throw new FusionError(`validation candidate ${candidateId} output failed schema validation: ${formatEvaluationErrors(errors)}`, {
+      code: 'evaluation_invalid',
+      stage: 'candidate',
+    });
+  }
+  if (parsed['schema_version'] !== FUSION_VALIDATE_CANDIDATE_SCHEMA_VERSION) errors.push('validation candidate report.schema_version mismatch');
+  const rawFindings = parsed['findings'];
+  const findings: Array<Omit<FusionValidationFindingRecord, 'id' | 'candidate_id'>> = [];
+  if (!Array.isArray(rawFindings)) errors.push('validation candidate report.findings must be an array');
+  else {
+    for (const [index, item] of rawFindings.entries()) {
+      const finding = parseValidationCandidateFinding(item, `validation candidate report.findings[${String(index)}]`, errors);
+      if (finding !== undefined) findings.push(finding);
+    }
+  }
+  const verified = stringList(parsed['verified'], 'validation candidate report.verified', errors);
+  const limitations = stringList(parsed['limitations'], 'validation candidate report.limitations', errors);
+  if (errors.length > 0) {
+    throw new FusionError(`validation candidate ${candidateId} output failed schema validation: ${formatEvaluationErrors(errors)}`, {
+      code: 'evaluation_invalid',
+      stage: 'candidate',
+    });
+  }
+  return {
+    findings: findings.map((finding, index) => ({
+      id: stableFusionFindingId(candidateId, index + 1),
+      candidate_id: candidateId,
+      ...finding,
+    })),
+    verified: verified ?? [],
+    limitations: limitations ?? [],
+  };
 }
 
 export function stableFusionFindingId(candidateId: FusionCandidateId, ordinal: number): string {
@@ -400,9 +525,11 @@ export function validateFusionFindingAccounting(
 ): readonly string[] {
   const errors: string[] = [];
   const sourceIds = new Set<string>();
+  const perCandidateOrdinal: Record<FusionCandidateId, number> = { A: 0, B: 0, C: 0 };
   for (const [index, finding] of accounting.findings.entries()) {
     const label = `finding[${String(index)}]`;
-    if (finding.id !== stableFusionFindingId(finding.candidate_id, index + 1)) {
+    perCandidateOrdinal[finding.candidate_id] += 1;
+    if (finding.id !== stableFusionFindingId(finding.candidate_id, perCandidateOrdinal[finding.candidate_id])) {
       errors.push(`${label}.id must be the stable host id for its candidate and ordinal`);
     }
     if (!['critical', 'high', 'minor'].includes(finding.severity)) errors.push(`${label}.severity invalid`);
@@ -423,11 +550,86 @@ export function validateFusionFindingAccounting(
     if (decision.disposition === 'include' && (decision.group_id === undefined || decision.group_id.trim().length === 0)) {
       errors.push(`${label}.group_id required for included findings`);
     }
+    if (decision.disposition === 'exclude' && decision.group_id !== undefined) {
+      errors.push(`${label}.group_id must be omitted for excluded findings`);
+    }
   }
   for (const id of sourceIds) {
     if (!accounted.has(id)) errors.push(`source finding ${id} was not accounted exactly once`);
   }
   return errors;
+}
+
+function sanitizeValidationRationale(value: string): string {
+  return value
+    .replace(/\b[ABC]-F\d{3}\b/gu, 'source finding')
+    .replace(/\bcandidate [ABC]\b/giu, 'one reviewer')
+    .replace(/\b[ABC]:\s*/gu, '');
+}
+
+export function renderValidatedFusionValidationReport(
+  accounting: FusionValidationFindingAccounting,
+  coverage?: { verified: readonly string[]; limitations: readonly string[] } | undefined,
+): string {
+  const errors = validateFusionFindingAccounting(accounting);
+  if (errors.length > 0) {
+    throw new FusionError(`validation accounting invalid before render: ${formatEvaluationErrors(errors)}`, {
+      code: 'evaluation_invalid',
+      stage: 'merge',
+    });
+  }
+  const findingById = new Map(accounting.findings.map((finding) => [finding.id, finding]));
+  const included = accounting.decisions
+    .filter((decision) => decision.disposition === 'include')
+    .map((decision) => {
+      const finding = findingById.get(decision.source_id);
+      if (finding === undefined) {
+        throw new FusionError(`validation accounting referenced missing finding ${decision.source_id}`, {
+          code: 'evaluation_invalid',
+          stage: 'merge',
+        });
+      }
+      return { decision, finding };
+    });
+  const renderedFindings = included.sort((left, right) => {
+    const severityOrder = { critical: 0, high: 1, minor: 2 } as const;
+    return (
+      severityOrder[left.finding.severity] - severityOrder[right.finding.severity] ||
+      left.finding.location.localeCompare(right.finding.location) ||
+      left.finding.id.localeCompare(right.finding.id)
+    );
+  });
+  const lines: string[] = ['# Validation report', ''];
+  if (renderedFindings.length === 0) {
+    lines.push('No included findings were identified by the validated accounting.', '');
+  } else {
+    lines.push('## Findings', '');
+    for (const { decision, finding } of renderedFindings) {
+      lines.push(`### ${finding.severity}: ${finding.summary}`, '');
+      lines.push(`- Location: ${finding.location}`);
+      lines.push(`- Evidence: ${finding.evidence}`);
+      lines.push(`- Impact: ${finding.impact}`);
+      lines.push(`- Inclusion rationale: ${sanitizeValidationRationale(decision.rationale)}`, '');
+    }
+  }
+  const exclusions = accounting.decisions
+    .filter((decision) => decision.disposition === 'exclude')
+    .sort((left, right) => left.source_id.localeCompare(right.source_id));
+  if (exclusions.length > 0) {
+    lines.push('## Excluded source findings', '');
+    for (const decision of exclusions) lines.push(`- ${sanitizeValidationRationale(decision.rationale)}`);
+    lines.push('');
+  }
+  if (coverage !== undefined) {
+    lines.push('## Verified', '');
+    if (coverage.verified.length === 0) lines.push('- No verification statements were provided.');
+    else for (const item of coverage.verified) lines.push(`- ${item}`);
+    lines.push('', '## Limitations', '');
+    if (coverage.limitations.length === 0) lines.push('- No limitations were provided.');
+    else for (const item of coverage.limitations) lines.push(`- ${item}`);
+    lines.push('');
+  }
+  return lines.join('\n').trimEnd();
 }
 
 export function assertMergerFindingCoverage(

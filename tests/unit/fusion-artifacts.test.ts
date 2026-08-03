@@ -82,7 +82,7 @@ void describe('fusion artifacts', () => {
       const store = await FusionArtifactStore.create({
         cwd: root,
         sessionId: 'session/id',
-        runId: 'f00000000000000000000000000000000',
+        runId: 'reason-00000000000000000000000000000000',
         source: 'command',
         config: defaultFusionModelConfig(),
         models: models(),
@@ -156,7 +156,7 @@ void describe('fusion artifacts', () => {
     try {
       const store = await FusionArtifactStore.create({
         cwd: root,
-        runId: 'f00000000000000000000000000000001',
+        runId: 'reason-00000000000000000000000000000001',
         source: 'command',
         config: defaultFusionModelConfig(),
         models: models(),
@@ -222,7 +222,7 @@ void describe('fusion artifacts', () => {
     try {
       const store = await FusionArtifactStore.create({
         cwd: root,
-        runId: 'f11111111111111111111111111111111',
+        runId: 'reason-11111111111111111111111111111111',
         source: 'tool',
         config: defaultFusionModelConfig(),
         models: models(),
@@ -251,7 +251,7 @@ void describe('fusion artifacts', () => {
     try {
       const store = await FusionArtifactStore.create({
         cwd: root,
-        runId: 'f22222222222222222222222222222222',
+        runId: 'reason-22222222222222222222222222222222',
         source: 'command',
         config: defaultFusionModelConfig(),
         models: models(),

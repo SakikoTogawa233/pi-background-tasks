@@ -23,7 +23,6 @@ import {
   FUSION_TOOL_CONTEXT_POLICY_ID,
   FusionError,
   type FusionBranchFilterDescriptor,
-  type FusionCanonicalInputV3,
   type FusionCanonicalRequestV3,
   type FusionSessionProjectionCanonicalInputV5,
   type FusionWorkflowId,
@@ -61,7 +60,7 @@ export interface BuildFusionCanonicalInputOptions {
 }
 
 export interface BuiltFusionCanonicalInput {
-  input: FusionCanonicalInputV3;
+  input: FusionSessionProjectionCanonicalInputV5;
   serialized: string;
   ledger: FusionContextOmissionLedgerV2;
   transcriptLeafId: string | null;

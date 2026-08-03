@@ -222,6 +222,9 @@ export const DELEGATE_FORBIDDEN_TOOLS: readonly string[] = [
   'bg_kill',
   'bg_run_pi_attested',
   'fusion_brainstorm',
+  'fusion_reason',
+  'fusion_investigate',
+  'fusion_research',
   'fusion_validate',
 ];
 

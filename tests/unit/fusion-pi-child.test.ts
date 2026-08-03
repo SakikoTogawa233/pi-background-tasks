@@ -1,5 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { EventEmitter } from 'node:events';
 import { existsSync } from 'node:fs';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
@@ -33,6 +34,7 @@ import fusionChildExtension, {
   FUSION_TOOL_CALL_LOG_PATH_ENV,
   buildFusionChildResultMetadata,
 } from '../../src/fusion-child-extension.js';
+import { buildFusionSourcePolicy, sourcePolicyCanonicalBytes } from '../../src/core/fusion/source-policy.js';
 
 class FakeReadable extends EventEmitter {
   emitData(value: Buffer | string): void {
@@ -278,13 +280,13 @@ void describe('fusion Pi child runner', () => {
     assert.equal(env['PI_SKIP_VERSION_CHECK'], '1');
   });
 
-  void it('keeps the fusion tool-call log env var through child env scrubbing', () => {
+  void it('scrubs inherited fusion tool-call log env var before launch-specific wiring', () => {
     const env = fusionPiChildEnv({
       PI_SESSION_ID: 'old',
       [FUSION_TOOL_CALL_LOG_PATH_ENV]: '/tmp/fusion-tools.jsonl',
     });
     assert.equal(env['PI_SESSION_ID'], undefined);
-    assert.equal(env[FUSION_TOOL_CALL_LOG_PATH_ENV], '/tmp/fusion-tools.jsonl');
+    assert.equal(env[FUSION_TOOL_CALL_LOG_PATH_ENV], undefined);
   });
 
   void it('builds byte-identical reasoning argv with no tools', () => {
@@ -724,6 +726,10 @@ void describe('fusion Pi child runner', () => {
       const child = new FakeChild(782);
       const harness = makeSpawn(child);
       const logPath = join(root, 'candidate-1.attempt-1.tool-calls.jsonl');
+      const policy = buildFusionSourcePolicy(root, []);
+      const policyPath = join(root, 'source-policy.json');
+      const policyBytes = sourcePolicyCanonicalBytes(policy);
+      await writeFile(policyPath, policyBytes);
       const run = runPiChild({
         stage: 'candidate',
         slot: 1,
@@ -732,6 +738,7 @@ void describe('fusion Pi child runner', () => {
         model: resolvedModel(),
         capability: 'research',
         toolCallLogPath: logPath,
+        sourcePolicy: { path: policyPath, sha256: createHash('sha256').update(policyBytes).digest('hex') },
         systemPrompt: 'system prompt',
         userPrompt: 'prompt',
         spawn: harness.spawn,
@@ -742,6 +749,7 @@ void describe('fusion Pi child runner', () => {
       assert.ok(record);
       assert.equal(record.options.env?.[FUSION_TOOL_CALL_LOG_PATH_ENV], logPath);
       assert.equal(record.options.env?.[FUSION_RESEARCH_ENABLED_ENV], '1');
+      assert.equal(record.options.env?.['PI_FUSION_SOURCE_POLICY_PATH'], policyPath);
       await writeFile(logPath, '');
       child.stdout.emitData(Buffer.from('final héllo\n', 'utf8'));
       child.stderr.emitData(compactMetadata());

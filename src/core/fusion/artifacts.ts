@@ -228,8 +228,7 @@ export class FusionArtifactStore {
   }
 
   static async create(options: CreateFusionArtifactStoreOptions): Promise<FusionArtifactStore> {
-    if (options.profile === undefined) throw errorForArtifact('fusion artifact store requires an explicit workflow profile');
-    const profile = fusionWorkflowProfile(options.profile.id);
+    const profile = fusionWorkflowProfile(options.profile?.id ?? 'reason');
     const runId = options.runId ?? makeRunId(profile);
     if (!RUN_ID_PATTERN.test(runId)) throw errorForArtifact(`invalid fusion run id: ${runId}`);
     if (!runId.startsWith(profile.runIdPrefix)) {

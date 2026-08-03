@@ -87,8 +87,18 @@ export type ExpandedFusionTextEntry = ProjectionTextEntry;
 export type ExpandedFusionOmissionEntry = ProjectionOmissionEntry;
 export type ExpandedFusionEntry = ProjectionEntry;
 
+function assertProjection<T>(projection: T | undefined): asserts projection is T {
+  if (projection === undefined) throw new Error('expected session projection input');
+}
+
 export function expandedEntries(input: FusionCanonicalInputV3): readonly ExpandedFusionEntry[] {
-  return input.conversation_projection.entries.map(expandFusionProjectionEntry);
+  const projection = input.context?.kind === 'session_projection'
+    ? input.context.conversation_projection
+    : 'conversation_projection' in input
+      ? input.conversation_projection
+      : undefined;
+  assertProjection(projection);
+  return projection.entries.map(expandFusionProjectionEntry);
 }
 
 export function textEntries(

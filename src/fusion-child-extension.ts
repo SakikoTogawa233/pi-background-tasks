@@ -64,7 +64,8 @@ interface FusionWebFetchDetails {
 }
 
 interface FusionWebFetchAuditMetadata {
-  url: string;
+  url?: string | undefined;
+  rejected_url_sha256?: string | undefined;
   final_url?: string | undefined;
   http_status?: number | undefined;
   response_bytes?: number | undefined;
@@ -217,15 +218,13 @@ function fetchAuditMetadataFromObject(value: object, fallbackUrl: string): Fusio
   return metadata;
 }
 
-function fetchAuditMetadataFromError(error: unknown, fallbackUrl: string): FusionWebFetchAuditMetadata {
-  if (!(error instanceof FusionWebFetchError) || typeof error !== 'object' || error === null) {
-    return { url: fallbackUrl };
+function fetchAuditMetadataFromError(error: unknown, attemptedUrl: string): FusionWebFetchAuditMetadata {
+  const metadata: FusionWebFetchAuditMetadata = { rejected_url_sha256: sha256(attemptedUrl) };
+  if (error instanceof FusionWebFetchError && typeof error === 'object' && error !== null) {
+    const status = numberField(error, 'status');
+    if (status !== undefined) metadata.http_status = status;
   }
-  const result = Reflect.get(error, 'result');
-  if (typeof result === 'object' && result !== null) {
-    return fetchAuditMetadataFromObject(result, fallbackUrl);
-  }
-  return fetchAuditMetadataFromObject(error, fallbackUrl);
+  return metadata;
 }
 
 
@@ -359,7 +358,7 @@ export default function fusionChildExtension(pi: ExtensionAPI): void {
         try {
           const canonicalUrl = canonicalizeFusionPublicUrl(params.url);
           if (declaredResearchUrls === undefined || !declaredResearchUrls.has(canonicalUrl)) {
-            throw new Error(`${FUSION_WEB_FETCH_TOOL_NAME} URL was not declared in the research source policy: ${canonicalUrl}`);
+            throw new Error(`${FUSION_WEB_FETCH_TOOL_NAME} URL was not declared in the research source policy`);
           }
           const result = await fusionWebFetch(
             params.extract === undefined

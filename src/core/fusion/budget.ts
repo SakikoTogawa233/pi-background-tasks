@@ -454,7 +454,11 @@ function replaceRequestText(input: FusionCanonicalInputV3, text: string): Fusion
 }
 
 function visibleTextBytes(input: FusionCanonicalInputV3): number {
-  const projection = input.context?.kind === 'session_projection' ? input.context.conversation_projection : input.conversation_projection;
+  const projection = input.context?.kind === 'session_projection'
+    ? input.context.conversation_projection
+    : 'conversation_projection' in input
+      ? input.conversation_projection
+      : undefined;
   if (projection === undefined) return 0;
   let total = 0;
   for (const entry of projection.entries) {
@@ -464,7 +468,11 @@ function visibleTextBytes(input: FusionCanonicalInputV3): number {
 }
 
 function omissionReceiptBytes(input: FusionCanonicalInputV3): number {
-  const projection = input.context?.kind === 'session_projection' ? input.context.conversation_projection : input.conversation_projection;
+  const projection = input.context?.kind === 'session_projection'
+    ? input.context.conversation_projection
+    : 'conversation_projection' in input
+      ? input.conversation_projection
+      : undefined;
   if (projection === undefined) return 0;
   let total = 0;
   for (const entry of projection.entries) {
@@ -928,6 +936,20 @@ export class FusionBudget {
     return new FusionError(message, details);
   }
 
+  private planMetadata(input?: FusionCanonicalInputV3): Pick<FusionBudgetPlanV1, 'workflow' | 'context' | 'fixed_candidate_policy'> {
+    return {
+      workflow: this.profile.id,
+      context: {
+        kind: this.profile.contextKind,
+        policy_id: input?.context?.policy_id ?? this.contextPolicyId,
+      },
+      fixed_candidate_policy: {
+        capability: this.candidateCapability,
+        tools: this.profile.candidateTools,
+      },
+    };
+  }
+
   plan(input: FusionCanonicalInputV3): FusionBudgetPlanV1 {
     const stages = this.entries(input);
     const blockers = selectBlockers(stages);
@@ -935,6 +957,7 @@ export class FusionBudget {
     const emptyRequest = this.emptyRequestVerdict(input, stages);
     const base: FusionBudgetPlanV1 = {
       schema_version: FUSION_BUDGET_PLAN_SCHEMA_VERSION,
+      ...this.planMetadata(input),
       policy: FUSION_BUDGET_POLICY,
       routes: this.routes,
       stages,
@@ -997,6 +1020,7 @@ export class FusionBudget {
     const blocker = blockerFromEntry(entry);
     const plan: FusionBudgetPlanV1 = {
       schema_version: FUSION_BUDGET_PLAN_SCHEMA_VERSION,
+      ...this.planMetadata(),
       policy: FUSION_BUDGET_POLICY,
       routes: this.routes,
       stages: [entry],

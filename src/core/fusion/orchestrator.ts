@@ -1,4 +1,5 @@
 import { randomBytes as nodeRandomBytes } from 'node:crypto';
+import { canonicalJson } from '../attested-pi-run.js';
 import { parseJsonText } from '../common.js';
 import { FUSION_BUDGET_POLICY, FusionBudget, assertChildOutputWithinContract } from './budget.js';
 import {
@@ -9,7 +10,10 @@ import {
 import {
   boundedEvaluationErrors,
   formatEvaluationErrors,
+  parseFusionValidationCandidateReport,
+  renderValidatedFusionValidationReport,
   validateFusionEvaluation,
+  validateFusionFindingAccounting,
 } from './evaluation.js';
 import { FusionChildRunError, runPiChild, type RunPiChildOptions } from './pi-child.js';
 import {
@@ -28,6 +32,7 @@ import {
 } from './workflows.js';
 import { buildFusionSourcePolicy, sourcePolicyCanonicalBytes } from './source-policy.js';
 import {
+  FUSION_INPUT_SCHEMA_VERSION,
   FUSION_NO_TOOLS_CAPABILITY,
   FUSION_RESULT_SCHEMA_VERSION,
   FusionError,
@@ -47,6 +52,7 @@ import {
   type FusionSource,
   type FusionStage,
   type FusionUsage,
+  type FusionValidationFindingRecord,
   type ResolvedFusionModel,
   type ResolvedFusionModels,
 } from './types.js';
@@ -99,6 +105,33 @@ function addFailedChildUsage(target: FusionUsage, error: unknown): void {
 
 function errorText(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function hasOnlyKeys(value: Record<string, unknown>, allowed: readonly string[]): boolean {
+  const allowedSet = new Set(allowed);
+  return Object.keys(value).every((key) => allowedSet.has(key));
+}
+
+function isStrictCleanCanonicalInput(value: unknown): boolean {
+  if (!isRecord(value)) return false;
+  if (!hasOnlyKeys(value, ['schema_version', 'workflow', 'cwd', 'request', 'context'])) return false;
+  const request = value['request'];
+  if (!isRecord(request)) return false;
+  if (!hasOnlyKeys(request, ['source', 'authority', 'text', 'sha256'])) return false;
+  const context = value['context'];
+  if (!isRecord(context)) return false;
+  if (!hasOnlyKeys(context, ['kind', 'policy_id', 'declared_sources'])) return false;
+  if (context['kind'] !== 'clean_task') return false;
+  const declaredSources = context['declared_sources'];
+  if (!Array.isArray(declaredSources)) return false;
+  for (const source of declaredSources) {
+    if (!isRecord(source) || !hasOnlyKeys(source, ['url', 'canonical_url', 'purpose', 'sha256'])) return false;
+  }
+  return true;
 }
 
 function asFusionError(error: unknown, artifactDir: string, messageOverride?: string): FusionError {
@@ -210,7 +243,10 @@ function childOptions(
   return out;
 }
 
-function parseEvaluationAttempt(text: string): {
+function parseEvaluationAttempt(
+  text: string,
+  expectedValidationFindings: readonly FusionValidationFindingRecord[] | undefined,
+): {
   evaluation: FusionEvaluationV1 | undefined;
   errors: readonly string[];
 } {
@@ -224,8 +260,12 @@ function parseEvaluationAttempt(text: string): {
     };
   }
   const result = validateFusionEvaluation(parsed);
-  if (result.ok) return { evaluation: result.value, errors: [] };
-  return { evaluation: undefined, errors: result.errors };
+  if (!result.ok) return { evaluation: undefined, errors: result.errors };
+  if (expectedValidationFindings !== undefined) {
+    const accountingErrors = validateEvaluationAccountsForSourceFindings(result.value, expectedValidationFindings);
+    if (accountingErrors.length > 0) return { evaluation: undefined, errors: accountingErrors };
+  }
+  return { evaluation: result.value, errors: [] };
 }
 
 function randomIndex(limit: number, randomBytes: FusionRandomBytes): number {
@@ -321,6 +361,44 @@ function anonymousCandidates(
   };
 }
 
+interface ValidationSourceData {
+  findings: readonly FusionValidationFindingRecord[];
+  verified: readonly string[];
+  limitations: readonly string[];
+}
+
+function validationSourceData(candidates: readonly [AnonymousFusionCandidate, AnonymousFusionCandidate, AnonymousFusionCandidate]): ValidationSourceData {
+  const findings: FusionValidationFindingRecord[] = [];
+  const verified: string[] = [];
+  const limitations: string[] = [];
+  for (const candidate of candidates) {
+    const report = parseFusionValidationCandidateReport(candidate.response, candidate.candidate_id);
+    findings.push(...report.findings);
+    verified.push(...report.verified);
+    limitations.push(...report.limitations);
+  }
+  return { findings, verified, limitations };
+}
+
+function validateEvaluationAccountsForSourceFindings(
+  evaluation: FusionEvaluationV1,
+  sourceFindings: readonly FusionValidationFindingRecord[],
+): readonly string[] {
+  const errors: string[] = [];
+  const accounting = evaluation.validation_accounting;
+  if (accounting === undefined) {
+    return ['validation evaluator output must include validation_accounting'];
+  }
+  const expected = sourceFindings.map((finding) => JSON.stringify(finding)).sort();
+  const actual = accounting.findings.map((finding) => JSON.stringify(finding)).sort();
+  if (expected.length !== actual.length || expected.some((value, index) => value !== actual[index])) {
+    errors.push('validation evaluator validation_accounting.findings must exactly equal host-assigned source findings');
+  }
+  errors.push(...validateFusionFindingAccounting(accounting));
+  return errors;
+}
+
+
 export class FusionOrchestrator {
   private readonly childRunner: FusionChildRunner;
   private readonly randomBytes: FusionRandomBytes;
@@ -337,13 +415,13 @@ export class FusionOrchestrator {
   }
 
   async run(input: FusionWorkflowInput): Promise<FusionRunResult> {
-    if (input.profile === undefined) {
-      throw new FusionError('fusion workflow profile is required; no default workflow is allowed', {
+    if (input.canonicalInput.schema_version !== FUSION_INPUT_SCHEMA_VERSION) {
+      throw new FusionError('fusion orchestrator accepts only v5 canonical input', {
         code: 'orchestration_failed',
         childCreated: false,
       });
     }
-    const profile = fusionWorkflowProfile(input.profile.id);
+    const profile = fusionWorkflowProfile(input.profile?.id ?? 'reason');
     const inputWorkflow = input.canonicalInput.workflow ?? profile.id;
     const inputContextKind = input.canonicalInput.context?.kind ?? 'session_projection';
     if (inputWorkflow !== profile.id || inputContextKind !== profile.contextKind) {
@@ -351,6 +429,12 @@ export class FusionOrchestrator {
         `fusion workflow profile ${profile.id} is incompatible with canonical input workflow=${String(inputWorkflow)} context=${String(inputContextKind)}`,
         { code: 'orchestration_failed', childCreated: false },
       );
+    }
+    if (profile.contextKind === 'clean_task' && !isStrictCleanCanonicalInput(input.canonicalInput)) {
+      throw new FusionError('clean-task fusion input must not carry parent context fields and must match the strict clean canonical shape', {
+        code: 'orchestration_failed',
+        childCreated: false,
+      });
     }
     const candidateCapability = assertWorkflowCapability(profile, input.candidateCapability);
     const storeOptions: CreateFusionArtifactStoreOptions = {
@@ -367,6 +451,21 @@ export class FusionOrchestrator {
     };
     if (input.sessionId !== undefined) storeOptions.sessionId = input.sessionId;
     if (this.now !== undefined) storeOptions.now = this.now;
+    let serializedParsed: unknown;
+    try {
+      serializedParsed = parseJsonText(input.canonicalInputSerialized);
+    } catch (error) {
+      throw new FusionError(`fusion canonical input artifact is not valid JSON: ${errorText(error)}`, {
+        code: 'orchestration_failed',
+        childCreated: false,
+      });
+    }
+    if (canonicalJson(serializedParsed) !== canonicalJson(input.canonicalInput)) {
+      throw new FusionError('fusion canonical input serialized bytes do not match canonical input object', {
+        code: 'orchestration_failed',
+        childCreated: false,
+      });
+    }
     const store = await this.createArtifactStore(storeOptions);
     input.onProgress?.({ type: 'state', state: 'initializing' });
     const usage = createEmptyFusionUsage();
@@ -431,8 +530,13 @@ export class FusionOrchestrator {
       input.onProgress?.({ type: 'state', state: 'candidates_complete' });
 
       const shuffled = anonymousCandidates(candidateResults, shuffledSlots(this.randomBytes));
+      const validationData = profile.id === 'validate' ? validationSourceData(shuffled.candidates) : undefined;
       await store.setAnonymousMap(shuffled.map);
-      const blindInput = buildBlindEvaluationInput(input.canonicalInput, shuffled.candidates);
+      const blindInput = buildBlindEvaluationInput(
+        input.canonicalInput,
+        shuffled.candidates,
+        validationData?.findings,
+      );
       await store.writeBlindCandidates(buildEvaluationPrompt(blindInput));
 
       await store.transition('evaluating');
@@ -445,6 +549,7 @@ export class FusionOrchestrator {
         budget,
         calibrationWarnings,
         profile,
+        validationData?.findings,
       );
       await store.writeEvaluationJson(evaluation);
       await store.transition('evaluation_complete');
@@ -483,12 +588,16 @@ export class FusionOrchestrator {
         merged,
       );
       assertChildOutputWithinContract('merge', merged.text);
-      await store.writeMerged(merged.text);
+      const finalMergedText = evaluation.validation_accounting === undefined
+        ? merged.text
+        : renderValidatedFusionValidationReport(evaluation.validation_accounting, validationData);
+      if (finalMergedText !== merged.text) assertChildOutputWithinContract('merge', finalMergedText);
+      await store.writeMerged(finalMergedText);
       await store.setUsage(usage);
       await store.transition('completed');
       input.onProgress?.({ type: 'completed', runId: store.runId, artifactDir: store.artifactDir });
       return {
-        mergedText: merged.text,
+        mergedText: finalMergedText,
         details: {
           schema_version: FUSION_RESULT_SCHEMA_VERSION,
           run_id: store.runId,
@@ -636,6 +745,7 @@ export class FusionOrchestrator {
     budget: FusionBudget,
     calibrationWarnings: FusionCalibrationViolation[],
     profile: FusionWorkflowProfile,
+    expectedValidationFindings: readonly FusionValidationFindingRecord[] | undefined,
   ): Promise<FusionEvaluationV1> {
     const firstPrompt = buildEvaluationPrompt(blindInput);
     budget.assertStagePrompt('evaluation', profile.evaluatorSystemPrompt, firstPrompt);
@@ -649,6 +759,7 @@ export class FusionOrchestrator {
       1,
       false,
       profile,
+      expectedValidationFindings,
     );
     if (first.evaluation !== undefined) return first.evaluation;
     const errors = boundedEvaluationErrors(first.errors);
@@ -674,6 +785,7 @@ export class FusionOrchestrator {
       2,
       true,
       profile,
+      expectedValidationFindings,
     );
     if (second.evaluation !== undefined) return second.evaluation;
     throw new FusionError(
@@ -696,6 +808,7 @@ export class FusionOrchestrator {
     attempt: 1 | 2,
     repair: boolean,
     profile: FusionWorkflowProfile,
+    expectedValidationFindings: readonly FusionValidationFindingRecord[] | undefined,
   ): Promise<EvaluationAttemptResult> {
     input.onProgress?.({ type: 'evaluation_started', attempt, repair });
     const systemPrompt = repair
@@ -731,7 +844,7 @@ export class FusionOrchestrator {
     await store.setUsage(usage);
     // Bound the evaluator output before it can be embedded in a repair prompt.
     assertChildOutputWithinContract('evaluation', result.text);
-    const parsed = parseEvaluationAttempt(result.text);
+    const parsed = parseEvaluationAttempt(result.text, expectedValidationFindings);
     return { result, evaluation: parsed.evaluation, errors: parsed.errors };
   }
 

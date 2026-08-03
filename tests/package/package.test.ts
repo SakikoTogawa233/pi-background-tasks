@@ -790,9 +790,9 @@ void describe('package', () => {
     assert.match(extension, /no capability argument/);
     assert.match(extension, /targeted fetches of supplied URLs only/);
     assert.match(extension, /no longer accepts \{prompt\}/);
-    assert.match(extension, /PI_BG_ALLOW_LEGACY_FUSION_CORE_FOR_TESTS/);
-    assert.match(extension, /refusing to fall back to legacy canonical input outside tests/);
-    assert.match(extension, /core fusion workflow export \$\{primaryName\} is missing/);
+    assert.doesNotMatch(extension, /PI_BG_ALLOW_LEGACY_FUSION_CORE_FOR_TESTS/);
+    assert.doesNotMatch(extension, /legacy canonical input outside tests/);
+    assert.doesNotMatch(extension, /core fusion workflow export \$\{primaryName\} is missing/);
   });
 
   void it('fusion production code avoids direct completion APIs and local adapters', async () => {
