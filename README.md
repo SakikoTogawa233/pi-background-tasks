@@ -9,19 +9,19 @@ This package adds named, tracked background shell jobs with durable output files
 From npm after publish:
 
 ```bash
-pi install npm:pi-background-tasks@0.9.0
+pi install npm:pi-background-tasks@0.9.1
 ```
 
 From git after pushing this package to its standalone repository and tagging:
 
 ```bash
-pi install git:github.com/ismailsaleekh/pi-background-tasks@v0.9.0
+pi install git:github.com/ismailsaleekh/pi-background-tasks@v0.9.1
 ```
 
 For project-local install:
 
 ```bash
-pi install -l npm:pi-background-tasks@0.9.0
+pi install -l npm:pi-background-tasks@0.9.1
 ```
 
 ## Commands
