@@ -6,7 +6,7 @@ import { isIP } from 'node:net';
 import { performance } from 'node:perf_hooks';
 import { TextDecoder } from 'node:util';
 
-import TurndownService from 'turndown';
+import type TurndownService from 'turndown';
 
 export const FUSION_WEB_FETCH_TIMEOUT_MS = 60_000;
 export const FUSION_WEB_FETCH_MAX_RESPONSE_BYTES = 2 * 1024 * 1024;
@@ -118,6 +118,10 @@ interface TableReplacement {
   markdown: string;
 }
 
+type TurndownServiceConstructor = typeof TurndownService;
+
+let turndownServiceLoad: Promise<TurndownServiceConstructor> | undefined;
+
 const USER_AGENT = 'pi-background-tasks fusion_web_fetch/1.0';
 const ACCEPT_HEADER = 'text/markdown, text/html;q=0.9, application/xhtml+xml;q=0.8, text/plain;q=0.7';
 const METADATA_HOSTNAMES = new Set([
@@ -214,7 +218,7 @@ export async function fusionWebFetch(
       continue;
     }
 
-    const extracted = extractContent(result.body, result.contentType, requestedFormat);
+    const extracted = await extractContent(result.body, result.contentType, requestedFormat);
     const capped = capUtf8Bytes(extracted.content, effective.maxOutputBytes);
     return {
       url: requestedUrl.toString(),
@@ -681,18 +685,18 @@ function readContentLength(value: string | undefined, url: string, status: numbe
   return Number(trimmed);
 }
 
-function extractContent(
+async function extractContent(
   body: Buffer,
   contentType: string,
   requestedFormat: 'text' | 'markdown',
-): ExtractionResult {
+): Promise<ExtractionResult> {
   try {
     const mediaType = mediaTypeFromContentType(contentType);
     const decoded = decodeBody(body, contentType);
     if (mediaType === 'text/plain') return { content: decoded, format: 'text' };
     if (mediaType === 'text/markdown') return { content: decoded, format: 'markdown' };
     if (requestedFormat === 'text') return { content: htmlToText(decoded), format: 'text' };
-    return { content: htmlToMarkdown(decoded), format: 'markdown' };
+    return { content: await htmlToMarkdown(decoded), format: 'markdown' };
   } catch (error) {
     if (error instanceof FusionWebFetchError) throw error;
     throw new FusionWebFetchError(
@@ -738,15 +742,57 @@ function stripAsciiQuotes(value: string): string {
   return value;
 }
 
-function htmlToMarkdown(html: string): string {
+async function htmlToMarkdown(html: string): Promise<string> {
+  const TurndownServiceClass = await loadTurndownService();
   const stripped = stripUnsafeHtmlBlocks(html);
   const tables = replaceTablesWithTokens(stripped);
-  const turndown = new TurndownService({ bulletListMarker: '-', codeBlockStyle: 'fenced', headingStyle: 'atx' });
+  const turndown = new TurndownServiceClass({ bulletListMarker: '-', codeBlockStyle: 'fenced', headingStyle: 'atx' });
   let markdown = turndown.turndown(tables.html).trim();
   for (const table of tables.replacements) {
     markdown = markdown.replace(table.token, table.markdown);
   }
   return markdown.trim();
+}
+
+async function loadTurndownService(): Promise<TurndownServiceConstructor> {
+  if (turndownServiceLoad === undefined) {
+    turndownServiceLoad = import('turndown').then((module) => module.default);
+  }
+  try {
+    return await turndownServiceLoad;
+  } catch (error) {
+    turndownServiceLoad = undefined;
+    throw normalizeTurndownLoadError(error);
+  }
+}
+
+function normalizeTurndownLoadError(error: unknown): Error {
+  if (isMissingTurndownDependency(error)) {
+    const details = error instanceof Error ? { cause: error } : {};
+    return new FusionWebFetchError(
+      'extraction_failed',
+      'fusion_web_fetch markdown extraction dependency "turndown" is missing from pi-background-tasks; repair the package install with `pi update --extensions` or `npm install --omit=dev --prefix <pi-background-tasks>`.',
+      details,
+    );
+  }
+  if (error instanceof Error) return error;
+  return new Error(`fusion_web_fetch markdown extraction dependency failed to load: ${String(error)}`);
+}
+
+function isMissingTurndownDependency(error: unknown): boolean {
+  const code = errorCode(error);
+  if (code !== 'MODULE_NOT_FOUND' && code !== 'ERR_MODULE_NOT_FOUND') return false;
+  return errorMessage(error).includes('turndown');
+}
+
+function errorCode(error: unknown): string | undefined {
+  if (typeof error !== 'object' || error === null) return undefined;
+  const code = Reflect.get(error, 'code');
+  return typeof code === 'string' ? code : undefined;
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
 
 function htmlToText(html: string): string {

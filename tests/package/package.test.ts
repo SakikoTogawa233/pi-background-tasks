@@ -364,6 +364,7 @@ void describe('package', () => {
       'src/core/pi-launch.ts',
       'src/core/fusion/orchestrator.ts',
       'src/core/fusion/pi-child.ts',
+      'src/core/fusion/child-protocol.ts',
       'src/core/fusion/budget.ts',
       'src/core/fusion/workflows.ts',
       'src/fusion-extension.ts',
@@ -774,6 +775,30 @@ void describe('package', () => {
     );
   });
 
+  void it('ships the markdown extractor as a real dependency without startup import', async () => {
+    const p = await pkg();
+    assert.equal(
+      p.dependencies?.['turndown'],
+      '7.2.4',
+      'the production markdown extractor dependency must be installed for package users',
+    );
+    assert.equal(
+      p.devDependencies?.['turndown'],
+      undefined,
+      'runtime markdown extraction must not be hidden in devDependencies',
+    );
+    const fetchSource = await text('src/core/fusion/web-fetch.ts');
+    assert.doesNotMatch(
+      fetchSource,
+      /import\s+TurndownService\s+from\s+['"]turndown['"]/,
+      'turndown must load lazily so a damaged package install does not block Pi startup',
+    );
+    assert.match(fetchSource, /import\('turndown'\)/);
+    const childLauncher = await text('src/core/fusion/pi-child.ts');
+    assert.doesNotMatch(childLauncher, /fusion-child-extension/);
+    assert.match(childLauncher, /child-protocol/);
+  });
+
   void it('Fusion validate cannot recurse through each child tool policy', async () => {
     const types = await text('src/core/fusion/types.ts');
     const delegateLaunch = await text('src/core/delegate/launch.ts');
@@ -815,6 +840,7 @@ void describe('package', () => {
       'src/core/fusion/prompts.ts',
       'src/core/fusion/evaluation.ts',
       'src/core/fusion/pi-child.ts',
+      'src/core/fusion/child-protocol.ts',
       'src/core/fusion/artifacts.ts',
       'src/core/fusion/orchestrator.ts',
       'src/core/fusion/budget.ts',
@@ -852,6 +878,7 @@ void describe('package', () => {
       'src/fusion-extension.ts',
       'src/core/fusion/types.ts',
       'src/core/fusion/pi-child.ts',
+      'src/core/fusion/child-protocol.ts',
       'src/core/fusion/orchestrator.ts',
       'src/core/fusion/artifacts.ts',
     ];
@@ -859,10 +886,10 @@ void describe('package', () => {
       const source = await text(file);
       assert.doesNotMatch(source, /costTotal/, `${file} must not carry the retired cost shape`);
     }
-    const child = await text('src/fusion-child-extension.ts');
-    assert.match(child, /fusion-child-result\.v2/);
+    const childProtocol = await text('src/core/fusion/child-protocol.ts');
+    assert.match(childProtocol, /fusion-child-result\.v2/);
     for (const key of ['input', 'output', 'cacheRead', 'cacheWrite', 'total']) {
-      assert.match(child, new RegExp(`cost\\.${key}`));
+      assert.match(childProtocol, new RegExp(`cost\\.${key}`));
     }
     const types = await text('src/core/fusion/types.ts');
     assert.match(types, /fusion-result\.v4/);
@@ -1129,6 +1156,7 @@ void describe('package', () => {
       'src/core/fusion/prompts.ts',
       'src/core/fusion/evaluation.ts',
       'src/core/fusion/pi-child.ts',
+      'src/core/fusion/child-protocol.ts',
       'src/core/fusion/artifacts.ts',
       'src/core/fusion/orchestrator.ts',
       'src/core/fusion/budget.ts',
@@ -1190,6 +1218,10 @@ void describe('package', () => {
         existsSync(join(temp, 'node_modules', '@ravshansbox', 'pi-anthropic-sps', 'package.json')),
         'packed consumers must install the Anthropic sanitizer production dependency',
       );
+      assert.ok(
+        existsSync(join(temp, 'node_modules', 'turndown', 'package.json')),
+        'packed consumers must install the markdown extraction production dependency',
+      );
       for (const f of [
         'package.json',
         'extensions/background-tasks.ts',
@@ -1203,6 +1235,7 @@ void describe('package', () => {
         'src/core/pi-launch.ts',
         'src/core/fusion/orchestrator.ts',
         'src/core/fusion/pi-child.ts',
+        'src/core/fusion/child-protocol.ts',
         'src/ui/background-tasks-manager.ts',
         'src/ui/fusion-model-selector.ts',
       ]) {

@@ -341,7 +341,7 @@ The investigate prompt may re-derive facts from the repository using read-only t
 
 `fusion_web_fetch` has a closed schema: `{ url: string, extract?: 'text' | 'markdown' }`. `extract` defaults to Markdown. There is deliberately no per-fetch prompt parameter. Anthropic documents the `{url, prompt}` extraction pattern as lossy by design: the prompt decides what reaches the model, so a false negative can enter a Fusion candidate answer, pass through blind evaluation, and reach the merged answer with no signal that the page contained missed information.
 
-HTML extraction uses the runtime dependency `turndown@7.2.4`; its only dependency is `@mixmark-io/domino`, so it does not require `jsdom`. Markdown is the default because it preserves link destinations, headings, tables, and code blocks better than plain text. This version has no web search, browser, PDF support, cache, or domain allowlist.
+HTML extraction uses the runtime dependency `turndown@7.2.4`; its only dependency is `@mixmark-io/domino`, so it does not require `jsdom`. The dependency is loaded only when Markdown extraction runs, so a damaged dependency install cannot prevent the parent background-tasks extension from starting. Markdown is the default because it preserves link destinations, headings, tables, and code blocks better than plain text. This version has no web search, browser, PDF support, cache, or domain allowlist.
 
 | `fusion_web_fetch` policy | Value |
 |---|---:|

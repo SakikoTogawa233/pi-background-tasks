@@ -1,6 +1,5 @@
 import { createHash } from 'node:crypto';
 import { closeSync, constants, fstatSync, fsyncSync, openSync, readFileSync, writeSync } from 'node:fs';
-import type { Usage } from '@earendil-works/pi-ai';
 import type { ExtensionAPI } from '@earendil-works/pi-coding-agent';
 import { Type, type Static } from 'typebox';
 import {
@@ -17,29 +16,36 @@ import {
   canonicalizeFusionPublicUrl,
   parseFusionSourcePolicy,
 } from './core/fusion/source-policy.js';
+import {
+  FUSION_CHILD_MAX_TOTAL_TOOL_RESULT_BYTES,
+  FUSION_CHILD_RESULT_PREFIX,
+  FUSION_RESEARCH_ENABLED_ENV,
+  FUSION_SOURCE_POLICY_PATH_ENV,
+  FUSION_SOURCE_POLICY_SHA256_ENV,
+  FUSION_TOOL_CALL_LOG_PATH_ENV,
+  FUSION_TOOL_CALL_SEAL_SCHEMA_VERSION,
+  FUSION_TOOL_CALL_SEAL_SUFFIX,
+  buildFusionChildResultMetadata,
+  type FusionChildResultMetadata,
+} from './core/fusion/child-protocol.js';
 
-export const FUSION_CHILD_RESULT_SCHEMA_VERSION =
-  'pi-background-tasks.fusion-child-result.v2' as const;
-export const FUSION_CHILD_RESULT_PREFIX = '\u001ePI_FUSION_CHILD_RESULT ';
-export const FUSION_TOOL_CALL_LOG_PATH_ENV = 'PI_FUSION_TOOL_CALL_LOG_PATH';
-export const FUSION_RESEARCH_ENABLED_ENV = 'PI_FUSION_RESEARCH_ENABLED';
-export const FUSION_SOURCE_POLICY_PATH_ENV = 'PI_FUSION_SOURCE_POLICY_PATH';
-export const FUSION_SOURCE_POLICY_SHA256_ENV = 'PI_FUSION_SOURCE_POLICY_SHA256';
-export const FUSION_TOOL_CALL_SEAL_SCHEMA_VERSION =
-  'pi-background-tasks.fusion-tool-call-seal.v1' as const;
-export const FUSION_TOOL_CALL_SEAL_SUFFIX = '.seal.json';
+export {
+  FUSION_CHILD_MAX_TOTAL_TOOL_RESULT_BYTES,
+  FUSION_CHILD_RESULT_PREFIX,
+  FUSION_CHILD_RESULT_SCHEMA_VERSION,
+  FUSION_RESEARCH_ENABLED_ENV,
+  FUSION_SOURCE_POLICY_PATH_ENV,
+  FUSION_SOURCE_POLICY_SHA256_ENV,
+  FUSION_TOOL_CALL_LOG_PATH_ENV,
+  FUSION_TOOL_CALL_SEAL_SCHEMA_VERSION,
+  FUSION_TOOL_CALL_SEAL_SUFFIX,
+  buildFusionChildResultMetadata,
+  type FusionChildResultMetadata,
+  type FusionChildResultUsageMetadata,
+  type FusionChildTextBlockMetadata,
+} from './core/fusion/child-protocol.js';
 
 const FUSION_CHILD_O_NOFOLLOW = typeof constants.O_NOFOLLOW === 'number' ? constants.O_NOFOLLOW : 0;
-
-/**
- * Aggregate ceiling on tool-result bytes a single candidate child may accumulate.
- *
- * v1 deliberately has no tool-CALL cap, so this byte budget is the only bound on how much
- * a read-only candidate can pull into its context. 8 MiB is generous for targeted
- * grep/read investigation while still preventing an unbounded read loop from degrading
- * into an opaque provider-side context failure.
- */
-export const FUSION_CHILD_MAX_TOTAL_TOOL_RESULT_BYTES = 8 * 1024 * 1024;
 
 const FusionWebFetchParams = Type.Object(
   {
@@ -75,23 +81,6 @@ interface FusionWebFetchAuditMetadata {
   http_status?: number | undefined;
   response_bytes?: number | undefined;
   content_sha256?: string | undefined;
-}
-
-export interface FusionChildTextBlockMetadata {
-  utf8_bytes: number;
-  sha256: string;
-}
-
-export type FusionChildResultUsageMetadata = Usage;
-
-export interface FusionChildResultMetadata {
-  schema_version: typeof FUSION_CHILD_RESULT_SCHEMA_VERSION;
-  provider: string;
-  model: string;
-  stop_reason: string;
-  text_blocks: FusionChildTextBlockMetadata[];
-  text_sha256: string;
-  usage: FusionChildResultUsageMetadata;
 }
 
 function sha256(value: string | Buffer): string {
@@ -157,44 +146,6 @@ function writeToolCallLogSeal(
   } finally {
     if (fd !== undefined) closeSync(fd);
   }
-}
-
-export function buildFusionChildResultMetadata(message: {
-  provider: string;
-  model: string;
-  stopReason: string;
-  content: ReadonlyArray<{ type: string; text?: string }>;
-  usage: Usage;
-}): FusionChildResultMetadata {
-  const textBlocks = message.content.flatMap((part) =>
-    part.type === 'text' && typeof part.text === 'string' ? [part.text] : [],
-  );
-  const usage: FusionChildResultUsageMetadata = {
-    input: message.usage.input,
-    output: message.usage.output,
-    cacheRead: message.usage.cacheRead,
-    cacheWrite: message.usage.cacheWrite,
-    totalTokens: message.usage.totalTokens,
-    cost: {
-      input: message.usage.cost.input,
-      output: message.usage.cost.output,
-      cacheRead: message.usage.cost.cacheRead,
-      cacheWrite: message.usage.cost.cacheWrite,
-      total: message.usage.cost.total,
-    },
-  };
-  return {
-    schema_version: FUSION_CHILD_RESULT_SCHEMA_VERSION,
-    provider: message.provider,
-    model: message.model,
-    stop_reason: message.stopReason,
-    text_blocks: textBlocks.map((text) => ({
-      utf8_bytes: Buffer.byteLength(text, 'utf8'),
-      sha256: sha256(text),
-    })),
-    text_sha256: sha256(textBlocks.join('')),
-    usage,
-  };
 }
 
 async function writeMetadata(record: FusionChildResultMetadata): Promise<void> {

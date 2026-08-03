@@ -16,7 +16,7 @@ import {
   FUSION_TOOL_CALL_SEAL_SUFFIX,
   FUSION_CHILD_MAX_TOTAL_TOOL_RESULT_BYTES,
   type FusionChildResultMetadata,
-} from '../../fusion-child-extension.js';
+} from './child-protocol.js';
 import {
   FUSION_FORBIDDEN_TOOLS,
   FUSION_NO_TOOLS_CAPABILITY,
