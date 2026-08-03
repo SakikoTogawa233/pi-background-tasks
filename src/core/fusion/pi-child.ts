@@ -775,7 +775,7 @@ async function readFusionToolCallLog(path: string): Promise<FusionToolCallTrace>
   try {
     // The audit trail must be a real file inside the run directory. A symlink here would let
     // anything able to pre-create the path redirect the parent's read elsewhere, so the file
-    // is opened with O_NOFOLLOW and then fstat-checked before any bytes are trusted.
+    // is opened with O_NOFOLLOW and then fstat-checked before its bytes are trusted.
     const stats = await handle.stat();
     if (!stats.isFile()) {
       throw new Error(

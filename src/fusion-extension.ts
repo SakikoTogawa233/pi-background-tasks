@@ -1036,7 +1036,7 @@ export function registerFusionExtension(pi: ExtensionAPI): void {
       'Run a five-model Fusion reason workflow. Candidate children receive the reason projection and no tools; evaluator and merger also run without tools.',
     promptSnippet: 'Use fusion_reason for self-contained no-tool multi-model reasoning',
     promptGuidelines: [
-      'fusion_reason requires {prompt}; candidates receive the reason workflow projection but do not inherit tools or repository access, so restate any facts that exist only in omitted tool output.',
+      'fusion_reason requires {prompt}; candidates receive the reason workflow projection but do not inherit tools or repository access, so restate facts that exist only in omitted tool output.',
       'fusion_reason is for reasoning only. It has no capability argument and no public mode switches.',
     ],
     parameters: FusionReasonParams,
