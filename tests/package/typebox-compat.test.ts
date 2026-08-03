@@ -105,13 +105,20 @@ void describe('TypeBox compatibility', () => {
   });
 
   void it('compiles the exact shipped Fusion v1 public schemas under TypeBox 1.3', async () => {
-    const { FusionReasonParams, FusionResearchParams, FusionValidateParams } = await import(
+    const { FusionInvestigateParams, FusionReasonParams, FusionResearchParams, FusionValidateParams } = await import(
       '../../src/fusion-extension.js'
     );
     const reason = Compile(FusionReasonParams);
     assert.equal(reason.Check({ prompt: 'ok' }), true);
     assert.equal(reason.Check({ prompt: 'ok', capability: 'reason' }), false);
     assert.equal(Value.Check(FusionReasonParams, { prompt: 'ok' }), true);
+
+    const investigate = Compile(FusionInvestigateParams);
+    assert.equal(
+      investigate.Check({ objective: 'o', background: [], deliverable: 'd', capability: 'inspect' }),
+      false,
+    );
+    assert.equal(investigate.Check({ objective: 'o', background: [], deliverable: 'd' }), true);
 
     const research = Compile(FusionResearchParams);
     assert.equal(

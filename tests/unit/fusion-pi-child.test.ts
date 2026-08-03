@@ -31,6 +31,8 @@ import {
 import fusionChildExtension, {
   FUSION_CHILD_RESULT_PREFIX,
   FUSION_RESEARCH_ENABLED_ENV,
+  FUSION_SOURCE_POLICY_PATH_ENV,
+  FUSION_SOURCE_POLICY_SHA256_ENV,
   FUSION_TOOL_CALL_LOG_PATH_ENV,
   buildFusionChildResultMetadata,
 } from '../../src/fusion-child-extension.js';
@@ -595,6 +597,97 @@ void describe('fusion Pi child runner', () => {
     }
   });
 
+  void it('rejects undeclared fusion_web_fetch before network and audits only the attempted URL hash', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'pi-fusion-fetch-policy-'));
+    const oldLogPath = process.env[FUSION_TOOL_CALL_LOG_PATH_ENV];
+    const oldResearchEnabled = process.env[FUSION_RESEARCH_ENABLED_ENV];
+    const oldPolicyPath = process.env[FUSION_SOURCE_POLICY_PATH_ENV];
+    const oldPolicyHash = process.env[FUSION_SOURCE_POLICY_SHA256_ENV];
+    try {
+      const logPath = join(root, 'tool-calls.jsonl');
+      const policy = buildFusionSourcePolicy(root, [
+        {
+          url: 'https://example.com/allowed',
+          canonical_url: 'https://example.com/allowed',
+          purpose: 'declared',
+          sha256: createHash('sha256').update('https://example.com/allowed\u0000declared').digest('hex'),
+        },
+      ]);
+      const policyBytes = sourcePolicyCanonicalBytes(policy);
+      const policyPath = join(root, 'source-policy.json');
+      await writeFile(policyPath, policyBytes, 'utf8');
+      process.env[FUSION_TOOL_CALL_LOG_PATH_ENV] = logPath;
+      process.env[FUSION_RESEARCH_ENABLED_ENV] = '1';
+      process.env[FUSION_SOURCE_POLICY_PATH_ENV] = policyPath;
+      process.env[FUSION_SOURCE_POLICY_SHA256_ENV] = createHash('sha256').update(policyBytes).digest('hex');
+
+      type FusionChildPi = Parameters<typeof fusionChildExtension>[0];
+      type RecordedHandler = (event: Record<string, unknown>) => unknown;
+      interface RegisteredTool {
+        name: string;
+        prepareArguments(args: unknown): unknown;
+        execute(toolCallId: string, params: { url: string; extract?: 'text' | 'markdown' }): Promise<unknown>;
+      }
+      const handlers = new Map<string, RecordedHandler[]>();
+      let registered: RegisteredTool | undefined;
+      const recorder = {
+        on(event: string, handler: RecordedHandler) {
+          const existing = handlers.get(event) ?? [];
+          existing.push(handler);
+          handlers.set(event, existing);
+        },
+        registerTool(tool: RegisteredTool) {
+          registered = tool;
+        },
+      };
+      fusionChildExtension(recorder as typeof recorder & FusionChildPi);
+      assert.equal(registered?.name, FUSION_WEB_FETCH_TOOL_NAME);
+      assert.throws(
+        () => registered?.prepareArguments({ url: 'https://example.com/allowed', prompt: 'extract secret' }),
+        /url and optional extract only/,
+      );
+
+      const attemptedUrl = 'https://example.com/undeclared?private=SHOULD_NOT_LEAK';
+      handlers.get('tool_call')?.[0]?.({
+        toolCallId: 'fetch-1',
+        toolName: FUSION_WEB_FETCH_TOOL_NAME,
+        input: { url: attemptedUrl },
+      });
+      await assert.rejects(
+        () => registered?.execute('fetch-1', { url: attemptedUrl }) ?? Promise.resolve(),
+        /URL was not declared/,
+      );
+      handlers.get('tool_result')?.[0]?.({
+        toolCallId: 'fetch-1',
+        toolName: FUSION_WEB_FETCH_TOOL_NAME,
+        input: { url: attemptedUrl },
+        content: [{ type: 'text', text: 'tool failed' }],
+        details: {},
+        isError: true,
+        usage: piUsage(0, 0),
+      });
+
+      const bytes = await readFile(logPath);
+      assert.doesNotMatch(bytes.toString('utf8'), /SHOULD_NOT_LEAK|undeclared/);
+      const trace = parseFusionToolCallLog(bytes);
+      const record = trace.records[0];
+      assert.equal(record?.tool_name, FUSION_WEB_FETCH_TOOL_NAME);
+      assert.equal(record?.status, 'error');
+      assert.equal(record?.url, undefined);
+      assert.equal(record?.rejected_url_sha256, createHash('sha256').update(attemptedUrl).digest('hex'));
+    } finally {
+      if (oldLogPath === undefined) delete process.env[FUSION_TOOL_CALL_LOG_PATH_ENV];
+      else process.env[FUSION_TOOL_CALL_LOG_PATH_ENV] = oldLogPath;
+      if (oldResearchEnabled === undefined) delete process.env[FUSION_RESEARCH_ENABLED_ENV];
+      else process.env[FUSION_RESEARCH_ENABLED_ENV] = oldResearchEnabled;
+      if (oldPolicyPath === undefined) delete process.env[FUSION_SOURCE_POLICY_PATH_ENV];
+      else process.env[FUSION_SOURCE_POLICY_PATH_ENV] = oldPolicyPath;
+      if (oldPolicyHash === undefined) delete process.env[FUSION_SOURCE_POLICY_SHA256_ENV];
+      else process.env[FUSION_SOURCE_POLICY_SHA256_ENV] = oldPolicyHash;
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   void it('keeps reasoning and full response text out of compact child metadata', () => {
     const record = buildFusionChildResultMetadata({
       provider: 'openai-codex',
@@ -791,6 +884,85 @@ void describe('fusion Pi child runner', () => {
         assert.ok(error instanceof FusionChildRunError);
         assert.equal(error.code, 'child_event_invalid');
         assert.match(error.message, /never initialized its audit trail/);
+        return true;
+      });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  void it('fails tool-enabled children when the durable audit names a non-allowlisted tool', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'pi-fusion-tool-log-allowlist-'));
+    try {
+      const child = new FakeChild(783);
+      const harness = makeSpawn(child);
+      const logPath = join(root, 'candidate-1.attempt-1.tool-calls.jsonl');
+      const run = runPiChild({
+        stage: 'candidate',
+        slot: 1,
+        attempt: 1,
+        cwd: root,
+        model: resolvedModel(),
+        capability: 'inspect',
+        toolCallLogPath: logPath,
+        systemPrompt: 'system prompt',
+        userPrompt: 'prompt',
+        spawn: harness.spawn,
+        platform: 'linux',
+      });
+      await tick();
+      await writeFile(logPath, toolLogLine(0, { tool_name: 'bash' }), 'utf8');
+      child.stdout.emitData(Buffer.from('final héllo\n', 'utf8'));
+      child.stderr.emitData(compactMetadata());
+      child.close(0, null);
+      await assert.rejects(run, (error: unknown) => {
+        assert.ok(error instanceof FusionChildRunError);
+        assert.equal(error.code, 'child_event_invalid');
+        assert.match(error.message, /non-allowlisted tool bash/);
+        return true;
+      });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  void it('fails research children when a successful fetch audit URL was not declared', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'pi-fusion-tool-log-source-policy-'));
+    try {
+      const child = new FakeChild(784);
+      const harness = makeSpawn(child);
+      const logPath = join(root, 'candidate-1.attempt-1.tool-calls.jsonl');
+      const policy = buildFusionSourcePolicy(root, []);
+      const policyPath = join(root, 'source-policy.json');
+      const policyBytes = sourcePolicyCanonicalBytes(policy);
+      await writeFile(policyPath, policyBytes, 'utf8');
+      const run = runPiChild({
+        stage: 'candidate',
+        slot: 1,
+        attempt: 1,
+        cwd: root,
+        model: resolvedModel(),
+        capability: 'research',
+        toolCallLogPath: logPath,
+        sourcePolicy: { path: policyPath, sha256: createHash('sha256').update(policyBytes).digest('hex') },
+        systemPrompt: 'system prompt',
+        userPrompt: 'prompt',
+        spawn: harness.spawn,
+        platform: 'linux',
+      });
+      await tick();
+      await writeFile(
+        logPath,
+        toolLogLine(0, { tool_name: FUSION_WEB_FETCH_TOOL_NAME, url: 'https://example.com/not-declared' }),
+        'utf8',
+      );
+      child.stdout.emitData(Buffer.from('final héllo\n', 'utf8'));
+      child.stderr.emitData(compactMetadata());
+      child.close(0, null);
+      await assert.rejects(run, (error: unknown) => {
+        assert.ok(error instanceof FusionChildRunError);
+        assert.equal(error.code, 'child_event_invalid');
+        assert.match(error.message, /URL was not declared/);
         return true;
       });
     } finally {

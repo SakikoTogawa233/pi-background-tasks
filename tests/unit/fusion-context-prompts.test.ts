@@ -102,7 +102,7 @@ void describe('fusion context projection and prompts', () => {
     );
   });
 
-  void it('builds deterministic v4 canonical command input with an authoritative request', () => {
+  void it('builds deterministic v5 canonical command input with an authoritative request', () => {
     const built = buildFrom([userMessage('hello')], { source: 'command', request: 'answer' });
     assert.equal(built.input.schema_version, FUSION_INPUT_SCHEMA_VERSION);
     assert.equal(built.input.cwd, '/tmp/project');
@@ -478,14 +478,14 @@ void describe('fusion context projection and prompts', () => {
       stopReason: 'toolUse',
       content: [
         { type: 'text', text: 'partial parent text' },
-        { type: 'toolCall', id: 'tool-1', name: 'fusion_brainstorm', arguments: { prompt: 'x' } },
+        { type: 'toolCall', id: 'tool-1', name: 'fusion_reason', arguments: { prompt: 'x' } },
         { type: 'toolCall', id: 'tool-sibling', name: 'bg_status', arguments: {} },
       ],
       timestamp: 2,
     });
     const built = buildFusionCanonicalInput(
       { cwd: '/tmp/project', sessionManager: session, getSystemPrompt: () => 'system' },
-      { source: 'tool', request: 'brainstorm', toolCallId: 'tool-1' },
+      { source: 'tool', request: 'reason', toolCallId: 'tool-1' },
     );
     assert.match(projectedText(built.input), /root question/);
     assert.doesNotMatch(built.serialized, /partial parent text/);

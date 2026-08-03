@@ -28,7 +28,6 @@ const envKeys = [
   'PI_BG_SCRIPTED_SCENARIO',
   'PI_BG_SCRIPTED_EVENTS',
   'PI_BG_SCRIPTED_API_KEY',
-  'PI_BG_ALLOW_LEGACY_FUSION_CORE_FOR_TESTS',
 ] as const;
 
 type JsonRecord = Record<string, unknown>;
@@ -166,7 +165,6 @@ async function harness(): Promise<Harness> {
     PI_BG_SCRIPTED_SCENARIO: 'fusion-reason',
     PI_BG_SCRIPTED_EVENTS: eventsPath,
     PI_BG_SCRIPTED_API_KEY: 'scripted-api-key',
-    PI_BG_ALLOW_LEGACY_FUSION_CORE_FOR_TESTS: '1',
     NPM_CONFIG_CACHE: join(tmpdir(), 'pi-npm-cache'),
   });
   const settingsManager = SettingsManager.inMemory({

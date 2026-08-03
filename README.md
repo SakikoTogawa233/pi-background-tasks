@@ -111,17 +111,17 @@ The lookup runs at most once per session on `session_start`, is time-boxed, and 
 | Targeted public URL fetch plus synthesis | `fusion_research({objective, background, deliverable, sources, scope?, constraints?})` |
 | Advisory review of completed work | `fusion_validate({objective, background, changeSummary, scope, acceptanceCriteria, verification})` |
 
-Fusion v1 is a breaking public API release. `fusion_brainstorm` is retired and removed from active tools on session start; historical completed v4 results still render, but old tools are not reactivated. Migration:
+Fusion v1 is a breaking public API release. The retired v4 multi-model tool is removed from active tools on session start; historical completed v4 results still render, but old tools are not reactivated. Historical-call migration:
 
-| Old call | New call |
+| Historical v4 call shape | v1 replacement |
 |---|---|
-| `fusion_brainstorm({prompt, capability:'reason'})` | `fusion_reason({prompt})` |
-| `fusion_brainstorm({prompt})` or inspect/default mode | `fusion_investigate({...})` with self-contained objective/background/deliverable |
-| `fusion_brainstorm({prompt, capability:'research'})` | `fusion_research({... sources:[{url,purpose}]})` |
-| `fusion_validate({prompt})` | structured `fusion_validate({...})` with verification contract |
+| v4 reasoning call | `fusion_reason({prompt})` |
+| v4 repository-inspection call | `fusion_investigate({...})` with self-contained objective/background/deliverable |
+| v4 targeted-research call | `fusion_research({... sources:[{url,purpose}]})` |
+| legacy `fusion_validate({prompt})` | structured `fusion_validate({...})` with verification contract |
 | `/fusion` | unchanged command name, now fixed `fusion_reason` semantics with no candidate tools |
 
-Clean-context guarantee: each Fusion child gets a deterministic projected conversation and the structured request; it does not get arbitrary parent tool payloads, credentials, thinking, or hidden context. Restate facts that exist only in omitted tool output inside `background`, `prompt`, or the structured fields.
+Clean-context guarantee: Fusion children get only the workflow input. `/fusion` and `fusion_reason` get a versioned conversation projection plus the request; `fusion_investigate`, `fusion_research`, and `fusion_validate` get clean-task input with no parent system prompt, conversation projection, or omission ledger. No Fusion child gets arbitrary parent tool payloads, credentials, thinking, or hidden context. Restate facts that exist only in omitted tool output inside `background`, `prompt`, or the structured fields.
 
 `bg_run` requires a concise `name` for the footer dock, the shell `command`, and required `isAgent: boolean`. Set `isAgent: true` only when the background task launches an LLM/agent process (for example `pi -p ...` or `pi --mode json ...`); set `isAgent: false` for scripts, tests, dev servers, sleeps, and ordinary shell commands. It defaults both `notifyOnCompletion` and `triggerOnCompletion` to `true`. With those defaults, `bg_run` returns immediately, the agent continues only independent useful work or ends its current turn instead of sleeping or polling, and a durable `background-task-notification` for completed, failed, or killed state automatically starts a follow-up turn. The launch receipt states the effective notification/wake behavior explicitly. `bg_status` and `bg_logs` remain available for user-requested inspection, deliberately disabled completion delivery, concrete hang diagnosis, or reading output after the terminal event; they are not waiting primitives, and the terminal notification does not need status reconfirmation. Setting `triggerOnCompletion: false` keeps the notification but prevents it from starting an agent turn. Setting `notifyOnCompletion: false` suppresses both notification and wake-up even if `triggerOnCompletion` is true.
 

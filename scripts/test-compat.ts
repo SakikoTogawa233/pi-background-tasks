@@ -417,7 +417,6 @@ async function smokeVersion(version: string, tarballPath: string): Promise<void>
       PI_CODING_AGENT_SESSION_DIR: join(temp, 'sessions'),
       PI_BG_SCRIPTED_API_KEY: 'scripted-api-key',
       PI_BG_SCRIPTED_SCENARIO: 'display-only-bg',
-      PI_BG_ALLOW_LEGACY_FUSION_CORE_FOR_TESTS: '1',
     };
     run(
       process.execPath,
@@ -545,7 +544,6 @@ async function verifyCurrentHostFusionUsage(): Promise<string> {
       PI_BG_SCRIPTED_API_KEY: 'scripted-api-key',
       PI_BG_SCRIPTED_SCENARIO: 'fusion-reason',
       PI_BG_SCRIPTED_EVENTS: join(temp, 'provider-events.jsonl'),
-      PI_BG_ALLOW_LEGACY_FUSION_CORE_FOR_TESTS: '1',
     };
     const rpcArgs = [
       '--mode',

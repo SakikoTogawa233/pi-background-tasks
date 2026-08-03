@@ -222,7 +222,7 @@ async function main(): Promise<void> {
     // --- Post-fix behavior ------------------------------------------------
     const built = buildFusionCanonicalInput(
       { cwd: root, sessionManager: session, getSystemPrompt: () => systemPrompt },
-      { source: 'tool', request, toolName: 'fusion_brainstorm' },
+      { source: 'tool', request, toolName: 'fusion_reason' },
     );
 
     const models = reportedModels();
@@ -263,7 +263,7 @@ async function main(): Promise<void> {
     // Determinism witness.
     const rebuilt = buildFusionCanonicalInput(
       { cwd: root, sessionManager: session, getSystemPrompt: () => systemPrompt },
-      { source: 'tool', request, toolName: 'fusion_brainstorm' },
+      { source: 'tool', request, toolName: 'fusion_reason' },
     );
     console.log(
       `  byte-identical rebuild: ${rebuilt.serialized === built.serialized ? 'yes' : 'NO'}`,

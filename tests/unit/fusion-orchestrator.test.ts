@@ -86,7 +86,7 @@ function canonicalInput(text = 'hello'): FusionCanonicalInputV3 {
       },
       branch_filter: {
         id: 'exclude-active-fusion-subtree-v1',
-        tool_name: 'fusion_brainstorm',
+        tool_name: 'fusion_reason',
         tool_call_id: null,
         active_tool_call_leaf_excluded: false,
       },

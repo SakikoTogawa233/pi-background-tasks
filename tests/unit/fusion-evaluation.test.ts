@@ -1,11 +1,14 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  assertMergerFindingCoverage,
   boundedEvaluationErrors,
   parseFusionEvaluation,
+  renderValidatedFusionValidationReport,
   validateFusionEvaluation,
+  validateFusionFindingAccounting,
 } from '../../src/core/fusion/evaluation.js';
-import { FUSION_EVALUATION_SCHEMA_VERSION, FusionError } from '../../src/core/fusion/types.js';
+import { FUSION_EVALUATION_SCHEMA_VERSION, FusionError, type FusionValidationFindingAccounting } from '../../src/core/fusion/types.js';
 
 function validEvaluation(): Record<string, unknown> {
   return {
@@ -52,6 +55,30 @@ function validEvaluation(): Record<string, unknown> {
       must_resolve: ['scope'],
       must_avoid: ['unsupported claims'],
     },
+  };
+}
+
+function singletonAccounting(): FusionValidationFindingAccounting {
+  return {
+    findings: [
+      {
+        id: 'A-F001',
+        candidate_id: 'A',
+        severity: 'high',
+        location: 'src/fusion.ts:12',
+        evidence: 'read line 12',
+        impact: 'breaks workflow',
+        summary: 'workflow bug',
+      },
+    ],
+    decisions: [
+      {
+        source_id: 'A-F001',
+        disposition: 'include',
+        rationale: 'candidate A: A-F001 is supported by evidence',
+        group_id: 'G001',
+      },
+    ],
   };
 }
 
@@ -128,6 +155,58 @@ void describe('fusion evaluation schema', () => {
     const duplicateResult = validateFusionEvaluation(duplicateWithTwoIds);
     assert.equal(duplicateResult.ok, false);
     if (!duplicateResult.ok) assert.match(duplicateResult.errors.join('\n'), /unique/);
+  });
+
+  void it('validates validation finding singleton, duplicate, and exclusion contracts', () => {
+    const singleton = singletonAccounting();
+    assert.deepEqual(validateFusionFindingAccounting(singleton), []);
+    const rendered = renderValidatedFusionValidationReport(singleton);
+    assert.match(rendered, /# Validation report/);
+    assert.match(rendered, /workflow bug/);
+    assert.doesNotMatch(rendered, /A-F001|candidate A/i, 'rendered rationale must not expose source ids or candidate labels');
+
+    const duplicateDecision: FusionValidationFindingAccounting = {
+      ...singleton,
+      decisions: [singleton.decisions[0]!, { ...singleton.decisions[0]!, rationale: 'duplicate' }],
+    };
+    assert.match(validateFusionFindingAccounting(duplicateDecision).join('\n'), /accounted more than once/);
+
+    const includeWithoutGroup: FusionValidationFindingAccounting = {
+      ...singleton,
+      decisions: [{ source_id: 'A-F001', disposition: 'include', rationale: 'supported' }],
+    };
+    assert.match(validateFusionFindingAccounting(includeWithoutGroup).join('\n'), /group_id required/);
+
+    const excludedWithGroup: FusionValidationFindingAccounting = {
+      ...singleton,
+      decisions: [
+        { source_id: 'A-F001', disposition: 'exclude', rationale: 'duplicate of stronger finding', group_id: 'G001' },
+      ],
+    };
+    assert.match(validateFusionFindingAccounting(excludedWithGroup).join('\n'), /group_id must be omitted/);
+
+    const excluded: FusionValidationFindingAccounting = {
+      ...singleton,
+      decisions: [{ source_id: 'A-F001', disposition: 'exclude', rationale: 'candidate A: not supported' }],
+    };
+    assert.deepEqual(validateFusionFindingAccounting(excluded), []);
+    const excludedReport = renderValidatedFusionValidationReport(excluded);
+    assert.match(excludedReport, /No included findings/);
+    assert.match(excludedReport, /Excluded source findings/);
+    assert.doesNotMatch(excludedReport, /candidate A|A-F001/i);
+  });
+
+  void it('rejects validation merger dropped and invented finding IDs', () => {
+    const singleton = singletonAccounting();
+    assert.doesNotThrow(() => assertMergerFindingCoverage(singleton, ['A-F001']));
+    assert.throws(
+      () => assertMergerFindingCoverage(singleton, []),
+      /merger dropped included finding A-F001/,
+    );
+    assert.throws(
+      () => assertMergerFindingCoverage(singleton, ['A-F001', 'B-F001']),
+      /invented or revived finding B-F001/,
+    );
   });
 
   void it('bounds validation errors for repair prompts and user-facing failures', () => {

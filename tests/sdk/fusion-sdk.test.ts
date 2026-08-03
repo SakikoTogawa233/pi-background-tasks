@@ -23,6 +23,7 @@ import { resolvePiLaunch } from '../../src/core/pi-launch.js';
 import { CURRENT_MODEL_SELECTION, FUSION_MODEL_CONFIG_FILE } from '../../src/core/fusion/config.js';
 import {
   FUSION_INPUT_SCHEMA_VERSION,
+  FUSION_LEGACY_RESULT_SCHEMA_VERSION,
   FUSION_RESULT_SCHEMA_VERSION,
   type FusionResultDetails,
 } from '../../src/core/fusion/types.js';
@@ -39,7 +40,6 @@ const envKeys = [
   'PI_SESSION_ID',
   'PI_PROVIDER',
   'PI_MODEL',
-  'PI_BG_ALLOW_LEGACY_FUSION_CORE_FOR_TESTS',
 ] as const;
 
 type JsonRecord = Record<string, unknown>;
@@ -174,6 +174,53 @@ function customEntries(session: AgentSession, customType: string): JsonRecord[] 
   });
 }
 
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+async function fusionArtifactText(cwd: string, artifactDir: string): Promise<Map<string, string>> {
+  const root = join(cwd, artifactDir);
+  const files = await readdir(root);
+  const out = new Map<string, string>();
+  for (const file of files) out.set(file, await readFile(join(root, file), 'utf8'));
+  return out;
+}
+
+async function assertCleanArtifactBoundary(
+  cwd: string,
+  details: FusionResultDetails,
+  sentinel: string,
+): Promise<void> {
+  const artifacts = await fusionArtifactText(cwd, details.artifact_dir);
+  assert.equal(artifacts.has('context-omission-ledger.json'), false, 'clean runs must not write a parent omission ledger');
+  assert.ok(artifacts.has('canonical-input.json'), 'clean runs must persist canonical input');
+  assert.ok(artifacts.has('budget-plan.json'), 'clean runs must persist budget plan');
+  assert.ok(artifacts.has('manifest.json'), 'clean runs must persist manifest');
+  assert.ok(artifacts.has('merged.md'), 'clean runs must persist merged output');
+  const manifest = parseJsonText(artifacts.get('manifest.json') ?? '');
+  assert.ok(isRecord(manifest), 'manifest must be an object');
+  assert.equal(manifest['run_id'], details.run_id);
+  assert.equal(manifest['workflow'], details.workflow);
+  const context = manifest['context'];
+  assert.ok(isRecord(context), 'manifest context must be an object');
+  assert.equal(context['kind'], 'clean_task');
+  assert.equal(context['ledger_artifact'], undefined);
+  const canonical = parseJsonText(artifacts.get('canonical-input.json') ?? '');
+  assert.ok(isRecord(canonical), 'canonical input must be an object');
+  assert.equal(canonical['schema_version'], FUSION_INPUT_SCHEMA_VERSION);
+  assert.equal(canonical['workflow'], details.workflow);
+  assert.equal(canonical['system_prompt'], undefined);
+  assert.equal(canonical['conversation_projection'], undefined);
+  assert.equal(canonical['context_omission_ledger'], undefined);
+  const canonicalContext = canonical['context'];
+  assert.ok(isRecord(canonicalContext), 'canonical context must be an object');
+  assert.equal(canonicalContext['kind'], 'clean_task');
+  const forbidden = new RegExp(escapeRegExp(sentinel));
+  for (const [file, text] of artifacts) {
+    assert.doesNotMatch(text, forbidden, `${file} must not contain parent sentinel`);
+  }
+}
+
 function assistantMessageCount(session: AgentSession): number {
   return session.sessionManager.getEntries().filter((entry) => {
     return (
@@ -195,7 +242,6 @@ async function harness(options: HarnessOptions = {}): Promise<Harness> {
   process.env['PI_SESSION_ID'] = 'stale-session';
   process.env['PI_PROVIDER'] = 'stale-provider';
   process.env['PI_MODEL'] = 'stale-model';
-  process.env['PI_BG_ALLOW_LEGACY_FUSION_CORE_FOR_TESTS'] = '1';
   Object.assign(process.env, isolatedTestEnv);
   const fake = await installFusionFakePi(root, {
     mergedText: 'SDK fused answer.',
@@ -416,6 +462,39 @@ void describe('fusion SDK integration', { concurrency: false }, () => {
       assert.ok(commandNames.includes('fusion-models'));
       const renderer = h.session.extensionRunner.getMessageRenderer('fusion-result');
       assert.ok(renderer, 'fusion result renderer should be registered');
+      const legacyDetails = {
+        schema_version: FUSION_LEGACY_RESULT_SCHEMA_VERSION,
+        run_id: 'brainstorm-' + '1'.repeat(32),
+        workflow: 'brainstorm',
+        source: 'tool',
+        status: 'completed',
+        artifact_dir: '.pi/fusion/historical/brainstorm-' + '1'.repeat(32),
+        models: {},
+        evaluator_attempts: 1,
+        usage: {
+          input: 0,
+          output: 0,
+          cacheRead: 0,
+          cacheWrite: 0,
+          totalTokens: 0,
+          cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+        },
+      };
+      const legacyRendered = renderer(
+        {
+          role: 'custom',
+          customType: 'fusion-result',
+          content: 'Historical fused answer.',
+          display: true,
+          details: legacyDetails,
+          timestamp: Date.now(),
+        },
+        { expanded: false, outputPad: 0 },
+        makeTheme(),
+      );
+      assert.ok(legacyRendered, 'historical v4 fusion result should still render');
+      assert.match(stripAnsi(legacyRendered.render(100).join('\n')), /Historical fused answer/);
+      assert.ok(!h.session.getActiveToolNames().includes('fusion_brainstorm'));
       const base = baseUi(h.session);
       const statuses: string[] = [];
       h.session.extensionRunner.setUIContext({
@@ -532,6 +611,131 @@ void describe('fusion SDK integration', { concurrency: false }, () => {
         false,
         'reason-only children must not create tool-call audit logs',
       );
+    } finally {
+      await disposeHarness(h);
+    }
+  });
+
+  void it('keeps all clean Fusion workflows free of parent sentinels in prompts and artifacts', async (t) => {
+    if (skipWin32FusionChildPathFixture(t)) return;
+    const h = await harness();
+    try {
+      const sentinel = 'PARENT-CLEAN-LEAK-SENTINEL-7f0d';
+      h.session.sessionManager.appendMessage({
+        role: 'user',
+        content: `visible parent ${sentinel}`,
+        timestamp: Date.now(),
+      });
+      h.session.sessionManager.appendMessage({
+        role: 'assistant',
+        api: 'openai-responses',
+        provider: 'pi-bg-fusion',
+        model: 'current-model',
+        usage: {
+          input: 1,
+          output: 1,
+          cacheRead: 0,
+          cacheWrite: 0,
+          totalTokens: 2,
+          cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+        },
+        stopReason: 'toolUse',
+        content: [
+          { type: 'thinking', thinking: `hidden parent ${sentinel}` },
+          { type: 'text', text: `assistant parent ${sentinel}` },
+          { type: 'toolCall', id: 'parent-call', name: 'read', arguments: { sentinel } },
+        ],
+        timestamp: Date.now(),
+      });
+      h.session.sessionManager.appendMessage({
+        role: 'toolResult',
+        toolCallId: 'parent-call',
+        toolName: 'read',
+        content: [{ type: 'text', text: `tool result parent ${sentinel}` }],
+        details: { sentinel },
+        isError: false,
+        timestamp: Date.now(),
+      });
+
+      const cases = [
+        {
+          name: 'fusion_investigate',
+          workflow: 'investigate',
+          candidateTools: 'read,grep,find,ls',
+          params: {
+            objective: 'inspect clean workflow',
+            background: ['self-contained public facts only'],
+            deliverable: 'answer',
+            scope: ['README.md'],
+          },
+        },
+        {
+          name: 'fusion_research',
+          workflow: 'research',
+          candidateTools: 'read,grep,find,ls,fusion_web_fetch',
+          params: {
+            objective: 'research clean workflow',
+            background: ['self-contained public facts only'],
+            deliverable: 'answer with source policy',
+            sources: [{ url: 'https://example.com/docs#section', purpose: 'declared source' }],
+          },
+        },
+        {
+          name: 'fusion_validate',
+          workflow: 'validate',
+          candidateTools: 'read,grep,find,ls',
+          params: {
+            objective: 'validate clean workflow',
+            background: ['self-contained validation facts only'],
+            changeSummary: 'changed public Fusion workflow facade',
+            scope: ['README.md'],
+            acceptanceCriteria: ['no parent sentinel reaches children'],
+            verification: { status: 'not_run', reason: 'SDK sentinel proof only' },
+          },
+        },
+      ] as const;
+
+      for (const item of cases) {
+        await writeFile(h.fakeLogPath, '', 'utf8');
+        const tool = h.session.getToolDefinition(item.name);
+        assert.ok(tool, `${item.name} should be registered`);
+        const result = await tool.execute(
+          `call-${item.workflow}`,
+          item.params,
+          undefined,
+          undefined,
+          h.session.extensionRunner.createContext(),
+        );
+        assert.ok(isFusionResultDetails(result.details));
+        assert.equal(result.details.workflow, item.workflow);
+        assert.ok(result.details.run_id.startsWith(`${item.workflow}-`));
+        assert.deepEqual(result.details.context, { kind: 'clean_task', policy_id: 'fusion-clean-task-v1' });
+        assert.deepEqual(result.details.tool_policy.evaluation_tools, []);
+        assert.deepEqual(result.details.tool_policy.merge_tools, []);
+        assert.deepEqual(result.details.tool_policy.candidate_tools, item.candidateTools.split(','));
+        await assertCleanArtifactBoundary(h.cwd, result.details, sentinel);
+
+        const calls = await invocations(h.fakeLogPath);
+        assert.equal(calls.length, 5, `${item.name} must make exactly five child calls`);
+        const candidateCalls = calls.filter((call) => call.stage === 'candidate');
+        const adjudicators = calls.filter((call) => call.stage !== 'candidate');
+        assert.equal(candidateCalls.length, 3);
+        assert.equal(adjudicators.length, 2);
+        for (const call of calls) {
+          assert.doesNotMatch(call.stdin, new RegExp(escapeRegExp(sentinel)));
+          assert.doesNotMatch(call.stdin, /conversation_projection|conversation_transcript/);
+          assert.doesNotMatch(call.stdin, /context-omission-ledger/);
+        }
+        for (const call of candidateCalls) {
+          assert.equal(call.args.includes('--no-tools'), false);
+          assert.ok(call.args.includes('--no-builtin-tools'));
+          assert.equal(call.args[call.args.indexOf('--tools') + 1], item.candidateTools);
+        }
+        for (const call of adjudicators) {
+          assert.ok(call.args.includes('--no-tools'));
+          assert.equal(call.args.includes('--tools'), false);
+        }
+      }
     } finally {
       await disposeHarness(h);
     }

@@ -8,7 +8,9 @@ import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { parseJsonText } from '../../src/core/common.js';
 import {
+  FusionInvestigateParams,
   FusionReasonParams,
+  FusionResearchParams,
   FusionValidateParams,
   prepareFusionInvestigateArguments,
   prepareFusionReasonArguments,
@@ -430,7 +432,7 @@ void describe('package', () => {
       '.pi/fusion',
       'context-omission-ledger.json',
       'budget-plan.json',
-      'fusion-input.v4',
+      'fusion-input.v5',
       'prompt_budget_exceeded_forecast',
       'prompt_budget_exceeded_measured',
     ]) {
@@ -542,8 +544,13 @@ void describe('package', () => {
       /duplicates canonical URL/,
     );
 
-    assert.equal(Reflect.get(FusionReasonParams, 'additionalProperties'), false);
-    assert.equal(Reflect.get(FusionValidateParams, 'additionalProperties'), false);
+    for (const schema of [FusionReasonParams, FusionInvestigateParams, FusionResearchParams, FusionValidateParams]) {
+      assert.equal(Reflect.get(schema, 'additionalProperties'), false);
+    }
+    const investigateProperties = Reflect.get(FusionInvestigateParams, 'properties');
+    assert.equal(Reflect.get(Reflect.get(investigateProperties, 'scope'), 'additionalProperties'), undefined);
+    const researchProperties = Reflect.get(FusionResearchParams, 'properties');
+    assert.equal(Reflect.get(Reflect.get(researchProperties, 'sources'), 'minItems'), 1);
     const verification = Reflect.get(Reflect.get(FusionValidateParams, 'properties'), 'verification');
     assert.equal(Reflect.get(verification, 'additionalProperties'), false);
     const status = Reflect.get(Reflect.get(verification, 'properties'), 'status');
@@ -567,6 +574,10 @@ void describe('package', () => {
       'edit',
       'write',
       'fusion_brainstorm',
+      'fusion_reason',
+      'fusion_investigate',
+      'fusion_research',
+      'fusion_validate',
       'bg_delegate',
       'bg_result',
       'bg_run',
@@ -583,25 +594,13 @@ void describe('package', () => {
     }
     assert.match(
       types,
-      /FUSION_CAPABILITY_VALUES\s*=\s*Object\.freeze\(\[\s*'reason',\s*'inspect',\s*'research',?\s*\]/,
-      'fusion capability values must include research without changing order',
+      /FUSION_PUBLIC_WORKFLOW_NAMES\s*=\s*Object\.freeze\(\[\s*'fusion_reason',\s*'fusion_investigate',\s*'fusion_research',\s*'fusion_validate',?\s*\]/,
+      'public Fusion workflow names must remain the four fixed v1 tools',
     );
     assert.match(
       types,
       /FUSION_WEB_FETCH_TOOL_NAME\s*=\s*'fusion_web_fetch'/,
       'fusion_web_fetch must be the package-owned research tool name',
-    );
-    // Brainstorm defaults to bounded read-only inspection, while every adjudication
-    // stage and low-level omitted-capability child remains explicitly no-tools.
-    assert.match(
-      types,
-      /FUSION_BRAINSTORM_DEFAULT_CAPABILITY:\s*FusionCapability\s*=\s*'inspect'/,
-      'fusion brainstorm must default candidate children to inspect',
-    );
-    assert.match(
-      types,
-      /FUSION_DEFAULT_CAPABILITY:\s*FusionCapability\s*=\s*FUSION_BRAINSTORM_DEFAULT_CAPABILITY/,
-      'legacy default export must remain a compatibility alias for the brainstorm default',
     );
     assert.match(
       types,
@@ -782,15 +781,21 @@ void describe('package', () => {
 
   void it('Fusion facade exposes four fixed-purpose tools and no public capability mode', async () => {
     const extension = await text('src/fusion-extension.ts');
-    for (const tool of ['fusion_reason', 'fusion_investigate', 'fusion_research', 'fusion_validate']) {
-      assert.match(extension, new RegExp(`name: ${tool === 'fusion_validate' ? 'FUSION_VALIDATE_TOOL_NAME' : tool === 'fusion_reason' ? 'FUSION_REASON_TOOL_NAME' : tool === 'fusion_investigate' ? 'FUSION_INVESTIGATE_TOOL_NAME' : 'FUSION_RESEARCH_TOOL_NAME'}`));
-    }
+    const registeredNames = [...extension.matchAll(/registerTool\(\{\s*name:\s*(FUSION_[A-Z_]+_TOOL_NAME)/g)].map((match) => match[1]);
+    assert.deepEqual(registeredNames, [
+      'FUSION_REASON_TOOL_NAME',
+      'FUSION_INVESTIGATE_TOOL_NAME',
+      'FUSION_RESEARCH_TOOL_NAME',
+      'FUSION_VALIDATE_TOOL_NAME',
+    ]);
     assert.doesNotMatch(extension, /registerTool[\s\S]*?name:\s*['"]fusion_brainstorm['"]/);
+    assert.match(extension, /CURRENT_FUSION_TOOL_NAMES = Object\.freeze\(\[/);
     assert.match(extension, /pi\.setActiveTools\(next\)/, 'session_start must rewrite stale active tools deterministically');
     assert.match(extension, /no capability argument/);
     assert.match(extension, /targeted fetches of supplied URLs only/);
     assert.match(extension, /no longer accepts \{prompt\}/);
-    assert.doesNotMatch(extension, /PI_BG_ALLOW_LEGACY_FUSION_CORE_FOR_TESTS/);
+    const legacyBypass = `${'PI_BG_ALLOW'}_LEGACY_FUSION_CORE_FOR_TESTS`;
+    assert.doesNotMatch(extension, new RegExp(legacyBypass));
     assert.doesNotMatch(extension, /legacy canonical input outside tests/);
     assert.doesNotMatch(extension, /core fusion workflow export \$\{primaryName\} is missing/);
   });

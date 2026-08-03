@@ -3,7 +3,7 @@ import { buildFusionCanonicalInput } from '../../src/core/fusion/context.js';
 import { FusionBudget } from '../../src/core/fusion/budget.js';
 import { canonicalJson } from '../../src/core/attested-pi-run.js';
 import {
-  FUSION_BRAINSTORM_DEFAULT_CAPABILITY,
+  FUSION_NO_TOOLS_CAPABILITY,
   FUSION_VALIDATE_CAPABILITY,
   type FusionCapability,
   type FusionSource,
@@ -11,7 +11,7 @@ import {
   type ResolvedFusionModels,
 } from '../../src/core/fusion/types.js';
 import {
-  FUSION_BRAINSTORM_WORKFLOW,
+  FUSION_REASON_WORKFLOW,
   FUSION_VALIDATE_WORKFLOW,
   type FusionWorkflowProfile,
 } from '../../src/core/fusion/workflows.js';
@@ -306,7 +306,7 @@ export const FUSION_GOLDEN_CASES: readonly FusionGoldenCase[] = [
       userMessage('keep this'),
       assistantMessage([textBlock('keep this too')]),
       assistantMessage([
-        toolCall('active-call', 'fusion_brainstorm', { prompt: 'p' }),
+        toolCall('active-call', 'fusion_reason', { prompt: 'p' }),
         toolCall('sibling-call', 'read', { path: '/sibling' }),
       ]),
     ],
@@ -406,8 +406,8 @@ export interface FusionGoldenRecord {
 /** Recompute one golden record from the live implementation. */
 export function computeFusionGoldenRecord(
   testCase: FusionGoldenCase,
-  profile: FusionWorkflowProfile = FUSION_BRAINSTORM_WORKFLOW,
-  candidateCapability: FusionCapability = FUSION_BRAINSTORM_DEFAULT_CAPABILITY,
+  profile: FusionWorkflowProfile = FUSION_REASON_WORKFLOW,
+  candidateCapability: FusionCapability = FUSION_NO_TOOLS_CAPABILITY,
 ): FusionGoldenRecord {
   const session = sessionWith(testCase.messages);
   const options: Parameters<typeof buildFusionCanonicalInput>[1] = {
@@ -451,14 +451,14 @@ export function computeFusionGoldenCorpus(): readonly FusionGoldenRecord[] {
  * Validate-workflow record.
  *
  * A workflow selects stage framing only, so the canonical input and the omission
- * ledger are provably identical to the brainstorm run for the same case. Pinning
- * copies of those 7 MB of bytes would not add coverage; instead the equality is
+ * ledger are provably identical to the reason/session-projection run for the same case.
+ * Pinning copies of those 7 MB of bytes would not add coverage; instead the equality is
  * asserted directly by the gate, and this fixture pins only the budget plans,
  * which are the bytes a workflow can legitimately move.
  */
 export interface FusionValidateGoldenRecord {
   readonly case_id: string;
-  /** Proven equal to the brainstorm record; asserted rather than duplicated. */
+  /** Historical fixture field name; proven equal to the reason record rather than duplicated. */
   readonly canonical_input_matches_brainstorm: boolean;
   readonly context_ledger_matches_brainstorm: boolean;
   readonly budget_plans: Readonly<Record<string, string>>;
@@ -467,7 +467,7 @@ export interface FusionValidateGoldenRecord {
 export function computeFusionValidateGoldenRecord(
   testCase: FusionGoldenCase,
 ): FusionValidateGoldenRecord {
-  const brainstorm = computeFusionGoldenRecord(testCase);
+  const reason = computeFusionGoldenRecord(testCase);
   const validate = computeFusionGoldenRecord(
     testCase,
     FUSION_VALIDATE_WORKFLOW,
@@ -476,8 +476,8 @@ export function computeFusionValidateGoldenRecord(
   return {
     case_id: testCase.id,
     canonical_input_matches_brainstorm:
-      brainstorm.canonical_input === validate.canonical_input,
-    context_ledger_matches_brainstorm: brainstorm.context_ledger === validate.context_ledger,
+      reason.canonical_input === validate.canonical_input,
+    context_ledger_matches_brainstorm: reason.context_ledger === validate.context_ledger,
     budget_plans: validate.budget_plans,
   };
 }

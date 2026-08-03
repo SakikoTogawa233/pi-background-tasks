@@ -217,7 +217,6 @@ async function withRpc(
     PI_CODING_AGENT_DIR: agentDir,
     PI_BG_SCRIPTED_API_KEY: 'scripted-api-key',
     PI_BG_SCRIPTED_SCENARIO: 'display-only-bg',
-    PI_BG_ALLOW_LEGACY_FUSION_CORE_FOR_TESTS: '1',
     NPM_CONFIG_CACHE: '/tmp/pi-npm-cache',
   };
   const rpc = new FusionRpc(cwd, env);
