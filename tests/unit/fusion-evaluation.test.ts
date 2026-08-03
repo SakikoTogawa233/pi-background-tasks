@@ -79,6 +79,18 @@ function singletonAccounting(): FusionValidationFindingAccounting {
         group_id: 'G001',
       },
     ],
+    groups: [
+      {
+        group_id: 'G001',
+        source_ids: ['A-F001'],
+        severity: 'high',
+        location: 'src/fusion.ts:12',
+        evidence: 'read line 12',
+        impact: 'breaks workflow',
+        summary: 'workflow bug',
+        rationale: 'the evidence supports inclusion',
+      },
+    ],
   };
 }
 
@@ -188,6 +200,7 @@ void describe('fusion evaluation schema', () => {
     const excluded: FusionValidationFindingAccounting = {
       ...singleton,
       decisions: [{ source_id: 'A-F001', disposition: 'exclude', rationale: 'candidate A: not supported' }],
+      groups: [],
     };
     assert.deepEqual(validateFusionFindingAccounting(excluded), []);
     const excludedReport = renderValidatedFusionValidationReport(excluded);
@@ -196,16 +209,49 @@ void describe('fusion evaluation schema', () => {
     assert.doesNotMatch(excludedReport, /candidate A|A-F001/i);
   });
 
-  void it('rejects validation merger dropped and invented finding IDs', () => {
+  void it('merges distinct duplicate source findings into one resolved group', () => {
     const singleton = singletonAccounting();
-    assert.doesNotThrow(() => assertMergerFindingCoverage(singleton, ['A-F001']));
+    const duplicate: FusionValidationFindingAccounting = {
+      findings: [
+        ...singleton.findings,
+        {
+          ...singleton.findings[0]!,
+          id: 'B-F001',
+          candidate_id: 'B',
+          severity: 'minor',
+          evidence: 'independent read of line 12',
+        },
+      ],
+      decisions: [
+        { source_id: 'A-F001', disposition: 'include', rationale: 'supported', group_id: 'G001' },
+        { source_id: 'B-F001', disposition: 'include', rationale: 'same defect', group_id: 'G001' },
+      ],
+      groups: [
+        {
+          ...singleton.groups[0]!,
+          source_ids: ['A-F001', 'B-F001'],
+          severity: 'high',
+          evidence: 'both reviewers independently read line 12',
+          rationale: 'same location and failure mechanism; high severity has stronger support',
+        },
+      ],
+    };
+    assert.deepEqual(validateFusionFindingAccounting(duplicate), []);
+    const rendered = renderValidatedFusionValidationReport(duplicate);
+    assert.equal((rendered.match(/### high: workflow bug/gu) ?? []).length, 1);
+    assert.doesNotMatch(rendered, /### minor:/u);
+  });
+
+  void it('rejects validation merger dropped and invented group IDs', () => {
+    const singleton = singletonAccounting();
+    assert.doesNotThrow(() => assertMergerFindingCoverage(singleton, ['G001']));
     assert.throws(
       () => assertMergerFindingCoverage(singleton, []),
-      /merger dropped included finding A-F001/,
+      /merger dropped included group G001/,
     );
     assert.throws(
-      () => assertMergerFindingCoverage(singleton, ['A-F001', 'B-F001']),
-      /invented or revived finding B-F001/,
+      () => assertMergerFindingCoverage(singleton, ['G001', 'G999']),
+      /invented or revived group G999/,
     );
   });
 

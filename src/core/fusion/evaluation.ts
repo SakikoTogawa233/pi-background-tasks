@@ -13,6 +13,7 @@ import {
   type FusionSynthesisPlan,
   type FusionValidationFindingAccounting,
   type FusionValidationFindingDecision,
+  type FusionValidationFindingGroup,
   type FusionValidationFindingRecord,
   type FusionValidationSeverity,
 } from './types.js';
@@ -278,14 +279,79 @@ function parseConflictList(
   return out;
 }
 
+function parseValidationGroups(
+  value: unknown,
+  label: string,
+  errors: string[],
+): readonly FusionValidationFindingGroup[] {
+  if (!Array.isArray(value)) {
+    errors.push(`${label} must be an array`);
+    return [];
+  }
+  const groups: FusionValidationFindingGroup[] = [];
+  for (const [index, item] of value.entries()) {
+    const itemLabel = `${label}[${String(index)}]`;
+    if (!isRecord(item)) {
+      errors.push(`${itemLabel} must be an object`);
+      continue;
+    }
+    closed(
+      item,
+      ['group_id', 'source_ids', 'severity', 'location', 'evidence', 'impact', 'summary', 'rationale'],
+      itemLabel,
+      errors,
+    );
+    const groupId = nonBlankString(item['group_id'], `${itemLabel}.group_id`, errors);
+    const sourceIds = stringList(item['source_ids'], `${itemLabel}.source_ids`, errors);
+    const severity = nonBlankString(item['severity'], `${itemLabel}.severity`, errors) as
+      | FusionValidationSeverity
+      | undefined;
+    const location = nonBlankString(item['location'], `${itemLabel}.location`, errors);
+    const evidence = nonBlankString(item['evidence'], `${itemLabel}.evidence`, errors);
+    const impact = nonBlankString(item['impact'], `${itemLabel}.impact`, errors);
+    const summary = nonBlankString(item['summary'], `${itemLabel}.summary`, errors);
+    const rationale = nonBlankString(item['rationale'], `${itemLabel}.rationale`, errors);
+    if (sourceIds !== undefined && sourceIds.length === 0) {
+      errors.push(`${itemLabel}.source_ids must not be empty`);
+    }
+    if (severity !== undefined && !['critical', 'high', 'minor'].includes(severity)) {
+      errors.push(`${itemLabel}.severity invalid`);
+    }
+    if (
+      groupId !== undefined &&
+      sourceIds !== undefined &&
+      sourceIds.length > 0 &&
+      severity !== undefined &&
+      location !== undefined &&
+      evidence !== undefined &&
+      impact !== undefined &&
+      summary !== undefined &&
+      rationale !== undefined
+    ) {
+      groups.push({
+        group_id: groupId,
+        source_ids: sourceIds,
+        severity,
+        location,
+        evidence,
+        impact,
+        summary,
+        rationale,
+      });
+    }
+  }
+  return groups;
+}
+
 function parseValidationAccounting(value: unknown, label: string, errors: string[]): FusionValidationFindingAccounting | undefined {
   if (!isRecord(value)) {
     errors.push(`${label} must be an object`);
     return undefined;
   }
-  closed(value, ['findings', 'decisions'], label, errors);
+  closed(value, ['findings', 'decisions', 'groups'], label, errors);
   const findingsRaw = value['findings'];
   const decisionsRaw = value['decisions'];
+  const groups = parseValidationGroups(value['groups'], `${label}.groups`, errors);
   const findings: FusionValidationFindingRecord[] = [];
   if (!Array.isArray(findingsRaw)) errors.push(`${label}.findings must be an array`);
   else {
@@ -337,7 +403,7 @@ function parseValidationAccounting(value: unknown, label: string, errors: string
       }
     }
   }
-  const accounting = { findings, decisions };
+  const accounting: FusionValidationFindingAccounting = { findings, decisions, groups };
   errors.push(...validateFusionFindingAccounting(accounting));
   return accounting;
 }
@@ -557,6 +623,44 @@ export function validateFusionFindingAccounting(
   for (const id of sourceIds) {
     if (!accounted.has(id)) errors.push(`source finding ${id} was not accounted exactly once`);
   }
+
+  const groupsById = new Map<string, FusionValidationFindingGroup>();
+  for (const [index, group] of accounting.groups.entries()) {
+    const label = `group[${String(index)}]`;
+    if (groupsById.has(group.group_id)) errors.push(`${label}.group_id duplicate`);
+    groupsById.set(group.group_id, group);
+    if (!['critical', 'high', 'minor'].includes(group.severity)) errors.push(`${label}.severity invalid`);
+    for (const key of ['location', 'evidence', 'impact', 'summary', 'rationale'] as const) {
+      if (group[key].trim().length === 0) errors.push(`${label}.${key} must be non-blank`);
+    }
+    if (group.source_ids.length === 0) errors.push(`${label}.source_ids must not be empty`);
+    const groupSourceIds = new Set<string>();
+    for (const sourceId of group.source_ids) {
+      if (!sourceIds.has(sourceId)) errors.push(`${label}.source_ids contains unknown finding ${sourceId}`);
+      if (groupSourceIds.has(sourceId)) errors.push(`${label}.source_ids contains duplicate ${sourceId}`);
+      groupSourceIds.add(sourceId);
+    }
+  }
+
+  const includedByGroup = new Map<string, Set<string>>();
+  for (const decision of accounting.decisions) {
+    if (decision.disposition !== 'include' || decision.group_id === undefined) continue;
+    const group = groupsById.get(decision.group_id);
+    if (group === undefined) {
+      errors.push(`included source finding ${decision.source_id} references unknown group ${decision.group_id}`);
+      continue;
+    }
+    const members = includedByGroup.get(decision.group_id) ?? new Set<string>();
+    members.add(decision.source_id);
+    includedByGroup.set(decision.group_id, members);
+  }
+  for (const group of accounting.groups) {
+    const expected = [...group.source_ids].sort();
+    const actual = [...(includedByGroup.get(group.group_id) ?? new Set<string>())].sort();
+    if (expected.length !== actual.length || expected.some((id, index) => id !== actual[index])) {
+      errors.push(`group ${group.group_id} source_ids must exactly match included decisions assigned to that group`);
+    }
+  }
   return errors;
 }
 
@@ -578,38 +682,23 @@ export function renderValidatedFusionValidationReport(
       stage: 'merge',
     });
   }
-  const findingById = new Map(accounting.findings.map((finding) => [finding.id, finding]));
-  const included = accounting.decisions
-    .filter((decision) => decision.disposition === 'include')
-    .map((decision) => {
-      const finding = findingById.get(decision.source_id);
-      if (finding === undefined) {
-        throw new FusionError(`validation accounting referenced missing finding ${decision.source_id}`, {
-          code: 'evaluation_invalid',
-          stage: 'merge',
-        });
-      }
-      return { decision, finding };
-    });
-  const renderedFindings = included.sort((left, right) => {
-    const severityOrder = { critical: 0, high: 1, minor: 2 } as const;
-    return (
-      severityOrder[left.finding.severity] - severityOrder[right.finding.severity] ||
-      left.finding.location.localeCompare(right.finding.location) ||
-      left.finding.id.localeCompare(right.finding.id)
-    );
-  });
+  const severityOrder = { critical: 0, high: 1, minor: 2 } as const;
+  const renderedFindings = [...accounting.groups].sort((left, right) =>
+    severityOrder[left.severity] - severityOrder[right.severity] ||
+    left.location.localeCompare(right.location) ||
+    left.group_id.localeCompare(right.group_id),
+  );
   const lines: string[] = ['# Validation report', ''];
   if (renderedFindings.length === 0) {
     lines.push('No included findings were identified by the validated accounting.', '');
   } else {
     lines.push('## Findings', '');
-    for (const { decision, finding } of renderedFindings) {
+    for (const finding of renderedFindings) {
       lines.push(`### ${finding.severity}: ${finding.summary}`, '');
       lines.push(`- Location: ${finding.location}`);
       lines.push(`- Evidence: ${finding.evidence}`);
       lines.push(`- Impact: ${finding.impact}`);
-      lines.push(`- Inclusion rationale: ${sanitizeValidationRationale(decision.rationale)}`, '');
+      lines.push(`- Inclusion rationale: ${sanitizeValidationRationale(finding.rationale)}`, '');
     }
   }
   const exclusions = accounting.decisions
@@ -634,17 +723,13 @@ export function renderValidatedFusionValidationReport(
 
 export function assertMergerFindingCoverage(
   accounting: FusionValidationFindingAccounting,
-  renderedSourceIds: readonly string[],
+  renderedGroupIds: readonly string[],
 ): void {
   const errors = [...validateFusionFindingAccounting(accounting)];
-  const included = new Set(
-    accounting.decisions
-      .filter((decision) => decision.disposition === 'include')
-      .map((decision) => decision.source_id),
-  );
-  const rendered = new Set(renderedSourceIds);
-  for (const id of included) if (!rendered.has(id)) errors.push(`merger dropped included finding ${id}`);
-  for (const id of rendered) if (!included.has(id)) errors.push(`merger invented or revived finding ${id}`);
+  const included = new Set(accounting.groups.map((group) => group.group_id));
+  const rendered = new Set(renderedGroupIds);
+  for (const id of included) if (!rendered.has(id)) errors.push(`merger dropped included group ${id}`);
+  for (const id of rendered) if (!included.has(id)) errors.push(`merger invented or revived group ${id}`);
   if (errors.length > 0) {
     throw new FusionError(`validation finding preservation failed: ${formatEvaluationErrors(errors)}`, {
       code: 'evaluation_invalid',

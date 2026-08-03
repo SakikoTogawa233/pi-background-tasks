@@ -453,9 +453,21 @@ export interface FusionValidationFindingDecision {
   group_id?: string | undefined;
 }
 
+export interface FusionValidationFindingGroup {
+  group_id: string;
+  source_ids: readonly string[];
+  severity: FusionValidationSeverity;
+  location: string;
+  evidence: string;
+  impact: string;
+  summary: string;
+  rationale: string;
+}
+
 export interface FusionValidationFindingAccounting {
   findings: readonly FusionValidationFindingRecord[];
   decisions: readonly FusionValidationFindingDecision[];
+  groups: readonly FusionValidationFindingGroup[];
 }
 
 export interface FusionValidationCandidateReportV1 {

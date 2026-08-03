@@ -138,6 +138,10 @@ void describe('fusion v5 core workflow contracts', () => {
     assert.equal(sources[0]?.canonical_url, 'https://example.com/a?q=1');
     assert.throws(() => canonicalizeFusionPublicUrl('https://user:secret@example.com/'), /credentials/);
     assert.throws(() => canonicalizeFusionPublicUrl('http://127.0.0.1/'), /public/);
+    assert.throws(
+      () => canonicalizeFusionPublicUrl('http://[64:ff9b::a00:1]/'),
+      /private\/reserved/,
+    );
     const policy = buildFusionSourcePolicy('/repo', sources);
     const bytes = sourcePolicyCanonicalBytes(policy);
     const parsed = parseFusionSourcePolicy(JSON.parse(bytes));
@@ -193,10 +197,22 @@ void describe('fusion v5 core workflow contracts', () => {
       decisions: [
         { source_id: 'A-F001', disposition: 'include' as const, rationale: 'supported', group_id: 'G001' },
       ],
+      groups: [
+        {
+          group_id: 'G001',
+          source_ids: ['A-F001'],
+          severity: 'high' as const,
+          location: 'src/x.ts:1',
+          evidence: 'read line 1',
+          impact: 'breaks callers',
+          summary: 'bug',
+          rationale: 'supported',
+        },
+      ],
     };
     assert.deepEqual(validateFusionFindingAccounting(accounting), []);
-    assert.doesNotThrow(() => assertMergerFindingCoverage(accounting, ['A-F001']));
-    assert.throws(() => assertMergerFindingCoverage(accounting, []), /dropped included finding/);
-    assert.throws(() => assertMergerFindingCoverage(accounting, ['A-F001', 'B-F001']), /invented/);
+    assert.doesNotThrow(() => assertMergerFindingCoverage(accounting, ['G001']));
+    assert.throws(() => assertMergerFindingCoverage(accounting, []), /dropped included group/);
+    assert.throws(() => assertMergerFindingCoverage(accounting, ['G001', 'G999']), /invented/);
   });
 });

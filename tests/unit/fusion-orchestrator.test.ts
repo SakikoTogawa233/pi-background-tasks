@@ -471,6 +471,47 @@ void describe('fusion orchestrator', () => {
     }
   });
 
+  void it('rejects validation accounting from non-validation evaluators instead of replacing the merge', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'pi-fusion-accounting-scope-'));
+    try {
+      const calls: RunPiChildOptions[] = [];
+      const runner: FusionChildRunner = async (options) => {
+        calls.push(options);
+        if (options.stage === 'candidate') return childResult(options, `candidate-${String(options.slot)}`);
+        if (options.stage === 'evaluation') {
+          const value =
+            options.attempt === 1
+              ? {
+                  ...evaluation(),
+                  validation_accounting: { findings: [], decisions: [], groups: [] },
+                }
+              : evaluation();
+          return childResult(options, JSON.stringify(value));
+        }
+        return childResult(options, 'normal merged answer');
+      };
+      const canonical = canonicalInput();
+      const result = await new FusionOrchestrator({ childRunner: runner }).run({
+        source: 'command',
+        cwd: root,
+        canonicalInput: canonical,
+        canonicalInputSerialized: JSON.stringify(canonical),
+        contextLedger: ledger,
+        config: defaultFusionModelConfig(),
+        models: models(),
+      });
+      assert.equal(result.mergedText, 'normal merged answer');
+      assert.equal(result.details.evaluator_attempts, 2);
+      assert.equal(
+        calls.filter((call) => call.stage === 'evaluation').length,
+        2,
+        'unexpected validation accounting must trigger schema repair',
+      );
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   void it('keeps evaluator and merger reasoning-only when candidates research', async () => {
     const root = await mkdtemp(join(tmpdir(), 'pi-fusion-orchestrator-capability-'));
     try {

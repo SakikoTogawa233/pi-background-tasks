@@ -215,7 +215,7 @@ Mechanically account for every source finding exactly once: include or exclude i
 
 ${FUSION_EVALUATION_SCHEMA_CONTRACT}
 
-For validation only, the input includes validation_source_findings containing every host-assigned source finding ID and candidate ID. Also include a top-level validation_accounting object. Its findings array must copy validation_source_findings exactly, and its decisions array must account for every source_id exactly once using {"source_id","disposition":"include|exclude","rationale","group_id?"}. Included decisions require non-blank group_id; excluded decisions require a non-blank rationale and no group_id.`;
+For validation only, the input includes validation_source_findings containing every host-assigned source finding ID and candidate ID. Also include a top-level validation_accounting object with exactly findings, decisions, and groups. findings must copy validation_source_findings exactly. decisions must account for every source_id exactly once using {"source_id","disposition":"include|exclude","rationale","group_id?"}; included decisions require group_id and excluded decisions forbid it. groups must contain one resolved record per included duplicate-group: {"group_id","source_ids","severity","location","evidence","impact","summary","rationale"}. Each group's source_ids must exactly match the included decisions assigned to it. Merge duplicate source findings into one group, resolve severity/evidence explicitly, preserve singleton groups, and create no group without source findings.`;
 
 export const FUSION_VALIDATE_MERGER_SYSTEM_PROMPT = `You are the final synthesis process for a validation review. You receive the original request context, three anonymous validation reports, and a validated evaluation plan.
 

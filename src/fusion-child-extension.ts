@@ -25,6 +25,9 @@ export const FUSION_TOOL_CALL_LOG_PATH_ENV = 'PI_FUSION_TOOL_CALL_LOG_PATH';
 export const FUSION_RESEARCH_ENABLED_ENV = 'PI_FUSION_RESEARCH_ENABLED';
 export const FUSION_SOURCE_POLICY_PATH_ENV = 'PI_FUSION_SOURCE_POLICY_PATH';
 export const FUSION_SOURCE_POLICY_SHA256_ENV = 'PI_FUSION_SOURCE_POLICY_SHA256';
+export const FUSION_TOOL_CALL_SEAL_SCHEMA_VERSION =
+  'pi-background-tasks.fusion-tool-call-seal.v1' as const;
+export const FUSION_TOOL_CALL_SEAL_SUFFIX = '.seal.json';
 
 const FUSION_CHILD_O_NOFOLLOW = typeof constants.O_NOFOLLOW === 'number' ? constants.O_NOFOLLOW : 0;
 
@@ -121,6 +124,34 @@ function appendToolCallLogLine(path: string, record: FusionToolCallLogRecord): v
       throw new Error(
         `short write: wrote ${String(written)} of ${String(expectedBytes)} bytes`,
       );
+    }
+    fsyncSync(fd);
+  } finally {
+    if (fd !== undefined) closeSync(fd);
+  }
+}
+
+function writeToolCallLogSeal(
+  path: string,
+  recordCount: number,
+  totalResultBytes: number,
+  complete: boolean,
+): void {
+  const logBytes = readFileSync(path);
+  const seal = {
+    schema_version: FUSION_TOOL_CALL_SEAL_SCHEMA_VERSION,
+    status: complete ? 'complete' : 'failed',
+    record_count: recordCount,
+    total_result_bytes: totalResultBytes,
+    log_sha256: sha256(logBytes),
+  } as const;
+  const bytes = Buffer.from(`${JSON.stringify(seal)}\n`, 'utf8');
+  let fd: number | undefined;
+  try {
+    fd = openSync(`${path}${FUSION_TOOL_CALL_SEAL_SUFFIX}`, 'wx', 0o600);
+    const written = writeSync(fd, bytes);
+    if (written !== bytes.length) {
+      throw new Error(`fusion tool-call seal short write: ${String(written)} of ${String(bytes.length)} bytes`);
     }
     fsyncSync(fd);
   } finally {
@@ -309,53 +340,58 @@ export default function fusionChildExtension(pi: ExtensionAPI): void {
     closeSync(openSync(toolCallLogPath, 'a', 0o600));
     let ordinal = 0;
     let totalToolResultBytes = 0;
+    let auditFailed = false;
     const starts = new Map<string, number>();
     pi.on('tool_call', (event) => {
       starts.set(event.toolCallId, Date.now());
     });
     pi.on('tool_result', (event) => {
-      const start = starts.get(event.toolCallId);
-      if (start === undefined) {
-        throw new Error(`fusion tool-call log missing start for ${event.toolCallId}`);
-      }
-      starts.delete(event.toolCallId);
-      const argumentsBytes = utf8JsonBytes(event.input, 'arguments');
-      const resultBytes = utf8JsonBytes(
-        {
-          content: event.content,
-          details: event.details,
-          isError: event.isError,
-          usage: event.usage,
-        },
-        'result',
-      );
-      const fetchMetadata = fetchAuditMetadata.get(event.toolCallId);
-      fetchAuditMetadata.delete(event.toolCallId);
-      const record: FusionToolCallLogRecord = {
-        schema_version: FUSION_TOOL_CALL_LOG_SCHEMA_VERSION,
-        ordinal,
-        tool_name: event.toolName,
-        arguments_sha256: sha256(argumentsBytes),
-        arguments_bytes: argumentsBytes.length,
-        result_bytes: resultBytes.length,
-        result_sha256: sha256(resultBytes),
-        status: event.isError === true ? 'error' : 'ok',
-        duration_ms: Math.max(0, Date.now() - start),
-        ...(fetchMetadata === undefined ? {} : fetchMetadata),
-      };
-      ordinal += 1;
-      appendToolCallLogLine(toolCallLogPath, record);
-      // Aggregate output ceiling. There is no tool-CALL cap in v1 by design, so bytes are
-      // the only bound on how much a read-only candidate can pull into its context. The
-      // record is durable before this check, so the offending call stays auditable; the
-      // failure is loud rather than a truncation, because a silently shortened tool result
-      // would corrupt the candidate's reasoning with no signal at all.
-      totalToolResultBytes += resultBytes.length;
-      if (totalToolResultBytes > FUSION_CHILD_MAX_TOTAL_TOOL_RESULT_BYTES) {
-        throw new Error(
-          `fusion candidate exceeded the aggregate tool-output budget: ${String(totalToolResultBytes)} bytes across ${String(ordinal)} calls exceeds ${String(FUSION_CHILD_MAX_TOTAL_TOOL_RESULT_BYTES)}`,
+      try {
+        const start = starts.get(event.toolCallId);
+        if (start === undefined) {
+          throw new Error(`fusion tool-call log missing start for ${event.toolCallId}`);
+        }
+        starts.delete(event.toolCallId);
+        const argumentsBytes = utf8JsonBytes(event.input, 'arguments');
+        const resultBytes = utf8JsonBytes(
+          {
+            content: event.content,
+            details: event.details,
+            isError: event.isError,
+            usage: event.usage,
+          },
+          'result',
         );
+        const fetchMetadata = fetchAuditMetadata.get(event.toolCallId);
+        fetchAuditMetadata.delete(event.toolCallId);
+        const record: FusionToolCallLogRecord = {
+          schema_version: FUSION_TOOL_CALL_LOG_SCHEMA_VERSION,
+          ordinal,
+          tool_name: event.toolName,
+          arguments_sha256: sha256(argumentsBytes),
+          arguments_bytes: argumentsBytes.length,
+          result_bytes: resultBytes.length,
+          result_sha256: sha256(resultBytes),
+          status: event.isError === true ? 'error' : 'ok',
+          duration_ms: Math.max(0, Date.now() - start),
+          ...(fetchMetadata === undefined ? {} : fetchMetadata),
+        };
+        ordinal += 1;
+        appendToolCallLogLine(toolCallLogPath, record);
+        totalToolResultBytes += resultBytes.length;
+        if (totalToolResultBytes > FUSION_CHILD_MAX_TOTAL_TOOL_RESULT_BYTES) {
+          throw new Error(
+            `fusion candidate exceeded the aggregate tool-output budget: ${String(totalToolResultBytes)} bytes across ${String(ordinal)} calls exceeds ${String(FUSION_CHILD_MAX_TOTAL_TOOL_RESULT_BYTES)}`,
+          );
+        }
+      } catch (error) {
+        auditFailed = true;
+        throw error;
       }
+    });
+    pi.on('agent_end', () => {
+      const complete = !auditFailed && starts.size === 0;
+      writeToolCallLogSeal(toolCallLogPath, ordinal, totalToolResultBytes, complete);
     });
   }
 

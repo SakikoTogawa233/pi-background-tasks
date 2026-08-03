@@ -21,7 +21,7 @@ Repository: `/Users/lizavasilyeva/work/ai-pipeline/packages/pi-background-tasks`
 - **Subscription routes only.** Never use metered OpenAI, Anthropic, OpenRouter,
   or any other paid API credential. Claude-class work goes through the Pi
   subscription harness, GPT-class through the Codex subscription.
-- Use `fusion_brainstorm` at the critical decision and validation points marked
+- Use `fusion_reason` at the critical decision and validation points marked
   **[FUSION]** below. Run the first one early, while your transcript is still
   small. Preserve its conclusions as design evidence in your report.
 - Do not blindly follow Fusion. If you disagree, say so and justify. Record the
@@ -88,7 +88,7 @@ The package already has two spawn shapes:
 
 - `bg_run` with `isAgent:true` — a background agent with a **fresh, empty**
   context. Non-blocking; wakes the parent on completion.
-- `fusion_brainstorm` — takes the **current session context**, but is
+- `fusion_reason` — takes the **current session context**, but is
   synchronous, and fans out to five model calls for one synthesised answer.
 
 **The gap:** "go investigate this in the background — you already know
@@ -154,7 +154,7 @@ must reuse it **without destabilising Fusion**.
 - Decide what genuinely needs extracting versus what can be called as-is.
   Prefer the smallest seam that works.
 
-**[FUSION #1 — run this early]** Ask `fusion_brainstorm` to review your
+**[FUSION #1 — run this early]** Ask `fusion_reason` to review your
 extraction plan: which modules to share, what stays private to Fusion, how to
 guarantee byte-identity, and the risks of the seam you chose.
 
@@ -188,7 +188,7 @@ guarantee byte-identity, and the risks of the seam you chose.
 11. `bg_result` verifies the answer against its recorded SHA-256 before
     returning it, and never returns a silent prefix.
 
-**[FUSION #2]** Before implementing, ask `fusion_brainstorm` to pressure-test
+**[FUSION #2]** Before implementing, ask `fusion_reason` to pressure-test
 your full design: the seed schema, the child guard state machine, the artifact
 spill protocol, the failure taxonomy, and the result contract. Ask specifically
 what breaks under: a 2 MB tool result, thousands of small results, concurrent
@@ -288,7 +288,7 @@ TypeScript **including comments and test names**, plus `@ts-ignore`, double
 assertions, and production non-null assertions. Word your comments accordingly.
 
 **[FUSION #3]** After implementation and before finalising, ask
-`fusion_brainstorm` to review the delivered design and tests for gaps —
+`fusion_reason` to review the delivered design and tests for gaps —
 especially anything that could silently lose or truncate content, misreport
 success, or leave an orphaned process.
 

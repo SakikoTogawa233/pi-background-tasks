@@ -101,17 +101,60 @@ export const FUSION_BUDGET_POLICY: FusionBudgetPolicyDescriptor = {
   utilization_warning_threshold_basis_points: FUSION_UTILIZATION_WARNING_THRESHOLD_BASIS_POINTS,
 };
 
-const EMPTY_REMEDIATION: readonly string[] = Object.freeze([
-  'Start a fresh Pi conversation, or run Fusion earlier in the session.',
-  "Raise the route's context window with a larger-context model via /fusion-models.",
-  'Restate only the required prior findings as visible conversation text.',
+const REASON_EMPTY_REMEDIATION: readonly string[] = Object.freeze([
+  'Start a fresh Pi conversation, or run fusion_reason earlier in the session.',
+  "Raise the route's context window with a larger-context subscription model via /fusion-models.",
+  'Restate only the required prior findings in the fusion_reason prompt.',
 ]);
 
-const REQUEST_REMEDIATION: readonly string[] = Object.freeze([
-  'Provide a shorter, self-contained fusion_brainstorm prompt.',
-  'Start a fresh Pi conversation, or run Fusion earlier in the session.',
-  "Raise the route's context window with a larger-context model via /fusion-models.",
+const REASON_REQUEST_REMEDIATION: readonly string[] = Object.freeze([
+  'Provide a shorter fusion_reason prompt.',
+  'Start a fresh Pi conversation, or run fusion_reason earlier in the session.',
+  "Raise the route's context window with a larger-context subscription model via /fusion-models.",
 ]);
+
+const INVESTIGATE_EMPTY_REMEDIATION: readonly string[] = Object.freeze([
+  'Split the repository investigation into smaller independently complete path or subsystem scopes.',
+  "Raise the route's context window with a larger-context subscription model via /fusion-models.",
+]);
+const INVESTIGATE_REQUEST_REMEDIATION: readonly string[] = Object.freeze([
+  'Narrow the fusion_investigate objective, repository scope, or required evidence.',
+  "Raise the route's context window with a larger-context subscription model via /fusion-models.",
+]);
+const RESEARCH_EMPTY_REMEDIATION: readonly string[] = Object.freeze([
+  'Split the research into smaller independently complete source sets.',
+  "Raise the route's context window with a larger-context subscription model via /fusion-models.",
+]);
+const RESEARCH_REQUEST_REMEDIATION: readonly string[] = Object.freeze([
+  'Narrow the fusion_research question or split large declared-source sets across independent runs.',
+  "Raise the route's context window with a larger-context subscription model via /fusion-models.",
+]);
+const VALIDATE_EMPTY_REMEDIATION: readonly string[] = Object.freeze([
+  'Split validation into smaller independently complete change or acceptance-criterion scopes.',
+  "Raise the route's context window with a larger-context subscription model via /fusion-models.",
+]);
+const VALIDATE_REQUEST_REMEDIATION: readonly string[] = Object.freeze([
+  'Narrow the fusion_validate scope, acceptance criteria, or supplied verification evidence.',
+  "Raise the route's context window with a larger-context subscription model via /fusion-models.",
+]);
+
+function cleanRemediation(
+  profile: FusionWorkflowProfile,
+  requestDeterminesFeasibility: boolean,
+): readonly string[] {
+  if (profile.id === 'investigate') {
+    return requestDeterminesFeasibility
+      ? INVESTIGATE_REQUEST_REMEDIATION
+      : INVESTIGATE_EMPTY_REMEDIATION;
+  }
+  if (profile.id === 'research') {
+    return requestDeterminesFeasibility ? RESEARCH_REQUEST_REMEDIATION : RESEARCH_EMPTY_REMEDIATION;
+  }
+  if (profile.id === 'validate') {
+    return requestDeterminesFeasibility ? VALIDATE_REQUEST_REMEDIATION : VALIDATE_EMPTY_REMEDIATION;
+  }
+  return requestDeterminesFeasibility ? REASON_REQUEST_REMEDIATION : REASON_EMPTY_REMEDIATION;
+}
 
 const RESERVATION_REMEDIATION: readonly string[] = Object.freeze([
   'Route the blocking stage to a model with larger byte capacity.',
@@ -536,10 +579,11 @@ function dominantRemediation(
   verdict: FusionBudgetEmptyRequestVerdict,
   composition: FusionBudgetStageComposition | undefined,
   dominantByteClass: string,
+  profile: FusionWorkflowProfile,
 ): readonly string[] {
   if (dominantByteClass === 'dense_ascii') return DENSE_REMEDIATION;
   if (dominantByteClass === 'multibyte') return MULTIBYTE_REMEDIATION;
-  if (composition === undefined) return remediationFor(verdict);
+  if (composition === undefined) return remediationFor(verdict, profile);
   const entries = [
     { name: 'visible', bytes: composition.visible_text_bytes },
     { name: 'request', bytes: composition.request_bytes },
@@ -548,13 +592,24 @@ function dominantRemediation(
   const dominant = entries[0];
   if (dominant?.name === 'reservation') return RESERVATION_REMEDIATION;
   if (dominant?.name === 'request' && !verdict.still_fails_with_empty_request) {
-    return REQUEST_REMEDIATION;
+    return profile.contextKind === 'clean_task'
+      ? cleanRemediation(profile, true)
+      : REASON_REQUEST_REMEDIATION;
   }
-  return EMPTY_REMEDIATION;
+  if (profile.contextKind === 'clean_task') return cleanRemediation(profile, false);
+  return REASON_EMPTY_REMEDIATION;
 }
 
-function remediationFor(verdict: FusionBudgetEmptyRequestVerdict): readonly string[] {
-  return verdict.still_fails_with_empty_request ? EMPTY_REMEDIATION : REQUEST_REMEDIATION;
+function remediationFor(
+  verdict: FusionBudgetEmptyRequestVerdict,
+  profile: FusionWorkflowProfile,
+): readonly string[] {
+  if (profile.contextKind === 'clean_task') {
+    return cleanRemediation(profile, !verdict.still_fails_with_empty_request);
+  }
+  return verdict.still_fails_with_empty_request
+    ? REASON_EMPTY_REMEDIATION
+    : REASON_REQUEST_REMEDIATION;
 }
 
 function formatEmptyRequestVerdict(verdict: FusionBudgetEmptyRequestVerdict): string {
@@ -862,7 +917,12 @@ export class FusionBudget {
   ): FusionError {
     const composition = plan.primary_blocker_composition;
     const dominantByteClass = primary.input_only_estimate.rateSource.dominant_byte_class;
-    const remediation = dominantRemediation(plan.empty_request, composition, dominantByteClass);
+    const remediation = dominantRemediation(
+      plan.empty_request,
+      composition,
+      dominantByteClass,
+      this.profile,
+    );
     const tokensOver = primary.input_only_input_tokens_upper_bound - primary.allowed_input_tokens;
     const budget: FusionBudgetErrorDetail = {
       budget_stage: primary.budget_stage,

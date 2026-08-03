@@ -3,6 +3,7 @@ import { lookup as nodeLookup } from 'node:dns/promises';
 import * as http from 'node:http';
 import * as https from 'node:https';
 import { isIP } from 'node:net';
+import { performance } from 'node:perf_hooks';
 import { TextDecoder } from 'node:util';
 
 import TurndownService from 'turndown';
@@ -150,6 +151,7 @@ const IPV4_DENY_RANGES: readonly [number, number][] = [
 const IPV6_DENY_RANGES: readonly [bigint, number][] = [
   [ipv6ToBigIntLiteral('::'), 128],
   [ipv6ToBigIntLiteral('::1'), 128],
+  [ipv6ToBigIntLiteral('64:ff9b::'), 96],
   [ipv6ToBigIntLiteral('64:ff9b:1::'), 48],
   [ipv6ToBigIntLiteral('100::'), 64],
   [ipv6ToBigIntLiteral('2001:2::'), 48],
@@ -187,18 +189,19 @@ export async function fusionWebFetch(
   const effective = mergeOptions(options);
   const requestedFormat = req.extract ?? 'markdown';
   const start = effective.now();
+  const deadlineMs = start + effective.timeoutMs;
   const requestedUrl = normalizeRequestUrl(req.url).url;
   let currentUrl = requestedUrl;
 
   for (let redirectCount = 0; ; redirectCount += 1) {
-    const remainingMs = start + effective.timeoutMs - effective.now();
+    const remainingMs = deadlineMs - effective.now();
     if (remainingMs <= 0) {
       throw new FusionWebFetchError('request_timeout', 'fusion_web_fetch request timeout elapsed', {
         url: currentUrl.toString(),
       });
     }
 
-    const result = await fetchOne(currentUrl, effective, remainingMs, redirectCount > 0);
+    const result = await fetchOne(currentUrl, effective, deadlineMs, redirectCount > 0);
     if (result.kind === 'redirect') {
       if (redirectCount >= effective.maxRedirects) {
         throw new FusionWebFetchError(
@@ -234,7 +237,7 @@ function mergeOptions(options: FusionWebFetchOptions): EffectiveOptions {
     request: options.request ?? defaultTransportRequest,
     agent: options.agent ?? false,
     createConnection: options.createConnection,
-    now: options.now ?? Date.now,
+    now: options.now ?? (() => performance.now()),
     timeoutMs: options.timeoutMs ?? FUSION_WEB_FETCH_TIMEOUT_MS,
     maxResponseBytes: options.maxResponseBytes ?? FUSION_WEB_FETCH_MAX_RESPONSE_BYTES,
     maxOutputBytes: options.maxOutputBytes ?? FUSION_WEB_FETCH_MAX_OUTPUT_BYTES,
@@ -305,11 +308,23 @@ function normalizeRedirectUrl(baseUrl: URL, location: string): URL {
 async function fetchOne(
   url: URL,
   options: EffectiveOptions,
-  remainingMs: number,
+  deadlineMs: number,
   redirectHop: boolean,
 ): Promise<FetchOneResult> {
   const normalized = normalizeRequestUrl(url.toString());
-  const vetted = await vetHost(normalized.hostname, options, redirectHop, normalized.url.toString());
+  const vetted = await vetHost(
+    normalized.hostname,
+    options,
+    redirectHop,
+    normalized.url.toString(),
+    deadlineMs,
+  );
+  const remainingMs = deadlineMs - options.now();
+  if (remainingMs <= 0) {
+    throw new FusionWebFetchError('request_timeout', 'fusion_web_fetch request timeout elapsed', {
+      url: normalized.url.toString(),
+    });
+  }
   return await executeRequest(normalized.url, vetted.selectedAddress, options, remainingMs);
 }
 
@@ -318,6 +333,7 @@ async function vetHost(
   options: EffectiveOptions,
   redirectHop: boolean,
   url: string,
+  deadlineMs: number,
 ): Promise<VettedHost> {
   if (METADATA_HOSTNAMES.has(hostname) || hostname === 'localhost' || hostname.endsWith('.localhost')) {
     throwAddressError(redirectHop, `fusion_web_fetch blocked host: ${hostname}`, url);
@@ -326,7 +342,9 @@ async function vetHost(
   const literalFamily = isIP(hostname);
   const literalAddress: FusionDnsAddress = { address: hostname, family: literalFamily === 4 ? 4 : 6 };
   const resolvedAddresses =
-    literalFamily === 0 ? await resolveWithLookup(hostname, options.lookup, url) : [literalAddress];
+    literalFamily === 0
+      ? await resolveWithLookup(hostname, options.lookup, url, deadlineMs - options.now())
+      : [literalAddress];
 
   if (resolvedAddresses.length === 0) {
     throw new FusionWebFetchError('dns_failure', `DNS lookup returned no addresses for ${hostname}`, { url });
@@ -358,15 +376,38 @@ async function resolveWithLookup(
   hostname: string,
   lookup: FusionDnsLookup,
   url: string,
+  remainingMs: number,
 ): Promise<readonly FusionDnsAddress[]> {
+  if (remainingMs <= 0) {
+    throw new FusionWebFetchError('request_timeout', 'fusion_web_fetch request timeout elapsed', { url });
+  }
+  let timer: NodeJS.Timeout | undefined;
   try {
-    return await lookup(hostname);
+    return await Promise.race([
+      lookup(hostname),
+      new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(
+          () =>
+            reject(
+              new FusionWebFetchError(
+                'request_timeout',
+                'fusion_web_fetch request timeout elapsed during DNS lookup',
+                { url },
+              ),
+            ),
+          Math.max(1, remainingMs),
+        );
+      }),
+    ]);
   } catch (error) {
+    if (error instanceof FusionWebFetchError) throw error;
     throw new FusionWebFetchError(
       'dns_failure',
       `DNS lookup failed for ${hostname}: ${error instanceof Error ? error.message : 'unknown error'}`,
       error instanceof Error ? { url, cause: error } : { url },
     );
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
   }
 }
 
@@ -434,7 +475,9 @@ function executeRequest(
       const status = response.statusCode ?? 0;
       const location = firstHeader(response, 'location');
       if (isRedirectStatus(status)) {
-        response.resume();
+        // Redirect payloads are never consumed. Destroy the response/socket before
+        // advancing so an endless or oversized redirect body cannot outlive this hop.
+        response.destroy();
         if (location === undefined || location.trim().length === 0) {
           settleReject(
             new FusionWebFetchError('http_error', `fusion_web_fetch redirect status ${String(status)} lacks Location`, {

@@ -12,6 +12,9 @@ import {
   FUSION_SOURCE_POLICY_PATH_ENV,
   FUSION_SOURCE_POLICY_SHA256_ENV,
   FUSION_TOOL_CALL_LOG_PATH_ENV,
+  FUSION_TOOL_CALL_SEAL_SCHEMA_VERSION,
+  FUSION_TOOL_CALL_SEAL_SUFFIX,
+  FUSION_CHILD_MAX_TOTAL_TOOL_RESULT_BYTES,
   type FusionChildResultMetadata,
 } from '../../fusion-child-extension.js';
 import {
@@ -69,6 +72,23 @@ export const FUSION_CHILD_REMOVED_ENV_KEYS = [
   'PI_PROVIDER',
   'PI_MODEL',
   'PI_REASONING_LEVEL',
+  'OPENROUTER_API_KEY',
+  'OPENROUTER_BASE_URL',
+  'OPENAI_API_KEY',
+  'OPENAI_BASE_URL',
+  'ANTHROPIC_API_KEY',
+  'ANTHROPIC_AUTH_TOKEN',
+  'ANTHROPIC_BASE_URL',
+  'AZURE_OPENAI_API_KEY',
+  'AZURE_OPENAI_BASE_URL',
+  'AZURE_OPENAI_ENDPOINT',
+  'AZURE_OPENAI_RESOURCE_NAME',
+  'AZURE_OPENAI_API_VERSION',
+  'AZURE_OPENAI_DEPLOYMENT_NAME_MAP',
+  'AZURE_OPENAI_AD_TOKEN',
+  'PI_API_KEY',
+  'PI_API_BASE_URL',
+  'PI_AUTH_FILE',
   FUSION_TOOL_CALL_LOG_PATH_ENV,
   FUSION_RESEARCH_ENABLED_ENV,
   FUSION_SOURCE_POLICY_PATH_ENV,
@@ -206,7 +226,10 @@ export class FusionChildRunError extends FusionError {
 
 export function fusionPiChildEnv(env: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
   const out: NodeJS.ProcessEnv = { ...env };
-  for (const key of FUSION_CHILD_REMOVED_ENV_KEYS) Reflect.deleteProperty(out, key);
+  const removed = new Set<string>(FUSION_CHILD_REMOVED_ENV_KEYS);
+  for (const inheritedKey of Object.keys(out)) {
+    if (removed.has(inheritedKey.toUpperCase())) Reflect.deleteProperty(out, inheritedKey);
+  }
   out['PI_SKIP_VERSION_CHECK'] = '1';
   return out;
 }
@@ -783,6 +806,72 @@ async function readFusionToolCallLog(path: string): Promise<FusionToolCallTrace>
       );
     }
     return parseFusionToolCallLog(await handle.readFile());
+  } finally {
+    await handle.close();
+  }
+}
+
+async function assertFusionToolCallLogSeal(
+  path: string,
+  trace: FusionToolCallTrace,
+): Promise<void> {
+  const sealPath = `${path}${FUSION_TOOL_CALL_SEAL_SUFFIX}`;
+  let handle: Awaited<ReturnType<typeof open>>;
+  try {
+    handle = await open(sealPath, constants.O_RDONLY | FUSION_PI_CHILD_O_NOFOLLOW);
+  } catch (error) {
+    if (isNotFound(error)) throw new Error('fusion tool-call audit completion seal is missing');
+    if (isJsonObject(error) && error['code'] === 'ELOOP') {
+      throw new Error('fusion tool-call audit completion seal is a symlink');
+    }
+    throw error;
+  }
+  try {
+    const stats = await handle.stat();
+    if (!stats.isFile()) throw new Error('fusion tool-call audit completion seal is not a regular file');
+    if (stats.size > 4096) throw new Error('fusion tool-call audit completion seal is oversized');
+    const bytes = await handle.readFile();
+    if (bytes.at(-1) !== 10) throw new Error('fusion tool-call audit completion seal is partial');
+    const text = bytes.toString('utf8');
+    if (!Buffer.from(text, 'utf8').equals(bytes)) {
+      throw new Error('fusion tool-call audit completion seal is not UTF-8');
+    }
+    const parsed = parseJsonText(text);
+    if (!isJsonObject(parsed) || Array.isArray(parsed)) {
+      throw new Error('fusion tool-call audit completion seal must be an object');
+    }
+    const keys = Object.keys(parsed).sort();
+    const expected = ['log_sha256', 'record_count', 'schema_version', 'status', 'total_result_bytes'];
+    if (keys.join('\0') !== expected.join('\0')) {
+      throw new Error('fusion tool-call audit completion seal keys mismatch');
+    }
+    if (parsed['schema_version'] !== FUSION_TOOL_CALL_SEAL_SCHEMA_VERSION) {
+      throw new Error('fusion tool-call audit completion seal schema mismatch');
+    }
+    if (parsed['status'] !== 'complete') {
+      throw new Error('fusion tool-call audit completion seal reports a failed audit');
+    }
+    const recordCount = requireUsageInteger(parsed, 'record_count', 'fusion tool-call audit seal');
+    const totalResultBytes = requireUsageInteger(
+      parsed,
+      'total_result_bytes',
+      'fusion tool-call audit seal',
+    );
+    const logSha256 = requireSha256(parsed, 'log_sha256', 'fusion tool-call audit seal');
+    if (recordCount !== trace.summary.count) {
+      throw new Error('fusion tool-call audit completion seal record count mismatch');
+    }
+    if (totalResultBytes !== trace.summary.total_result_bytes) {
+      throw new Error('fusion tool-call audit completion seal result-byte total mismatch');
+    }
+    if (logSha256 !== sha256Buffer(trace.bytes)) {
+      throw new Error('fusion tool-call audit completion seal log hash mismatch');
+    }
+    if (totalResultBytes > FUSION_CHILD_MAX_TOTAL_TOOL_RESULT_BYTES) {
+      throw new Error(
+        `fusion tool-call audit exceeds aggregate result-byte limit ${String(FUSION_CHILD_MAX_TOTAL_TOOL_RESULT_BYTES)}`,
+      );
+    }
   } finally {
     await handle.close();
   }
@@ -1415,6 +1504,7 @@ export async function runPiChild(options: RunPiChildOptions): Promise<FusionChil
       }
       try {
         toolCallTrace = await readFusionToolCallLog(logPath);
+        await assertFusionToolCallLogSeal(logPath, toolCallTrace);
         await assertCompletedToolPolicy(toolCallTrace, capability, options.sourcePolicy);
       } catch (error) {
         throw new FusionChildRunError(

@@ -35,7 +35,7 @@ function scriptBody(options: FusionFakePiInstallOptions, logPath: string): strin
   const delayMs = options.delayMs ?? 0;
   const invalidFirstEvaluation = options.invalidFirstEvaluation ?? false;
   const failStage = options.failStage ?? '';
-  return `const { appendFileSync, readFileSync } = require('node:fs');
+  return `const { appendFileSync, readFileSync, writeFileSync } = require('node:fs');
 const { spawnSync } = require('node:child_process');
 const { createHash } = require('node:crypto');
 const args = process.argv.slice(2);
@@ -128,7 +128,17 @@ function evaluationText() {
   if (workflow === 'validate') {
     base.validation_accounting = {
       findings: sourceFindings,
-      decisions: sourceFindings.map((finding, index) => ({ source_id: finding.id, disposition: 'include', rationale: 'preserved by fake evaluator', group_id: 'G' + String(index + 1).padStart(3, '0') }))
+      decisions: sourceFindings.map((finding, index) => ({ source_id: finding.id, disposition: 'include', rationale: 'preserved by fake evaluator', group_id: 'G' + String(index + 1).padStart(3, '0') })),
+      groups: sourceFindings.map((finding, index) => ({
+        group_id: 'G' + String(index + 1).padStart(3, '0'),
+        source_ids: [finding.id],
+        severity: finding.severity,
+        location: finding.location,
+        evidence: finding.evidence,
+        impact: finding.impact,
+        summary: finding.summary,
+        rationale: 'resolved by fake evaluator'
+      }))
     };
   }
   return JSON.stringify(base);
@@ -149,6 +159,17 @@ function responseText() {
   return 'Candidate fake answer from ' + provider + '/' + model + '.';
 }
 function emit() {
+  if (toolCallLogPath) {
+    const logBytes = readFileSync(toolCallLogPath);
+    const seal = {
+      schema_version: 'pi-background-tasks.fusion-tool-call-seal.v1',
+      status: 'complete',
+      record_count: 0,
+      total_result_bytes: 0,
+      log_sha256: createHash('sha256').update(logBytes).digest('hex')
+    };
+    writeFileSync(toolCallLogPath + '.seal.json', JSON.stringify(seal) + '\\n', { flag: 'wx', mode: 0o600 });
+  }
   const text = responseText();
   const digest = createHash('sha256').update(text, 'utf8').digest('hex');
   const metadata = {

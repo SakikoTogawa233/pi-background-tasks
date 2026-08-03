@@ -61,6 +61,7 @@ function isBlockedIpv6(host: string): boolean {
     lower === '::' ||
     lower === '::1' ||
     lower.startsWith('::ffff:') ||
+    lower.startsWith('64:ff9b::') ||
     lower.startsWith('64:ff9b:1:') ||
     lower.startsWith('100:') ||
     lower.startsWith('2001:2:') ||

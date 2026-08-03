@@ -261,6 +261,15 @@ function parseEvaluationAttempt(
   }
   const result = validateFusionEvaluation(parsed);
   if (!result.ok) return { evaluation: undefined, errors: result.errors };
+  if (
+    expectedValidationFindings === undefined &&
+    result.value.validation_accounting !== undefined
+  ) {
+    return {
+      evaluation: undefined,
+      errors: ['evaluation.validation_accounting is permitted only for fusion_validate'],
+    };
+  }
   if (expectedValidationFindings !== undefined) {
     const accountingErrors = validateEvaluationAccountsForSourceFindings(result.value, expectedValidationFindings);
     if (accountingErrors.length > 0) return { evaluation: undefined, errors: accountingErrors };
@@ -607,9 +616,17 @@ export class FusionOrchestrator {
         merged,
       );
       assertChildOutputWithinContract('merge', merged.text);
-      const finalMergedText = evaluation.validation_accounting === undefined
-        ? merged.text
-        : renderValidatedFusionValidationReport(evaluation.validation_accounting, validationData);
+      let finalMergedText = merged.text;
+      if (profile.id === 'validate') {
+        const accounting = evaluation.validation_accounting;
+        if (accounting === undefined) {
+          throw new FusionError('fusion_validate evaluation completed without validation accounting', {
+            code: 'evaluation_invalid',
+            stage: 'merge',
+          });
+        }
+        finalMergedText = renderValidatedFusionValidationReport(accounting, validationData);
+      }
       if (finalMergedText !== merged.text) assertChildOutputWithinContract('merge', finalMergedText);
       await store.writeMerged(finalMergedText);
       await store.setUsage(usage);

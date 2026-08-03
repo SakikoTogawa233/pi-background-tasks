@@ -751,10 +751,17 @@ void describe('package', () => {
 
   void it('ships the Anthropic sanitizer as a real dependency for Claude children', async () => {
     const p = await pkg();
-    const declared =
-      p.dependencies?.['@ravshansbox/pi-anthropic-sps'] ??
-      p.devDependencies?.['@ravshansbox/pi-anthropic-sps'];
-    assert.ok(declared, 'the Anthropic sanitizer must be a declared dependency');
+    const declared = p.dependencies?.['@ravshansbox/pi-anthropic-sps'];
+    assert.equal(
+      declared,
+      'https://codeload.github.com/ravshansbox/pi-anthropic-sps/tar.gz/17409b5615f0ec0625776bc5434f92f2c55e3fd0',
+      'the production sanitizer dependency must be pinned to the reviewed immutable archive',
+    );
+    assert.equal(
+      p.devDependencies?.['@ravshansbox/pi-anthropic-sps'],
+      undefined,
+      'runtime sanitizer must not be hidden in devDependencies',
+    );
     // Claude children run --no-extensions and inherit nothing from the parent, so the
     // sanitizer must be resolved and passed explicitly rather than assumed present.
     const child = await text('src/core/fusion/pi-child.ts');
@@ -1179,6 +1186,10 @@ void describe('package', () => {
         },
       );
       assert.equal(install.status, 0, install.stderr);
+      assert.ok(
+        existsSync(join(temp, 'node_modules', '@ravshansbox', 'pi-anthropic-sps', 'package.json')),
+        'packed consumers must install the Anthropic sanitizer production dependency',
+      );
       for (const f of [
         'package.json',
         'extensions/background-tasks.ts',

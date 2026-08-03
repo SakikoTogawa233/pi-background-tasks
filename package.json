@@ -74,7 +74,6 @@
     "@earendil-works/pi-ai": "^0.83.0",
     "@earendil-works/pi-coding-agent": "^0.83.0",
     "@earendil-works/pi-tui": "^0.83.0",
-    "@ravshansbox/pi-anthropic-sps": "github:ravshansbox/pi-anthropic-sps",
     "@types/node": "^24.0.0",
     "@types/turndown": "5.0.6",
     "tsx": "^4.19.0",
@@ -85,6 +84,7 @@
     "node": ">=22.19.0"
   },
   "dependencies": {
+    "@ravshansbox/pi-anthropic-sps": "https://codeload.github.com/ravshansbox/pi-anthropic-sps/tar.gz/17409b5615f0ec0625776bc5434f92f2c55e3fd0",
     "turndown": "7.2.4"
   }
 }

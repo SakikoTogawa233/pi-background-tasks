@@ -63,7 +63,15 @@ function candidateReport(slot: number): string {
 function evaluatorText(stdin: string): string {
   const blind = JSON.parse(stdin) as { candidates: Array<{ candidate_id: 'A' | 'B' | 'C'; response: string }> };
   const findings = blind.candidates.flatMap((candidate) => {
-    const report = JSON.parse(candidate.response) as { findings: Array<Record<string, unknown>> };
+    const report = JSON.parse(candidate.response) as {
+      findings: Array<{
+        severity: 'critical' | 'high' | 'minor';
+        location: string;
+        evidence: string;
+        impact: string;
+        summary: string;
+      }>;
+    };
     return report.findings.map((finding, index) => ({ id: `${candidate.candidate_id}-F${String(index + 1).padStart(3, '0')}`, candidate_id: candidate.candidate_id, ...finding }));
   });
   return JSON.stringify({
@@ -72,7 +80,20 @@ function evaluatorText(stdin: string): string {
     agreements: ['agree'],
     conflicts: [],
     synthesis_plan: { must_include: [{ candidate_id: 'A', contribution: 'preserve findings' }], must_resolve: [], must_avoid: [] },
-    validation_accounting: { findings, decisions: findings.map((finding, index) => ({ source_id: finding.id, disposition: 'include', rationale: 'supported', group_id: `G${String(index + 1)}` })) },
+    validation_accounting: {
+      findings,
+      decisions: findings.map((finding, index) => ({ source_id: finding.id, disposition: 'include', rationale: 'supported', group_id: `G${String(index + 1)}` })),
+      groups: findings.map((finding, index) => ({
+        group_id: `G${String(index + 1)}`,
+        source_ids: [finding.id],
+        severity: finding.severity,
+        location: finding.location,
+        evidence: finding.evidence,
+        impact: finding.impact,
+        summary: finding.summary,
+        rationale: 'supported by source evidence',
+      })),
+    },
   });
 }
 

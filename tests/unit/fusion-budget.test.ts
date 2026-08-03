@@ -41,6 +41,7 @@ import {
 } from '../../src/core/context/token-budget.js';
 import { defaultFusionModelConfig } from '../../src/core/fusion/config.js';
 import { buildFusionCanonicalInput } from '../../src/core/fusion/context.js';
+import { buildFusionCleanTaskCanonicalInput } from '../../src/core/fusion/clean-context.js';
 import {
   FUSION_CANDIDATE_INSPECT_SYSTEM_PROMPT,
   FUSION_CANDIDATE_RESEARCH_SYSTEM_PROMPT,
@@ -62,6 +63,11 @@ import {
   type ResolvedFusionModels,
 } from '../../src/core/fusion/types.js';
 import type { RunPiChildOptions } from '../../src/core/fusion/pi-child.js';
+import {
+  FUSION_INVESTIGATE_WORKFLOW,
+  FUSION_RESEARCH_WORKFLOW,
+  FUSION_VALIDATE_WORKFLOW,
+} from '../../src/core/fusion/workflows.js';
 import { emptyLedger, sessionWith, userMessage } from '../helpers/fusion-canonical.js';
 
 const ledger = emptyLedger(FUSION_COMMAND_CONTEXT_POLICY_ID);
@@ -926,6 +932,53 @@ void describe('fusion stage budgets', () => {
     assert.equal(researchCandidate.input_utf8_bytes - reasonCandidate.input_utf8_bytes, expectedResearchDelta);
     assert.notEqual(inspectCandidate.input_utf8_bytes, reasonCandidate.input_utf8_bytes);
     assert.notEqual(researchCandidate.input_utf8_bytes, reasonCandidate.input_utf8_bytes);
+  });
+
+  void it('gives each clean workflow distinct request-budget remediation', () => {
+    const request = 'scope '.repeat(180_000);
+    const profiles = [
+      { workflow: 'investigate', profile: FUSION_INVESTIGATE_WORKFLOW },
+      { workflow: 'research', profile: FUSION_RESEARCH_WORKFLOW },
+      { workflow: 'validate', profile: FUSION_VALIDATE_WORKFLOW },
+    ] as const;
+    const remediation = profiles.map(({ workflow, profile }) => {
+      const built = buildFusionCleanTaskCanonicalInput({
+        cwd: '/repo',
+        source: 'tool',
+        request,
+        workflow,
+        ...(workflow === 'research'
+          ? { declaredSources: [{ url: 'https://example.com/', purpose: 'primary source' }] }
+          : {}),
+      });
+      const budget = new FusionBudget(
+        models({ small: 200_000, large: 200_000 }),
+        built.input.context.policy_id,
+        profile.candidateCapability,
+        profile,
+      );
+      const plan = budget.plan(built.input);
+      assert.ok(plan.primary_blocker, `${profile.id} fixture must exceed its request budget`);
+      let captured: FusionError | undefined;
+      try {
+        budget.assertPlanFits(plan, 'unit-test');
+      } catch (error) {
+        assert.ok(error instanceof FusionError);
+        captured = error;
+      }
+      assert.ok(captured?.budget);
+      assert.equal(captured.budget.counterfactuals.empty_request.still_fails_with_empty_request, false);
+      assert.doesNotMatch(captured.budget.remediation.join('\n'), /fresh (?:Pi )?conversation/i);
+      return captured.budget.remediation.join('\n');
+    });
+    const [investigate, research, validate] = remediation;
+    assert.ok(investigate && research && validate);
+    assert.match(investigate, /fusion_investigate/);
+    assert.match(research, /fusion_research/);
+    assert.match(validate, /fusion_validate/);
+    assert.equal(new Set(remediation).size, 3);
+    assert.doesNotMatch(investigate, /source sets/i);
+    assert.doesNotMatch(validate, /source sets/i);
   });
 
   void it('reproduces the compact incident plan as fitting with utilization warnings', () => {

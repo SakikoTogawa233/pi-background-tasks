@@ -30,10 +30,13 @@ import {
 } from '../../src/core/fusion/types.js';
 import fusionChildExtension, {
   FUSION_CHILD_RESULT_PREFIX,
+  FUSION_CHILD_MAX_TOTAL_TOOL_RESULT_BYTES,
   FUSION_RESEARCH_ENABLED_ENV,
   FUSION_SOURCE_POLICY_PATH_ENV,
   FUSION_SOURCE_POLICY_SHA256_ENV,
   FUSION_TOOL_CALL_LOG_PATH_ENV,
+  FUSION_TOOL_CALL_SEAL_SCHEMA_VERSION,
+  FUSION_TOOL_CALL_SEAL_SUFFIX,
   buildFusionChildResultMetadata,
 } from '../../src/fusion-child-extension.js';
 import { buildFusionSourcePolicy, sourcePolicyCanonicalBytes } from '../../src/core/fusion/source-policy.js';
@@ -179,6 +182,22 @@ function piUsage(input: number, output: number, totalTokens = input + output): U
   };
 }
 
+async function writeToolCallSeal(logPath: string): Promise<void> {
+  const bytes = await readFile(logPath);
+  const trace = parseFusionToolCallLog(bytes);
+  await writeFile(
+    `${logPath}${FUSION_TOOL_CALL_SEAL_SUFFIX}`,
+    `${JSON.stringify({
+      schema_version: FUSION_TOOL_CALL_SEAL_SCHEMA_VERSION,
+      status: 'complete',
+      record_count: trace.summary.count,
+      total_result_bytes: trace.summary.total_result_bytes,
+      log_sha256: createHash('sha256').update(bytes).digest('hex'),
+    })}\n`,
+    'utf8',
+  );
+}
+
 function toolLogLine(ordinal: number, overrides: Record<string, unknown> = {}): string {
   return `${JSON.stringify({
     schema_version: FUSION_TOOL_CALL_LOG_SCHEMA_VERSION,
@@ -273,11 +292,25 @@ void describe('fusion Pi child runner', () => {
     const env = fusionPiChildEnv({
       PI_SESSION_ID: 'old',
       PI_MODEL: 'old-model',
-      OPENAI_API_KEY: 'kept',
+      OPENAI_API_KEY: 'metered-key',
+      ANTHROPIC_AUTH_TOKEN: 'direct-bearer',
+      AZURE_OPENAI_API_KEY: 'azure-key',
+      AZURE_OPENAI_BASE_URL: 'https://metered.invalid',
+      Azure_OpenAI_Resource_Name: 'mixed-case-resource',
+      Anthropic_Api_Key: 'mixed-case-key',
+      ANTHROPIC_OAUTH_TOKEN: 'subscription-oauth',
+      UNRELATED_ENV: 'preserved',
     });
     assert.equal(env['PI_SESSION_ID'], undefined);
     assert.equal(env['PI_MODEL'], undefined);
-    assert.equal(env['OPENAI_API_KEY'], 'kept');
+    assert.equal(env['OPENAI_API_KEY'], undefined);
+    assert.equal(env['ANTHROPIC_AUTH_TOKEN'], undefined);
+    assert.equal(env['AZURE_OPENAI_API_KEY'], undefined);
+    assert.equal(env['AZURE_OPENAI_BASE_URL'], undefined);
+    assert.equal(env['Azure_OpenAI_Resource_Name'], undefined);
+    assert.equal(env['Anthropic_Api_Key'], undefined);
+    assert.equal(env['ANTHROPIC_OAUTH_TOKEN'], 'subscription-oauth');
+    assert.equal(env['UNRELATED_ENV'], 'preserved');
     assert.equal(env[FUSION_TOOL_CALL_LOG_PATH_ENV], undefined);
     assert.equal(env['PI_SKIP_VERSION_CHECK'], '1');
   });
@@ -571,8 +604,10 @@ void describe('fusion Pi child runner', () => {
       fusionChildExtension(recorder as HandlerRecorder & FusionChildPi);
       const toolCall = handlers.get('tool_call')?.[0];
       const toolResult = handlers.get('tool_result')?.[0];
+      const agentEnd = handlers.get('agent_end')?.[0];
       assert.ok(toolCall);
       assert.ok(toolResult);
+      assert.ok(agentEnd);
       const secret = 'SECRET_TOKEN_SHOULD_NOT_BE_IN_LOG';
       toolCall({ toolCallId: 'call-1', toolName: 'read', input: { path: secret } });
       toolResult({
@@ -584,12 +619,20 @@ void describe('fusion Pi child runner', () => {
         isError: false,
         usage: piUsage(0, 0),
       });
+      agentEnd({});
       const bytes = await readFile(logPath);
       assert.doesNotMatch(bytes.toString('utf8'), new RegExp(secret));
       const trace = parseFusionToolCallLog(bytes);
       assert.equal(trace.summary.count, 1);
       assert.equal(trace.records[0]?.tool_name, 'read');
       assert.equal(trace.records[0]?.status, 'ok');
+      const seal = JSON.parse(
+        await readFile(`${logPath}${FUSION_TOOL_CALL_SEAL_SUFFIX}`, 'utf8'),
+      ) as Record<string, unknown>;
+      assert.equal(seal['status'], 'complete');
+      assert.equal(seal['record_count'], 1);
+      assert.equal(seal['total_result_bytes'], trace.summary.total_result_bytes);
+      assert.equal(seal['log_sha256'], createHash('sha256').update(bytes).digest('hex'));
     } finally {
       if (oldPath === undefined) delete process.env[FUSION_TOOL_CALL_LOG_PATH_ENV];
       else process.env[FUSION_TOOL_CALL_LOG_PATH_ENV] = oldPath;
@@ -728,7 +771,7 @@ void describe('fusion Pi child runner', () => {
       userPrompt: 'large prompt with U+2028 \u2028 and U+2029 \u2029',
       spawn: harness.spawn,
       platform: 'linux',
-      env: { PI_SESSION_FILE: 'old', ANTHROPIC_API_KEY: 'kept' },
+      env: { PI_SESSION_FILE: 'old', ANTHROPIC_API_KEY: 'metered-key' },
     });
     await tick();
     const record = harness.records[0];
@@ -737,7 +780,7 @@ void describe('fusion Pi child runner', () => {
     assert.equal(record.options.shell, false);
     assert.deepEqual(record.options.stdio, ['pipe', 'pipe', 'pipe']);
     assert.equal(record.options.env?.['PI_SESSION_FILE'], undefined);
-    assert.equal(record.options.env?.['ANTHROPIC_API_KEY'], 'kept');
+    assert.equal(record.options.env?.['ANTHROPIC_API_KEY'], undefined);
     assert.equal(record.options.env?.[FUSION_TOOL_CALL_LOG_PATH_ENV], undefined);
     assert.equal(
       Buffer.concat(child.stdin.chunks).toString('utf8'),
@@ -799,6 +842,7 @@ void describe('fusion Pi child runner', () => {
       // to model a genuine zero-tool-call inspect run. An ABSENT file is a different case
       // and must fail loudly - covered by the missing-log test below.
       await writeFile(logPath, '');
+      await writeToolCallSeal(logPath);
       child.stdout.emitData(Buffer.from('final héllo\n', 'utf8'));
       child.stderr.emitData(compactMetadata());
       child.close(0, null);
@@ -844,6 +888,7 @@ void describe('fusion Pi child runner', () => {
       assert.equal(record.options.env?.[FUSION_RESEARCH_ENABLED_ENV], '1');
       assert.equal(record.options.env?.['PI_FUSION_SOURCE_POLICY_PATH'], policyPath);
       await writeFile(logPath, '');
+      await writeToolCallSeal(logPath);
       child.stdout.emitData(Buffer.from('final héllo\n', 'utf8'));
       child.stderr.emitData(compactMetadata());
       child.close(0, null);
@@ -891,6 +936,114 @@ void describe('fusion Pi child runner', () => {
     }
   });
 
+  void it('fails a syntactically complete tool log without its terminal audit seal', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'pi-fusion-tool-log-unsealed-'));
+    try {
+      const child = new FakeChild(785);
+      const harness = makeSpawn(child);
+      const logPath = join(root, 'candidate-1.attempt-1.tool-calls.jsonl');
+      const run = runPiChild({
+        stage: 'candidate',
+        slot: 1,
+        attempt: 1,
+        cwd: root,
+        model: resolvedModel(),
+        capability: 'inspect',
+        toolCallLogPath: logPath,
+        systemPrompt: 'system prompt',
+        userPrompt: 'prompt',
+        spawn: harness.spawn,
+        platform: 'linux',
+      });
+      await tick();
+      await writeFile(logPath, '');
+      child.stdout.emitData(Buffer.from('final héllo\n', 'utf8'));
+      child.stderr.emitData(compactMetadata());
+      child.close(0, null);
+      await assert.rejects(run, /audit completion seal is missing/);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  void it('independently enforces the aggregate tool-result limit from the sealed log', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'pi-fusion-tool-log-limit-'));
+    try {
+      const child = new FakeChild(786);
+      const harness = makeSpawn(child);
+      const logPath = join(root, 'candidate-1.attempt-1.tool-calls.jsonl');
+      const run = runPiChild({
+        stage: 'candidate',
+        slot: 1,
+        attempt: 1,
+        cwd: root,
+        model: resolvedModel(),
+        capability: 'inspect',
+        toolCallLogPath: logPath,
+        systemPrompt: 'system prompt',
+        userPrompt: 'prompt',
+        spawn: harness.spawn,
+        platform: 'linux',
+      });
+      await tick();
+      await writeFile(
+        logPath,
+        toolLogLine(0, { result_bytes: FUSION_CHILD_MAX_TOTAL_TOOL_RESULT_BYTES + 1 }),
+        'utf8',
+      );
+      await writeToolCallSeal(logPath);
+      child.stdout.emitData(Buffer.from('final héllo\n', 'utf8'));
+      child.stderr.emitData(compactMetadata());
+      child.close(0, null);
+      await assert.rejects(run, /exceeds aggregate result-byte limit/);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  void it('rejects every completion-seal integrity mismatch', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'pi-fusion-tool-seal-mismatch-'));
+    try {
+      const cases = [
+        { key: 'status', value: 'failed', expected: /reports a failed audit/ },
+        { key: 'record_count', value: 1, expected: /record count mismatch/ },
+        { key: 'total_result_bytes', value: 1, expected: /result-byte total mismatch/ },
+        { key: 'log_sha256', value: '0'.repeat(64), expected: /log hash mismatch/ },
+      ] as const;
+      for (const [index, item] of cases.entries()) {
+        const child = new FakeChild(790 + index);
+        const harness = makeSpawn(child);
+        const logPath = join(root, `candidate-${String(index)}.tool-calls.jsonl`);
+        const run = runPiChild({
+          stage: 'candidate',
+          slot: 1,
+          attempt: 1,
+          cwd: root,
+          model: resolvedModel(),
+          capability: 'inspect',
+          toolCallLogPath: logPath,
+          systemPrompt: 'system prompt',
+          userPrompt: 'prompt',
+          spawn: harness.spawn,
+          platform: 'linux',
+        });
+        await tick();
+        await writeFile(logPath, '');
+        await writeToolCallSeal(logPath);
+        const sealPath = `${logPath}${FUSION_TOOL_CALL_SEAL_SUFFIX}`;
+        const seal = JSON.parse(await readFile(sealPath, 'utf8')) as Record<string, unknown>;
+        seal[item.key] = item.value;
+        await writeFile(sealPath, `${JSON.stringify(seal)}\n`, 'utf8');
+        child.stdout.emitData(Buffer.from('final héllo\n', 'utf8'));
+        child.stderr.emitData(compactMetadata());
+        child.close(0, null);
+        await assert.rejects(run, item.expected);
+      }
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   void it('fails tool-enabled children when the durable audit names a non-allowlisted tool', async () => {
     const root = await mkdtemp(join(tmpdir(), 'pi-fusion-tool-log-allowlist-'));
     try {
@@ -912,6 +1065,7 @@ void describe('fusion Pi child runner', () => {
       });
       await tick();
       await writeFile(logPath, toolLogLine(0, { tool_name: 'bash' }), 'utf8');
+      await writeToolCallSeal(logPath);
       child.stdout.emitData(Buffer.from('final héllo\n', 'utf8'));
       child.stderr.emitData(compactMetadata());
       child.close(0, null);
@@ -956,6 +1110,7 @@ void describe('fusion Pi child runner', () => {
         toolLogLine(0, { tool_name: FUSION_WEB_FETCH_TOOL_NAME, url: 'https://example.com/not-declared' }),
         'utf8',
       );
+      await writeToolCallSeal(logPath);
       child.stdout.emitData(Buffer.from('final héllo\n', 'utf8'));
       child.stderr.emitData(compactMetadata());
       child.close(0, null);

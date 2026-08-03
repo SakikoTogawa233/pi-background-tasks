@@ -102,6 +102,8 @@ void describe('fusion_web_fetch core', () => {
       { address: '169.254.1.2', family: 4 },
       { address: '169.254.169.254', family: 4 },
       { address: '::ffff:127.0.0.1', family: 6 },
+      { address: '64:ff9b::a00:1', family: 6 },
+      { address: '64:ff9b:1::a00:1', family: 6 },
       { address: 'fe80::1', family: 6 },
       { address: 'fc00::1', family: 6 },
       { address: 'ff02::1', family: 6 },
@@ -189,6 +191,32 @@ void describe('fusion_web_fetch core', () => {
         assert.equal(result.content, 'done');
       },
     );
+  });
+
+  void it('destroys redirect responses without consuming unbounded bodies', async () => {
+    let redirectClosed = false;
+    await withServer(
+      {
+        '/start': (_request, response) => {
+          const interval = setInterval(() => response.write('unbounded redirect body'), 5);
+          response.once('close', () => {
+            redirectClosed = true;
+            clearInterval(interval);
+          });
+          response.writeHead(302, { location: '/final', 'content-type': 'text/plain' });
+          response.flushHeaders();
+        },
+        '/final': (_request, response) => {
+          response.writeHead(200, { 'content-type': 'text/plain' });
+          response.end('done');
+        },
+      },
+      async (baseUrl) => {
+        const result = await fusionWebFetch({ url: `${baseUrl}/start` }, localOptions());
+        assert.equal(result.content, 'done');
+      },
+    );
+    assert.equal(redirectClosed, true);
   });
 
   void it('rejects a redirect to a blocked host', async () => {
@@ -353,6 +381,47 @@ void describe('fusion_web_fetch core', () => {
         assert.equal(result.truncated, true);
         assert.equal(result.content, '😀');
         assert.equal(Buffer.byteLength(result.content), 4);
+      },
+    );
+  });
+
+  void it('includes DNS resolution inside the fetch deadline', async () => {
+    const start = Date.now();
+    await expectError(
+      fusionWebFetch(
+        { url: 'https://dns-stall.test/' },
+        { lookup: () => new Promise(() => undefined), timeoutMs: 20 },
+      ),
+      'request_timeout',
+    );
+    assert.ok(Date.now() - start < 500, 'stalled DNS must be bounded by the request deadline');
+  });
+
+  void it('subtracts delayed successful DNS time from the HTTP deadline', async () => {
+    await withServer(
+      {
+        '/slow-after-dns': (_request, response) => {
+          setTimeout(() => {
+            response.writeHead(200, { 'content-type': 'text/plain' });
+            response.end('too late');
+          }, 40);
+        },
+      },
+      async (baseUrl) => {
+        await expectError(
+          fusionWebFetch(
+            { url: `${baseUrl}/slow-after-dns` },
+            {
+              lookup: async () => {
+                await new Promise((resolve) => setTimeout(resolve, 30));
+                return [{ address: '127.0.0.1', family: 4 }];
+              },
+              allowBlockedAddressesForTests: true,
+              timeoutMs: 50,
+            },
+          ),
+          'request_timeout',
+        );
       },
     );
   });
