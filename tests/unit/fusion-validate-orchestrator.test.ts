@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, readdir, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { canonicalJson } from '../../src/core/attested-pi-run.js';
@@ -18,6 +18,7 @@ import {
   FUSION_RESULT_SCHEMA_VERSION,
   FUSION_VALIDATE_CANDIDATE_SCHEMA_VERSION,
   FUSION_VALIDATE_CAPABILITY,
+  FusionError,
   type FusionChildRunResult,
   type ResolvedFusionModel,
   type ResolvedFusionModels,
@@ -127,6 +128,74 @@ void describe('fusion validate orchestration', () => {
       assert.equal(result.details.workflow, 'validate');
       assert.equal(result.details.schema_version, FUSION_RESULT_SCHEMA_VERSION);
       assert.equal(result.details.context.kind, 'clean_task');
+    });
+  });
+
+  void it('audits and recovers the narrowly supported fenced-JSON violation', async () => {
+    await withRoot(async (root) => {
+      const built = buildFusionCleanTaskCanonicalInput({ cwd: root, source: 'tool', workflow: 'validate', request: 'validate' });
+      const orchestrator = new FusionOrchestrator({ childRunner: (options) => {
+        if (options.stage === 'candidate') {
+          const report = candidateReport(options.slot ?? 0);
+          if (options.slot === 1) return Promise.resolve(childResult(options, `\`\`\`json\n${report}\n\`\`\``));
+          if (options.slot === 2) return Promise.resolve(childResult(options, `Validation complete.\n\`\`\`json\n${report}\n\`\`\``));
+          return Promise.resolve(childResult(options, report));
+        }
+        if (options.stage === 'evaluation') return Promise.resolve(childResult(options, evaluatorText(options.userPrompt)));
+        return Promise.resolve(childResult(options, 'ignored'));
+      }});
+      const result = await orchestrator.run({ source: 'tool', cwd: root, canonicalInput: built.input, canonicalInputSerialized: built.serialized, config: defaultFusionModelConfig(), models: models(), profile: FUSION_VALIDATE_WORKFLOW });
+      assert.match(result.mergedText, /required audited removal of a Markdown JSON wrapper/);
+      const artifactDir = join(root, result.details.artifact_dir);
+      const names = await readdir(artifactDir);
+      const normalizationArtifacts = names.filter((name) => name.includes('output-contract-normalized'));
+      assert.equal(normalizationArtifacts.length, 2);
+      const firstNormalization = normalizationArtifacts[0];
+      assert.ok(firstNormalization);
+      const normalizationEvent = JSON.parse(await readFile(join(artifactDir, firstNormalization), 'utf8')) as { schema_version?: string; status?: string };
+      assert.equal(normalizationEvent.schema_version, 'pi-background-tasks.fusion-validation-candidate-contract-event.v1');
+      assert.equal(normalizationEvent.status, 'normalized');
+      assert.equal(names.includes('candidate-1.attempt-1.response.txt'), true);
+      assert.equal(
+        await readFile(join(artifactDir, 'candidate-1.attempt-1.system-prompt.txt'), 'utf8'),
+        FUSION_VALIDATE_CANDIDATE_SYSTEM_PROMPT,
+      );
+    });
+  });
+
+  void it('continues with an explicit limitation when one report is irrecoverable', async () => {
+    await withRoot(async (root) => {
+      const built = buildFusionCleanTaskCanonicalInput({ cwd: root, source: 'tool', workflow: 'validate', request: 'validate' });
+      const orchestrator = new FusionOrchestrator({ childRunner: (options) => {
+        if (options.stage === 'candidate') return Promise.resolve(childResult(options, options.slot === 1 ? 'not JSON' : candidateReport(options.slot ?? 0)));
+        if (options.stage === 'evaluation') return Promise.resolve(childResult(options, evaluatorText(options.userPrompt)));
+        return Promise.resolve(childResult(options, 'ignored'));
+      }});
+      const result = await orchestrator.run({ source: 'tool', cwd: root, canonicalInput: built.input, canonicalInputSerialized: built.serialized, config: defaultFusionModelConfig(), models: models(), profile: FUSION_VALIDATE_WORKFLOW });
+      assert.match(result.mergedText, /could not be parsed after strict contract checks/);
+      const names = await readdir(join(root, result.details.artifact_dir));
+      assert.equal(names.filter((name) => name.includes('output-contract-dropped')).length, 1);
+    });
+  });
+
+  void it('fails loudly for two invalid reports while preserving the anonymous map', async () => {
+    await withRoot(async (root) => {
+      const built = buildFusionCleanTaskCanonicalInput({ cwd: root, source: 'tool', workflow: 'validate', request: 'validate' });
+      const orchestrator = new FusionOrchestrator({ childRunner: (options) =>
+        Promise.resolve(childResult(options, options.stage === 'candidate' && options.slot !== 3 ? 'not JSON' : candidateReport(options.slot ?? 3)))
+      });
+      let failure: FusionError | undefined;
+      try {
+        await orchestrator.run({ source: 'tool', cwd: root, canonicalInput: built.input, canonicalInputSerialized: built.serialized, config: defaultFusionModelConfig(), models: models(), profile: FUSION_VALIDATE_WORKFLOW });
+      } catch (error) {
+        if (error instanceof FusionError) failure = error;
+        else throw error;
+      }
+      assert.ok(failure);
+      assert.match(failure.message, /2 of 3 candidate reports/);
+      assert.ok(failure.artifactDir);
+      const manifest = JSON.parse(await readFile(join(root, failure.artifactDir, 'manifest.json'), 'utf8')) as { anonymous_map?: unknown };
+      assert.ok(manifest.anonymous_map);
     });
   });
 

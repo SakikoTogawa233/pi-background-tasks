@@ -49,10 +49,10 @@ This generated registry lists production environment-variable references, runtim
 | `PI_BG_SHELL` | read | `src/core/common.ts:679` |
 | `PI_BG_SHELL_PATH` | read | `src/core/common.ts:680` |
 | `PI_CACHE_RETENTION` | read | `src/core/fusion/claude-cache.ts:56` |
-| `PI_FUSION_RESEARCH_ENABLED` | read, remove, write | `src/core/fusion/pi-child.ts:1807`<br>`src/core/fusion/pi-child.ts:92`<br>`src/fusion-child-extension.ts:673` |
-| `PI_FUSION_SOURCE_POLICY_PATH` | read, remove, write | `src/core/fusion/pi-child.ts:1808`<br>`src/core/fusion/pi-child.ts:92`<br>`src/fusion-child-extension.ts:629` |
-| `PI_FUSION_SOURCE_POLICY_SHA256` | read, remove, write | `src/core/fusion/pi-child.ts:1809`<br>`src/core/fusion/pi-child.ts:92`<br>`src/fusion-child-extension.ts:630` |
-| `PI_FUSION_TOOL_CALL_LOG_PATH` | read, remove, write | `src/core/fusion/pi-child.ts:1796`<br>`src/core/fusion/pi-child.ts:92`<br>`src/fusion-child-extension.ts:672` |
+| `PI_FUSION_RESEARCH_ENABLED` | read, remove, write | `src/core/fusion/pi-child.ts:1811`<br>`src/core/fusion/pi-child.ts:92`<br>`src/fusion-child-extension.ts:673` |
+| `PI_FUSION_SOURCE_POLICY_PATH` | read, remove, write | `src/core/fusion/pi-child.ts:1812`<br>`src/core/fusion/pi-child.ts:92`<br>`src/fusion-child-extension.ts:629` |
+| `PI_FUSION_SOURCE_POLICY_SHA256` | read, remove, write | `src/core/fusion/pi-child.ts:1813`<br>`src/core/fusion/pi-child.ts:92`<br>`src/fusion-child-extension.ts:630` |
+| `PI_FUSION_TOOL_CALL_LOG_PATH` | read, remove, write | `src/core/fusion/pi-child.ts:1800`<br>`src/core/fusion/pi-child.ts:92`<br>`src/fusion-child-extension.ts:672` |
 | `PI_MODEL` | remove | `src/core/delegate/launch.ts:301`<br>`src/core/fusion/pi-child.ts:92` |
 | `PI_OFFLINE` | read | `src/extension.ts:445` |
 | `PI_PROVIDER` | remove | `src/core/delegate/launch.ts:301`<br>`src/core/fusion/pi-child.ts:92` |
@@ -81,26 +81,26 @@ This generated registry lists production environment-variable references, runtim
 | delegate-artifact | `seed.json` | `src/core/delegate/artifacts.ts:40` |
 | delegate-artifact | `spill/<receipt-named-file>` | `src/core/delegate/artifacts.ts:53` |
 | directory | `.pi/delegate/<session-id>-<pid>/<task-id>/` | `src/core/delegate/artifacts.ts:157` |
-| directory | `.pi/fusion/<session-id>-<pid>/<run-id>/` | `src/core/fusion/artifacts.ts:251` |
+| directory | `.pi/fusion/<session-id>-<pid>/<run-id>/` | `src/core/fusion/artifacts.ts:277` |
 | directory | `.pi/tasks/<session-id>-<pid>/` | `src/core/registry.ts:780` |
-| fusion-artifact | `<attempt-prefix> = candidate-<slot>.attempt-<n> \| evaluation.attempt-<n> \| merge.attempt-<n>` | `src/core/fusion/artifacts.ts:193` |
-| fusion-artifact | `<attempt-prefix>.calibration-violation.json` | `src/core/fusion/artifacts.ts:208` |
-| fusion-artifact | `<attempt-prefix>.events.jsonl` | `src/core/fusion/artifacts.ts:402` |
-| fusion-artifact | `<attempt-prefix>.prompt.txt` | `src/core/fusion/artifacts.ts:401` |
-| fusion-artifact | `<attempt-prefix>.stderr.txt` | `src/core/fusion/artifacts.ts:403` |
-| fusion-artifact | `blind-candidates.json` | `src/core/fusion/artifacts.ts:373` |
-| fusion-artifact | `budget-plan.json` | `src/core/fusion/artifacts.ts:369` |
-| fusion-artifact | `candidate-<slot>.attempt-<n>.response.md \| candidate-<slot>.attempt-<n>.response.partial.md` | `src/core/fusion/artifacts.ts:203` |
-| fusion-artifact | `candidate-<slot>.attempt-<n>.tool-calls.jsonl` | `src/core/fusion/artifacts.ts:301` |
+| fusion-artifact | `<attempt-prefix> = candidate-<slot>.attempt-<n> \| evaluation.attempt-<n> \| merge.attempt-<n>` | `src/core/fusion/artifacts.ts:219` |
+| fusion-artifact | `<attempt-prefix>.calibration-violation.json` | `src/core/fusion/artifacts.ts:234` |
+| fusion-artifact | `<attempt-prefix>.events.jsonl` | `src/core/fusion/artifacts.ts:429` |
+| fusion-artifact | `<attempt-prefix>.prompt.txt` | `src/core/fusion/artifacts.ts:428` |
+| fusion-artifact | `<attempt-prefix>.stderr.txt` | `src/core/fusion/artifacts.ts:430` |
+| fusion-artifact | `blind-candidates.json` | `src/core/fusion/artifacts.ts:399` |
+| fusion-artifact | `budget-plan.json` | `src/core/fusion/artifacts.ts:395` |
+| fusion-artifact | `candidate-<slot>.attempt-<n>.response.md \| candidate-<slot>.attempt-<n>.response.partial.md` | `src/core/fusion/artifacts.ts:229` |
+| fusion-artifact | `candidate-<slot>.attempt-<n>.tool-calls.jsonl` | `src/core/fusion/artifacts.ts:327` |
 | fusion-artifact | `candidate-<slot>.attempt-<n>.tool-calls.jsonl.seal.json` | `src/core/fusion/child-protocol.ts:17` |
-| fusion-artifact | `canonical-input.json` | `src/core/fusion/artifacts.ts:339` |
-| fusion-artifact | `context-omission-ledger.json` | `src/core/fusion/artifacts.ts:348` |
-| fusion-artifact | `error.json` | `src/core/fusion/artifacts.ts:385` |
-| fusion-artifact | `evaluation.attempt-<n>.response.txt \| evaluation.attempt-<n>.response.partial.txt` | `src/core/fusion/artifacts.ts:203` |
-| fusion-artifact | `evaluation.json` | `src/core/fusion/artifacts.ts:377` |
-| fusion-artifact | `merge.attempt-<n>.response.md \| merge.attempt-<n>.response.partial.md` | `src/core/fusion/artifacts.ts:203` |
-| fusion-artifact | `merged.md` | `src/core/fusion/artifacts.ts:316` |
-| fusion-artifact | `source-policy.private.json` | `src/core/fusion/artifacts.ts:355` |
+| fusion-artifact | `canonical-input.json` | `src/core/fusion/artifacts.ts:365` |
+| fusion-artifact | `context-omission-ledger.json` | `src/core/fusion/artifacts.ts:374` |
+| fusion-artifact | `error.json` | `src/core/fusion/artifacts.ts:411` |
+| fusion-artifact | `evaluation.attempt-<n>.response.txt \| evaluation.attempt-<n>.response.partial.txt` | `src/core/fusion/artifacts.ts:229` |
+| fusion-artifact | `evaluation.json` | `src/core/fusion/artifacts.ts:403` |
+| fusion-artifact | `merge.attempt-<n>.response.md \| merge.attempt-<n>.response.partial.md` | `src/core/fusion/artifacts.ts:229` |
+| fusion-artifact | `merged.md` | `src/core/fusion/artifacts.ts:342` |
+| fusion-artifact | `source-policy.private.json` | `src/core/fusion/artifacts.ts:381` |
 | task-file | `.pi/tasks/<session-id>-<pid>/<task-id>.attestation.json` | `src/core/attested-pi-run.ts:583` |
 | task-file | `.pi/tasks/<session-id>-<pid>/<task-id>.json` | `src/core/registry.ts:808` |
 | task-file | `.pi/tasks/<session-id>-<pid>/<task-id>.output` | `src/core/registry.ts:807` |
@@ -127,20 +127,20 @@ This generated registry lists production environment-variable references, runtim
 | `pi-background-tasks.extension-request.v1` | `src/core/extension-api.ts:15` |
 | `pi-background-tasks.extension-response.v1` | `src/core/extension-api.ts:16` |
 | `pi-background-tasks.extension-terminal.v1` | `src/core/extension-api.ts:17` |
-| `pi-background-tasks.fusion-blind-candidates.v1` | `src/core/fusion/prompts.ts:299` |
+| `pi-background-tasks.fusion-blind-candidates.v1` | `src/core/fusion/prompts.ts:300` |
 | `pi-background-tasks.fusion-budget-plan.v4` | `src/core/fusion/types.ts:25` |
-| `pi-background-tasks.fusion-calibration-violation.v1` | `src/core/fusion/types.ts:27` |
+| `pi-background-tasks.fusion-calibration-violation.v2` | `src/core/fusion/types.ts:27` |
 | `pi-background-tasks.fusion-child-result.v3` | `src/core/fusion/child-protocol.ts:6` |
 | `pi-background-tasks.fusion-child-settlement.v2` | `src/core/fusion/child-protocol.ts:9` |
 | `pi-background-tasks.fusion-claude-cache-observation.v1` | `src/core/fusion/claude-cache.ts:4` |
 | `pi-background-tasks.fusion-context-ledger.v2` | `src/core/fusion/types.ts:23` |
-| `pi-background-tasks.fusion-evaluation-repair-input.v1` | `src/core/fusion/prompts.ts:279` |
+| `pi-background-tasks.fusion-evaluation-repair-input.v1` | `src/core/fusion/prompts.ts:280` |
 | `pi-background-tasks.fusion-evaluation.v1` | `src/core/fusion/types.ts:16` |
 | `pi-background-tasks.fusion-input.v4` | `src/core/fusion/types.ts:14` |
 | `pi-background-tasks.fusion-input.v5` | `src/core/fusion/types.ts:15` |
 | `pi-background-tasks.fusion-manifest.v3` | `src/core/fusion/types.ts:21` |
 | `pi-background-tasks.fusion-manifest.v4` | `src/core/fusion/types.ts:22` |
-| `pi-background-tasks.fusion-merge-input.v1` | `src/core/fusion/prompts.ts:325` |
+| `pi-background-tasks.fusion-merge-input.v1` | `src/core/fusion/prompts.ts:326` |
 | `pi-background-tasks.fusion-models.v1` | `src/core/fusion/types.ts:13` |
 | `pi-background-tasks.fusion-progress.v1` | `src/fusion-extension.ts:57` |
 | `pi-background-tasks.fusion-request.v1` | `src/fusion-extension.ts:58` |
@@ -149,7 +149,8 @@ This generated registry lists production environment-variable references, runtim
 | `pi-background-tasks.fusion-runtime-guard.v1` | `src/core/fusion/child-protocol.ts:19` |
 | `pi-background-tasks.fusion-source-policy.v1` | `src/core/fusion/types.ts:24` |
 | `pi-background-tasks.fusion-tool-call-seal.v1` | `src/core/fusion/child-protocol.ts:16` |
-| `pi-background-tasks.fusion-tool-call.v1` | `src/core/fusion/types.ts:28` |
+| `pi-background-tasks.fusion-tool-call.v1` | `src/core/fusion/types.ts:30` |
+| `pi-background-tasks.fusion-validation-candidate-contract-event.v1` | `src/core/fusion/types.ts:29` |
 | `pi-background-tasks.fusion-validation-candidate.v1` | `src/core/fusion/types.ts:18` |
 | `pi-background-tasks.input-token-calibration.v1` | `src/core/context/token-budget.ts:18` |
 

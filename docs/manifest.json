@@ -89,7 +89,7 @@
       "state": "pass"
     },
     {
-      "authored_body_sha256": "sha256:77a2a9bfeb73a4cda9c65b2559a06e141096ff496d732e1e3d9c4eb1a0ba8616",
+      "authored_body_sha256": "sha256:2cea3292dac7fcb890bb05eb0c0783310671e11c1953c981251ec433b1099cb9",
       "covers_sources": [
         "extensions/fusion-child.ts",
         "src/core/fusion/artifacts.ts",
@@ -788,7 +788,7 @@
     "image": "https://raw.githubusercontent.com/ismailsaleekh/pi-background-tasks/main/logo.png",
     "name": "pi-background-tasks",
     "type": "module",
-    "version": "1.0.6"
+    "version": "1.0.7"
   },
   "public_surface_ids": [
     "command:bg",

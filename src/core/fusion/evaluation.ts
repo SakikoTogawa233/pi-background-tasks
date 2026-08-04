@@ -525,6 +525,67 @@ export interface ParsedFusionValidationCandidateReport {
   limitations: readonly string[];
 }
 
+export type FusionValidationCandidateNormalization =
+  | 'markdown_json_fence'
+  | 'prose_then_markdown_json_fence';
+
+export interface RecoveredFusionValidationCandidateReport {
+  report: ParsedFusionValidationCandidateReport;
+  /** Bare JSON forwarded to the evaluator after explicit, audited recovery. */
+  response: string;
+  normalization: FusionValidationCandidateNormalization;
+}
+
+/**
+ * Recognize exactly one complete Markdown JSON fence, optionally preceded by a
+ * short prose preamble. This is deliberately narrower than generic substring
+ * extraction: trailing prose, nested fences, unlabelled fences, and oversized
+ * preambles remain contract failures.
+ */
+function fencedValidationCandidateJson(text: string): {
+  payload: string;
+  normalization: FusionValidationCandidateNormalization;
+} | undefined {
+  const trimmed = text.trim();
+  const openingPattern = /```json[ \t]*\r?\n/giu;
+  const openings = [...trimmed.matchAll(openingPattern)];
+  if (openings.length !== 1) return undefined;
+  const opening = openings[0];
+  if (opening === undefined) return undefined;
+  const headerEnd = opening.index + opening[0].length;
+  const closing = trimmed.indexOf('```', headerEnd);
+  if (closing < 0 || trimmed.slice(closing + 3).includes('```')) return undefined;
+  if (trimmed.slice(closing + 3).trim().length > 0) return undefined;
+  const preamble = trimmed.slice(0, opening.index).trim();
+  if (Buffer.byteLength(preamble, 'utf8') > 2_000 || preamble.includes('```')) return undefined;
+  const payload = trimmed.slice(headerEnd, closing).trim();
+  if (payload.length === 0 || payload.includes('```')) return undefined;
+  return {
+    payload,
+    normalization: preamble.length === 0
+      ? 'markdown_json_fence'
+      : 'prose_then_markdown_json_fence',
+  };
+}
+
+/**
+ * Defensive recovery for the one observed contract violation shape. Callers
+ * must persist/surface the returned normalization; this function intentionally
+ * does not make the strict parser permissive.
+ */
+export function recoverFencedFusionValidationCandidateReport(
+  text: string,
+  candidateId: FusionCandidateId,
+): RecoveredFusionValidationCandidateReport | undefined {
+  const recovered = fencedValidationCandidateJson(text);
+  if (recovered === undefined) return undefined;
+  return {
+    report: parseFusionValidationCandidateReport(recovered.payload, candidateId),
+    response: recovered.payload,
+    normalization: recovered.normalization,
+  };
+}
+
 export function parseFusionValidationCandidateReport(text: string, candidateId: FusionCandidateId): ParsedFusionValidationCandidateReport {
   let parsed: unknown;
   try {

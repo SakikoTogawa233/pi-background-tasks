@@ -4,11 +4,18 @@ import {
   assertMergerFindingCoverage,
   boundedEvaluationErrors,
   parseFusionEvaluation,
+  parseFusionValidationCandidateReport,
+  recoverFencedFusionValidationCandidateReport,
   renderValidatedFusionValidationReport,
   validateFusionEvaluation,
   validateFusionFindingAccounting,
 } from '../../src/core/fusion/evaluation.js';
-import { FUSION_EVALUATION_SCHEMA_VERSION, FusionError, type FusionValidationFindingAccounting } from '../../src/core/fusion/types.js';
+import {
+  FUSION_EVALUATION_SCHEMA_VERSION,
+  FUSION_VALIDATE_CANDIDATE_SCHEMA_VERSION,
+  FusionError,
+  type FusionValidationFindingAccounting,
+} from '../../src/core/fusion/types.js';
 
 function validEvaluation(): Record<string, unknown> {
   return {
@@ -167,6 +174,34 @@ void describe('fusion evaluation schema', () => {
     const duplicateResult = validateFusionEvaluation(duplicateWithTwoIds);
     assert.equal(duplicateResult.ok, false);
     if (!duplicateResult.ok) assert.match(duplicateResult.errors.join('\n'), /unique/);
+  });
+
+  void it('keeps validation parsing strict while narrowly recovering one audited JSON fence', () => {
+    const report = JSON.stringify({
+      schema_version: FUSION_VALIDATE_CANDIDATE_SCHEMA_VERSION,
+      findings: [],
+      verified: ['read src/file.ts'],
+      limitations: [],
+    });
+    assert.throws(
+      () => parseFusionValidationCandidateReport(`\`\`\`json\n${report}\n\`\`\``, 'A'),
+      /structured JSON only/,
+    );
+    const recovered = recoverFencedFusionValidationCandidateReport(
+      `Validation complete.\n\n\`\`\`json\n${report}\n\`\`\``,
+      'A',
+    );
+    assert.ok(recovered);
+    assert.equal(recovered.normalization, 'prose_then_markdown_json_fence');
+    assert.equal(recovered.response, report);
+    assert.deepEqual(recovered.report.verified, ['read src/file.ts']);
+    assert.equal(
+      recoverFencedFusionValidationCandidateReport(
+        `\`\`\`json\n${report}\n\`\`\`\ntrailing prose`,
+        'A',
+      ),
+      undefined,
+    );
   });
 
   void it('validates validation finding singleton, duplicate, and exclusion contracts', () => {

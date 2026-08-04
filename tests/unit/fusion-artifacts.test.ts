@@ -103,6 +103,7 @@ void describe('fusion artifacts', () => {
       await store.transition('candidates_running');
       await store.recordChildAttempt({
         result: childResult('candidate', 'answer'),
+        systemPrompt: 'system prompt',
         prompt: 'prompt',
         responseKind: 'md',
       });
@@ -192,7 +193,7 @@ void describe('fusion artifacts', () => {
         records: [],
         summary: { count: 2, total_result_bytes: 52, trace_complete: true },
       };
-      await store.recordChildAttempt({ result, prompt: 'prompt', responseKind: 'md' });
+      await store.recordChildAttempt({ result, systemPrompt: 'system prompt', prompt: 'prompt', responseKind: 'md' });
       assert.equal(
         await readFile(join(store.artifactDirAbs, 'candidate-1.attempt-1.tool-calls.jsonl'), 'utf8'),
         logText,
@@ -262,6 +263,7 @@ void describe('fusion artifacts', () => {
         stage: 'candidate',
         slot: 2,
         attempt: 1,
+        systemPrompt: 'system prompt',
         prompt: 'prompt',
         events: Buffer.from('compact-event'),
         partialResponse: Buffer.from('partial response'),

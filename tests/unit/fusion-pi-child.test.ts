@@ -2202,6 +2202,9 @@ void describe('fusion Pi child runner', () => {
     assert.equal(parsed.usage.input, 11);
     assert.equal(parsed.usage.output, 14);
     assert.equal(parsed.usage.totalTokens, 25);
+    assert.equal(parsed.firstRequestUsage.input, 1);
+    assert.equal(parsed.firstRequestUsage.output, 2);
+    assert.equal(parsed.providerRequestCount, 3);
   });
 
   void it('accepts a settled zero-usage provider retry marker bound to the terminal metadata stream', () => {

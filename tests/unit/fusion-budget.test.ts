@@ -1182,6 +1182,8 @@ void describe('fusion stage budgets', () => {
         if (options.stage === 'candidate' && options.slot === 1) {
           result.usage.input = 1_000_000;
           result.usage.totalTokens = 1_000_001;
+          result.firstRequestUsage = { ...result.usage, cost: { ...result.usage.cost } };
+          result.providerRequestCount = 1;
         }
         return result;
       };
@@ -1207,8 +1209,57 @@ void describe('fusion stage budgets', () => {
       );
       const parsed = parseJsonText(artifact);
       assert.ok(typeof parsed === 'object' && parsed !== null);
-      assert.equal(Reflect.get(parsed, 'schema_version'), 'pi-background-tasks.fusion-calibration-violation.v1');
+      assert.equal(Reflect.get(parsed, 'schema_version'), 'pi-background-tasks.fusion-calibration-violation.v2');
+      assert.equal(Reflect.get(parsed, 'observation_scope'), 'first_provider_request');
+      assert.equal(Reflect.get(parsed, 'provider_request_count'), 1);
       assert.equal(Reflect.get(parsed, 'billed_input_tokens'), 1_000_000);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  void it('does not compare a one-request forecast with cumulative agent-loop cache usage', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'pi-fusion-budget-loop-scope-'));
+    try {
+      const runner: FusionChildRunner = (options) => {
+        const result = childResult(
+          options,
+          options.stage === 'evaluation'
+            ? JSON.stringify(evaluation())
+            : options.stage === 'merge'
+              ? 'merged'
+              : 'candidate answer',
+        );
+        result.firstRequestUsage = {
+          input: 2,
+          output: 10,
+          cacheRead: 0,
+          cacheWrite: 100,
+          totalTokens: 112,
+          cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+        };
+        result.providerRequestCount = 49;
+        result.usage = {
+          input: 100,
+          output: 100_000,
+          cacheRead: 4_500_000,
+          cacheWrite: 200_000,
+          totalTokens: 4_800_100,
+          cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+        };
+        return Promise.resolve(result);
+      };
+      const input = canonicalInput('small');
+      const result = await new FusionOrchestrator({ childRunner: runner }).run({
+        source: 'command',
+        cwd: root,
+        canonicalInput: input,
+        canonicalInputSerialized: JSON.stringify(input),
+        contextLedger: ledger,
+        config: defaultFusionModelConfig(),
+        models: models(),
+      });
+      assert.equal(result.details.budget.calibration_warnings.length, 0);
     } finally {
       await rm(root, { recursive: true, force: true });
     }

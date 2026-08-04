@@ -190,6 +190,7 @@ Return only JSON matching this exact closed schema:
   "limitations": ["non-blank statement of what you could not cover"]
 }
 Use an empty findings array when no issues were found; do not omit verified or limitations.
+Do not wrap the JSON in Markdown fences or prose. Emit exactly one bare JSON object.
 
 Do not inflate severity and do not invent issues to appear thorough. If the work is correct, say so plainly in verified/limitations. A report with no findings that names the evidence behind that conclusion is a valid and valuable result; a padded report is not.
 

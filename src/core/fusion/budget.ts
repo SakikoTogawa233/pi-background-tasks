@@ -1122,7 +1122,13 @@ export class FusionBudget {
     const inputSegments = [knownTextSegment(systemPrompt), knownTextSegment(userPrompt)];
     const promptUtf8Bytes = inputSegments.reduce((sum, segment) => sum + segment.bytes, 0);
     const estimate = estimateRouteInput(route, inputSegments);
-    const billedInput = result.usage.input + result.usage.cacheRead + result.usage.cacheWrite;
+    // The forecast is a one-request admission estimate. Compare it only with
+    // the first provider request, never with aggregate agent-loop/cache usage.
+    // Custom child runners predating this observation field remain compatible,
+    // but cannot produce a calibration verdict without like-for-like evidence.
+    const observedUsage = result.firstRequestUsage;
+    if (observedUsage === undefined) return undefined;
+    const billedInput = observedUsage.input + observedUsage.cacheRead + observedUsage.cacheWrite;
     if (billedInput <= estimate.tokens) return undefined;
     const violation: FusionCalibrationViolation = {
       schema_version: FUSION_CALIBRATION_VIOLATION_SCHEMA_VERSION,
@@ -1137,12 +1143,14 @@ export class FusionBudget {
       rate_source: estimate.rateSource,
       prompt_utf8_bytes: promptUtf8Bytes,
       prompt_sha256: sha256Hex(`${systemPrompt}\u0000${userPrompt}`),
+      observation_scope: 'first_provider_request',
+      provider_request_count: result.providerRequestCount ?? 1,
       forecast_input_tokens: estimate.tokens,
       billed_input_tokens: billedInput,
       billed_input_breakdown: {
-        input: result.usage.input,
-        cache_read: result.usage.cacheRead,
-        cache_write: result.usage.cacheWrite,
+        input: observedUsage.input,
+        cache_read: observedUsage.cacheRead,
+        cache_write: observedUsage.cacheWrite,
       },
       under_forecast_tokens: billedInput - estimate.tokens,
       byte_class_breakdown: estimate.byte_class_breakdown,

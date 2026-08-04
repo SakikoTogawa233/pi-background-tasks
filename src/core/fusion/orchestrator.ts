@@ -1,4 +1,4 @@
-import { randomBytes as nodeRandomBytes } from 'node:crypto';
+import { createHash, randomBytes as nodeRandomBytes } from 'node:crypto';
 import { canonicalJson } from '../attested-pi-run.js';
 import { parseJsonText } from '../common.js';
 import { FUSION_BUDGET_POLICY, FusionBudget, assertChildOutputWithinContract } from './budget.js';
@@ -11,6 +11,7 @@ import {
   boundedEvaluationErrors,
   formatEvaluationErrors,
   parseFusionValidationCandidateReport,
+  recoverFencedFusionValidationCandidateReport,
   renderValidatedFusionValidationReport,
   validateFusionEvaluation,
   validateFusionFindingAccounting,
@@ -35,6 +36,7 @@ import {
   FUSION_INPUT_SCHEMA_VERSION,
   FUSION_NO_TOOLS_CAPABILITY,
   FUSION_RESULT_SCHEMA_VERSION,
+  FUSION_VALIDATE_CANDIDATE_SCHEMA_VERSION,
   FusionError,
   addFusionUsage,
   createEmptyFusionUsage,
@@ -169,6 +171,7 @@ function recordFailureInput(
   stage: FusionStage,
   slot: CandidateSlot | undefined,
   attempt: number,
+  systemPrompt: string,
   prompt: string,
   responseKind: 'md' | 'txt',
 ): RecordFusionFailedAttemptInput {
@@ -176,6 +179,7 @@ function recordFailureInput(
     const base: RecordFusionFailedAttemptInput = {
       stage,
       attempt,
+      systemPrompt,
       prompt,
       events: error.events,
       partialResponse: error.response,
@@ -194,6 +198,7 @@ function recordFailureInput(
   const base: RecordFusionFailedAttemptInput = {
     stage,
     attempt,
+    systemPrompt,
     prompt,
     events: Buffer.alloc(0),
     partialResponse: Buffer.alloc(0),
@@ -371,22 +376,123 @@ function anonymousCandidates(
 }
 
 interface ValidationSourceData {
+  candidates: readonly [AnonymousFusionCandidate, AnonymousFusionCandidate, AnonymousFusionCandidate];
   findings: readonly FusionValidationFindingRecord[];
   verified: readonly string[];
   limitations: readonly string[];
 }
 
-function validationSourceData(candidates: readonly [AnonymousFusionCandidate, AnonymousFusionCandidate, AnonymousFusionCandidate]): ValidationSourceData {
+function sha256Text(value: string): string {
+  return createHash('sha256').update(value, 'utf8').digest('hex');
+}
+
+function boundedContractError(error: unknown): string {
+  const value = errorText(error);
+  return value.length <= 1_000 ? value : `${value.slice(0, 999)}…`;
+}
+
+/**
+ * Enforce the validation-candidate contract without making the shared JSON
+ * parser permissive. A single, tightly recognized fenced response is recovered
+ * with a durable warning. One irrecoverable minority report is represented as
+ * an explicit limitation; two or more still fail the workflow loudly.
+ */
+async function prepareValidationSourceData(
+  candidates: readonly [AnonymousFusionCandidate, AnonymousFusionCandidate, AnonymousFusionCandidate],
+  anonymousMap: Record<FusionCandidateId, CandidateSlot>,
+  store: FusionArtifactStore,
+): Promise<ValidationSourceData> {
+  const prepared = candidates.map((candidate) => ({ ...candidate })) as [
+    AnonymousFusionCandidate,
+    AnonymousFusionCandidate,
+    AnonymousFusionCandidate,
+  ];
   const findings: FusionValidationFindingRecord[] = [];
   const verified: string[] = [];
   const limitations: string[] = [];
-  for (const candidate of candidates) {
-    const report = parseFusionValidationCandidateReport(candidate.response, candidate.candidate_id);
-    findings.push(...report.findings);
-    verified.push(...report.verified);
+  let normalizationCount = 0;
+  const failures: Array<{ candidate: AnonymousFusionCandidate; error: string }> = [];
+
+  for (const candidate of prepared) {
+    try {
+      const report = parseFusionValidationCandidateReport(candidate.response, candidate.candidate_id);
+      findings.push(...report.findings);
+      verified.push(...report.verified);
+      limitations.push(...report.limitations);
+      continue;
+    } catch (strictError) {
+      try {
+        const recovered = recoverFencedFusionValidationCandidateReport(
+          candidate.response,
+          candidate.candidate_id,
+        );
+        if (recovered === undefined) throw strictError;
+        await store.recordValidationCandidateContractEvent({
+          candidateId: candidate.candidate_id,
+          slot: anonymousMap[candidate.candidate_id],
+          status: 'normalized',
+          detail: {
+            normalization: recovered.normalization,
+            original_sha256: sha256Text(candidate.response),
+            forwarded_sha256: sha256Text(recovered.response),
+            warning: 'Candidate output violated the bare-JSON contract; a single complete JSON fence was removed and recorded.',
+          },
+        });
+        candidate.response = recovered.response;
+        findings.push(...recovered.report.findings);
+        verified.push(...recovered.report.verified);
+        limitations.push(...recovered.report.limitations);
+        normalizationCount += 1;
+        continue;
+      } catch (recoveryError) {
+        failures.push({
+          candidate,
+          error: boundedContractError(recoveryError === strictError ? strictError : recoveryError),
+        });
+      }
+    }
+  }
+
+  if (normalizationCount > 0) {
+    limitations.push(
+      `${String(normalizationCount)} validation report${normalizationCount === 1 ? '' : 's'} required audited removal of a Markdown JSON wrapper; JSON content was unchanged.`,
+    );
+  }
+
+  for (const failure of failures) {
+    await store.recordValidationCandidateContractEvent({
+      candidateId: failure.candidate.candidate_id,
+      slot: anonymousMap[failure.candidate.candidate_id],
+      status: 'dropped',
+      detail: {
+        response_sha256: sha256Text(failure.candidate.response),
+        error: failure.error,
+        warning: 'Candidate output could not be parsed under the strict or fenced-JSON contract.',
+      },
+    });
+  }
+  if (failures.length > 1) {
+    throw new FusionError(
+      `fusion_validate cannot continue: ${String(failures.length)} of 3 candidate reports violated the structured-output contract`,
+      { code: 'evaluation_invalid', stage: 'candidate' },
+    );
+  }
+  const failure = failures[0];
+  if (failure !== undefined) {
+    const synthetic = canonicalJson({
+      schema_version: FUSION_VALIDATE_CANDIDATE_SCHEMA_VERSION,
+      findings: [],
+      verified: [],
+      limitations: [
+        'This validation report could not be parsed after strict contract checks; no findings or verification claims from it were included.',
+      ],
+    });
+    failure.candidate.response = synthetic;
+    const report = parseFusionValidationCandidateReport(synthetic, failure.candidate.candidate_id);
     limitations.push(...report.limitations);
   }
-  return { findings, verified, limitations };
+
+  return { candidates: prepared, findings, verified, limitations };
 }
 
 function validateEvaluationAccountsForSourceFindings(
@@ -558,11 +664,16 @@ export class FusionOrchestrator {
       input.onProgress?.({ type: 'state', state: 'candidates_complete' });
 
       const shuffled = anonymousCandidates(candidateResults, shuffledSlots(this.randomBytes));
-      const validationData = profile.id === 'validate' ? validationSourceData(shuffled.candidates) : undefined;
+      // Persist the blind mapping before workflow-specific contract parsing
+      // so a failed validation remains attributable to its durable slot artifact.
       await store.setAnonymousMap(shuffled.map);
+      const validationData = profile.id === 'validate'
+        ? await prepareValidationSourceData(shuffled.candidates, shuffled.map, store)
+        : undefined;
+      const evaluationCandidates = validationData?.candidates ?? shuffled.candidates;
       const blindInput = buildBlindEvaluationInput(
         input.canonicalInput,
-        shuffled.candidates,
+        evaluationCandidates,
         validationData?.findings,
       );
       await store.writeBlindCandidates(buildEvaluationPrompt(blindInput));
@@ -585,7 +696,7 @@ export class FusionOrchestrator {
 
       await store.transition('merging');
       input.onProgress?.({ type: 'state', state: 'merging' });
-      const mergeInput = buildMergeInput(input.canonicalInput, shuffled.candidates, evaluation);
+      const mergeInput = buildMergeInput(input.canonicalInput, evaluationCandidates, evaluation);
       const mergePrompt = buildMergePrompt(mergeInput);
       budget.assertStagePrompt('merge', profile.mergerSystemPrompt, mergePrompt);
       input.onProgress?.({ type: 'merge_started' });
@@ -604,7 +715,7 @@ export class FusionOrchestrator {
         'md',
       );
       addFusionUsage(usage, merged.usage);
-      await store.recordChildAttempt({ result: merged, prompt: mergePrompt, responseKind: 'md' });
+      await store.recordChildAttempt({ result: merged, systemPrompt: profile.mergerSystemPrompt, prompt: mergePrompt, responseKind: 'md' });
       await this.recordCalibrationObservation(
         input,
         store,
@@ -729,9 +840,9 @@ export class FusionOrchestrator {
           controller.signal,
           candidateCapability,
           slot,
-          'md',
+          profile.id === 'validate' ? 'txt' : 'md',
         ).then(async (result) => {
-          await store.recordChildAttempt({ result, prompt, responseKind: 'md' });
+          await store.recordChildAttempt({ result, systemPrompt, prompt, responseKind: profile.id === 'validate' ? 'txt' : 'md' });
           await this.recordCalibrationObservation(
             input,
             store,
@@ -866,7 +977,7 @@ export class FusionOrchestrator {
       attempt,
     );
     addFusionUsage(usage, result.usage);
-    await store.recordChildAttempt({ result, prompt, responseKind: 'txt' });
+    await store.recordChildAttempt({ result, systemPrompt, prompt, responseKind: 'txt' });
     await this.recordCalibrationObservation(
       input,
       store,
@@ -966,7 +1077,7 @@ export class FusionOrchestrator {
         if (!signal.aborted && retryableSpawn(error, launchTry) && launchTry === 1) continue;
         addFailedChildUsage(usage, error);
         await store.recordFailedAttempt(
-          recordFailureInput(error, stage, slot, logicalAttempt, userPrompt, responseKind),
+          recordFailureInput(error, stage, slot, logicalAttempt, systemPrompt, userPrompt, responseKind),
         );
         await store.setUsage(usage);
         throw error;

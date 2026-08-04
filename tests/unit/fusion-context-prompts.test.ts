@@ -21,6 +21,7 @@ import {
   FUSION_CANDIDATE_SYSTEM_PROMPT,
   FUSION_CANONICAL_INPUT_GUIDE,
   FUSION_EVALUATION_REPAIR_SYSTEM_PROMPT,
+  FUSION_VALIDATE_CANDIDATE_SYSTEM_PROMPT,
   fusionCandidateSystemPrompt,
   buildBlindEvaluationInput,
   buildCandidatePrompt,
@@ -95,6 +96,12 @@ function sha256(value: string): string {
 }
 
 void describe('fusion context projection and prompts', () => {
+  void it('makes the validation candidate bare-JSON contract explicit', () => {
+    assert.match(FUSION_VALIDATE_CANDIDATE_SYSTEM_PROMPT, /Return only JSON matching this exact closed schema/);
+    assert.match(FUSION_VALIDATE_CANDIDATE_SYSTEM_PROMPT, /Do not wrap the JSON in Markdown fences or prose/);
+    assert.match(FUSION_VALIDATE_CANDIDATE_SYSTEM_PROMPT, /Emit exactly one bare JSON object/);
+  });
+
   void it('trims only command edges and preserves internal whitespace', () => {
     assert.equal(
       normalizeFusionCommandRequest('  line one\n\n  line two  '),

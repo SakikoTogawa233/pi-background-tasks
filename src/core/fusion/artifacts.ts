@@ -7,6 +7,7 @@ import { replaceFileDurable } from '../durable-fs.js';
 import {
   EMPTY_FUSION_USAGE,
   FUSION_MANIFEST_SCHEMA_VERSION,
+  FUSION_VALIDATE_CANDIDATE_CONTRACT_EVENT_SCHEMA_VERSION,
   FusionError,
   cloneFusionUsage,
   type FusionArtifactManifest,
@@ -83,14 +84,39 @@ export interface CreateFusionArtifactStoreOptions {
 
 export interface RecordFusionChildAttemptInput {
   result: FusionChildRunResult;
+  systemPrompt: string;
   prompt: string;
   responseKind: 'md' | 'txt';
 }
+
+export type RecordValidationCandidateContractEventInput =
+  | {
+      candidateId: FusionCandidateId;
+      slot: 1 | 2 | 3;
+      status: 'normalized';
+      detail: {
+        normalization: 'markdown_json_fence' | 'prose_then_markdown_json_fence';
+        original_sha256: string;
+        forwarded_sha256: string;
+        warning: string;
+      };
+    }
+  | {
+      candidateId: FusionCandidateId;
+      slot: 1 | 2 | 3;
+      status: 'dropped';
+      detail: {
+        response_sha256: string;
+        error: string;
+        warning: string;
+      };
+    };
 
 export interface RecordFusionFailedAttemptInput {
   stage: FusionStage;
   slot?: 1 | 2 | 3;
   attempt: number;
+  systemPrompt: string;
   prompt: string;
   events: Buffer;
   partialResponse: Buffer;
@@ -398,6 +424,7 @@ export class FusionArtifactStore {
 
   async recordChildAttempt(input: RecordFusionChildAttemptInput): Promise<void> {
     const prefix = attemptPrefix(input.result.stage, input.result.slot, input.result.attempt);
+    await this.writeArtifact(`${prefix}.system-prompt.txt`, input.systemPrompt);
     const promptRef = await this.writeArtifact(`${prefix}.prompt.txt`, input.prompt);
     const eventsRef = await this.writeArtifact(`${prefix}.events.jsonl`, input.result.events);
     const stderrRef = await this.writeArtifact(`${prefix}.stderr.txt`, input.result.stderr);
@@ -442,8 +469,22 @@ export class FusionArtifactStore {
     return this.writeArtifact(calibrationViolationName(prefix), `${canonicalJson(input.violation)}\n`);
   }
 
+  async recordValidationCandidateContractEvent(
+    input: RecordValidationCandidateContractEventInput,
+  ): Promise<FusionArtifactRef> {
+    const name = `candidate-${String(input.slot)}.output-contract-${input.status}.json`;
+    return this.writeArtifact(name, `${canonicalJson({
+      schema_version: FUSION_VALIDATE_CANDIDATE_CONTRACT_EVENT_SCHEMA_VERSION,
+      ...input.detail,
+      candidate_id: input.candidateId,
+      slot: input.slot,
+      status: input.status,
+    })}\n`);
+  }
+
   async recordFailedAttempt(input: RecordFusionFailedAttemptInput): Promise<void> {
     const prefix = attemptPrefix(input.stage, input.slot, input.attempt);
+    await this.writeArtifact(`${prefix}.system-prompt.txt`, input.systemPrompt);
     const promptRef = await this.writeArtifact(`${prefix}.prompt.txt`, input.prompt);
     const eventsRef = await this.writeArtifact(`${prefix}.events.jsonl`, input.events);
     const stderrRef = await this.writeArtifact(`${prefix}.stderr.txt`, input.stderr);

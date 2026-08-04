@@ -1440,6 +1440,8 @@ export class FusionPiCompactResultParser {
   ): {
     text: string;
     usage: FusionUsage;
+    firstRequestUsage: FusionUsage;
+    providerRequestCount: number;
     provider: string;
     model: string;
     qualifiedId: string;
@@ -1474,6 +1476,8 @@ export class FusionPiCompactResultParser {
     return {
       text: reconstructFinalText(response, final),
       usage: observed.usage,
+      firstRequestUsage: cloneFusionUsage(parsed.records[0]?.usage ?? createEmptyFusionUsage()),
+      providerRequestCount: parsed.records.length,
       provider: final.provider,
       model: final.model,
       qualifiedId: `${final.provider}/${final.model}`,
@@ -2119,6 +2123,8 @@ export async function runPiChild(options: RunPiChildOptions): Promise<FusionChil
       qualifiedId: parsed.qualifiedId,
       text: parsed.text,
       usage: parsed.usage,
+      firstRequestUsage: parsed.firstRequestUsage,
+      providerRequestCount: parsed.providerRequestCount,
       events: parsed.events,
       stderr: parsed.diagnostics,
       exitCode: close.code,

@@ -24,7 +24,9 @@ export const FUSION_CONTEXT_LEDGER_SCHEMA_VERSION = 'pi-background-tasks.fusion-
 export const FUSION_SOURCE_POLICY_SCHEMA_VERSION = 'pi-background-tasks.fusion-source-policy.v1';
 export const FUSION_BUDGET_PLAN_SCHEMA_VERSION = 'pi-background-tasks.fusion-budget-plan.v4';
 export const FUSION_CALIBRATION_VIOLATION_SCHEMA_VERSION =
-  'pi-background-tasks.fusion-calibration-violation.v1';
+  'pi-background-tasks.fusion-calibration-violation.v2';
+export const FUSION_VALIDATE_CANDIDATE_CONTRACT_EVENT_SCHEMA_VERSION =
+  'pi-background-tasks.fusion-validation-candidate-contract-event.v1';
 export const FUSION_TOOL_CALL_LOG_SCHEMA_VERSION = 'pi-background-tasks.fusion-tool-call.v1';
 
 /**
@@ -769,7 +771,12 @@ export interface FusionChildRunResult {
   model: string;
   qualifiedId: string;
   text: string;
+  /** Aggregate usage across the complete child agent loop. */
   usage: FusionUsage;
+  /** First provider request, used for like-for-like prompt forecast calibration. */
+  firstRequestUsage?: FusionUsage;
+  /** Number of provider requests represented by aggregate usage. */
+  providerRequestCount?: number;
   events: Buffer;
   stderr: Buffer;
   exitCode: number;
@@ -962,6 +969,8 @@ export interface FusionCalibrationViolation {
   rate_source: TokenBudgetRateSource;
   prompt_utf8_bytes: number;
   prompt_sha256: string;
+  observation_scope: 'first_provider_request';
+  provider_request_count: number;
   forecast_input_tokens: number;
   billed_input_tokens: number;
   billed_input_breakdown: {
