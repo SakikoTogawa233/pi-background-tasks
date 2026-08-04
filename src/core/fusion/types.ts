@@ -18,6 +18,8 @@ export const FUSION_VALIDATE_CANDIDATE_SCHEMA_VERSION =
   'pi-background-tasks.fusion-validation-candidate.v1';
 export const FUSION_LEGACY_RESULT_SCHEMA_VERSION = 'pi-background-tasks.fusion-result.v4';
 export const FUSION_RESULT_SCHEMA_VERSION = 'pi-background-tasks.fusion-result.v5';
+export const FUSION_COMMITTED_RESULT_SCHEMA_VERSION =
+  'pi-background-tasks.fusion-committed-result.v1';
 export const FUSION_LEGACY_MANIFEST_SCHEMA_VERSION = 'pi-background-tasks.fusion-manifest.v3';
 export const FUSION_MANIFEST_SCHEMA_VERSION = 'pi-background-tasks.fusion-manifest.v4';
 export const FUSION_CONTEXT_LEDGER_SCHEMA_VERSION = 'pi-background-tasks.fusion-context-ledger.v2';
@@ -551,6 +553,13 @@ export interface FusionResultBudgetDetails {
   rate_sources: readonly TokenBudgetRateSource[];
   unknown_provider_warnings: readonly string[];
   calibration_warnings: readonly FusionCalibrationViolation[];
+}
+
+export interface FusionCommittedResultV1 {
+  schema_version: typeof FUSION_COMMITTED_RESULT_SCHEMA_VERSION;
+  run_id: string;
+  merged: FusionArtifactRef;
+  details: FusionResultDetails;
 }
 
 export interface FusionResultDetails {

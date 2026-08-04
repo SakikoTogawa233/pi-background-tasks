@@ -321,9 +321,7 @@ function deferred<T>(): Deferred<T> {
   return { promise, resolve: resolveFn, reject: rejectFn };
 }
 
-function isKillRequester(
-  value: unknown,
-): value is (task: BgTask, signal?: NodeJS.Signals) => void {
+function isKillRequester(value: unknown): value is (task: BgTask, signal?: NodeJS.Signals) => void {
   return typeof value === 'function';
 }
 
@@ -397,12 +395,17 @@ void describe('BackgroundTaskRegistry', () => {
       assert.match(wrappedCommand, /pi\(\) \{ .*pi-telemetry-wrapper\.cjs/);
       assert.ok(wrappedCommand.includes(process.execPath));
       assert.doesNotMatch(wrappedCommand, /pi\(\) \{ node /);
-      const wrapperPath = join(dirname(agentPi.outputAbsPath), `${agentPi.id}.pi-telemetry-wrapper.cjs`);
+      const wrapperPath = join(
+        dirname(agentPi.outputAbsPath),
+        `${agentPi.id}.pi-telemetry-wrapper.cjs`,
+      );
       const wrapperSource = await readFile(wrapperPath, 'utf8');
       assert.match(wrapperSource, /const launch = /);
       assert.match(wrapperSource, /spawn\(launch\.executable, childArgs, \{[^}]*shell: false/);
       assert.doesNotMatch(wrapperSource, /spawn\("pi"/);
-      assert.doesNotThrow(() => new Function('require', 'process', wrapperSource.replace(/^#!.*\n/, '')));
+      assert.doesNotThrow(
+        () => new Function('require', 'process', wrapperSource.replace(/^#!.*\n/, '')),
+      );
 
       const pathQualifiedPi = await h.registry.startTask(h.ctx, '/usr/local/bin/pi -p hello', {
         name: 'Path Pi',
@@ -451,7 +454,10 @@ void describe('BackgroundTaskRegistry', () => {
       assert.equal(task.telemetryWrapped, undefined);
       assert.equal(task.telemetryUnavailableReason, WIN32_CMD_PI_TELEMETRY_UNAVAILABLE_REASON);
       const files = await readdir(dirname(task.outputAbsPath));
-      assert.equal(files.some((file) => file.includes('pi-telemetry-wrapper')), false);
+      assert.equal(
+        files.some((file) => file.includes('pi-telemetry-wrapper')),
+        false,
+      );
       const metadata = parseJsonObject(
         await readFile(task.metadataAbsPath, 'utf8'),
         'metadata must be an object',
@@ -589,13 +595,10 @@ void describe('BackgroundTaskRegistry', () => {
       const { task, child } = await startFakeTask(h, 'Windows Kill');
       await h.registry.stopTask(task, 'user');
       assert.equal(processKillCalled, false);
-      assert.deepEqual(
-        killTreeCalls,
-        [
-          { pid: child.pid, phase: 'terminate' },
-          { pid: child.pid, phase: 'force' },
-        ],
-      );
+      assert.deepEqual(killTreeCalls, [
+        { pid: child.pid, phase: 'terminate' },
+        { pid: child.pid, phase: 'force' },
+      ]);
       assert.deepEqual(child.killCalls, []);
       const windowsSpawn = h.children[0];
       assert.ok(windowsSpawn, 'Windows shell spawn should be recorded');
@@ -742,7 +745,11 @@ void describe('BackgroundTaskRegistry', () => {
       killGraceMs: 20,
       stopWaitMs: 500,
       killTree: (_pid, phase) =>
-        Promise.resolve(phase === 'terminate' ? taskkillOutcome(1, 'soft denied') : taskkillOutcome(5, 'force denied')),
+        Promise.resolve(
+          phase === 'terminate'
+            ? taskkillOutcome(1, 'soft denied')
+            : taskkillOutcome(5, 'force denied'),
+        ),
       childFactory: (pid) =>
         new FakeChild(pid, () => {
           throw new Error('root-only kill must not run');
@@ -1450,6 +1457,84 @@ void describe('BackgroundTaskRegistry', () => {
       await waitFor(() => task.status === 'completed', 'ordinary completion');
       assert.equal(task.attestationPath, undefined);
       assert.equal(existsSync(task.outputAbsPath.replace(/\.output$/, '.attestation.json')), false);
+    } finally {
+      await cleanup(h.root);
+    }
+  });
+
+  void it('tracks managed Fusion completion, durable progress, once-only usage, and cancellation', async () => {
+    const h = await createHarness({ stopWaitMs: 100 });
+    try {
+      let complete: (() => void) | undefined;
+      const completion = new Promise<void>((resolve) => {
+        complete = resolve;
+      });
+      let releaseTerminal: (() => void) | undefined;
+      const terminalPublicationGate = new Promise<void>((resolve) => {
+        releaseTerminal = resolve;
+      });
+      const facts = {
+        runId: 'reason-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+        workflow: 'reason' as const,
+        artifactDir: '.pi/fusion/test/reason-a',
+        artifactDirAbs: join(h.cwd, '.pi', 'fusion', 'test', 'reason-a'),
+        state: 'initializing',
+        usageDelivered: false,
+      };
+      const task = await h.registry.startManagedTask(h.ctx, {
+        id: facts.runId,
+        name: 'fusion reason',
+        command: 'fusion_reason',
+        isAgent: true,
+        completion,
+        cancel: () => undefined,
+        notifyOnCompletion: true,
+        triggerOnCompletion: true,
+        fusion: facts,
+        terminalPublicationGate,
+      });
+      assert.equal(h.children.length, 0, 'managed task must not create a registry child process');
+      await h.registry.updateManagedTask(task, 'candidates_running', 'candidate wave started');
+      assert.equal(task.fusion?.state, 'candidates_running');
+      assert.match(await readFile(task.outputAbsPath, 'utf8'), /candidate wave started/);
+      assert.equal(await h.registry.claimFusionUsage(task), true);
+      assert.equal(await h.registry.claimFusionUsage(task), false);
+      assert.equal(task.fusion?.usageDelivered, true);
+      complete?.();
+      await waitFor(() => task.status === 'completed', 'managed Fusion completion');
+      assert.equal(
+        h.notifications.length,
+        0,
+        'completion must wait behind the launch publication gate',
+      );
+      releaseTerminal?.();
+      await waitFor(() => h.notifications.length === 1, 'gated managed Fusion notification');
+      assert.match(h.notifications[0]?.message.content ?? '', /Call bg_result/);
+
+      let rejectCancelled: ((error: Error) => void) | undefined;
+      const cancelled = new Promise<void>((_resolve, reject) => {
+        rejectCancelled = reject;
+      });
+      const cancelledFacts = {
+        ...facts,
+        runId: 'reason-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+        usageDelivered: false,
+      };
+      const cancelledTask = await h.registry.startManagedTask(h.ctx, {
+        id: cancelledFacts.runId,
+        name: 'fusion reason',
+        command: 'fusion_reason',
+        isAgent: true,
+        completion: cancelled,
+        cancel: () => rejectCancelled?.(new Error('fusion cancelled')),
+        notifyOnCompletion: false,
+        triggerOnCompletion: false,
+        fusion: cancelledFacts,
+        stopWaitMs: 100,
+      });
+      await h.registry.stopTask(cancelledTask, 'user');
+      assert.equal(cancelledTask.status, 'killed');
+      assert.equal(cancelledTask.managedCancelRequested, true);
     } finally {
       await cleanup(h.root);
     }

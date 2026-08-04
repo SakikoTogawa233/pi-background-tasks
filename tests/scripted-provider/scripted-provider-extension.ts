@@ -154,6 +154,7 @@ function responseFor(
   scenario: Scenario,
   callCount: number,
   contract: EventDrivenContractCheck,
+  context: Context,
 ): ScriptedAssistantMessage {
   if (scenario === 'fusion-reason') {
     if (callCount === 1) {
@@ -162,7 +163,27 @@ function responseFor(
         'toolUse',
       );
     }
-    return assistant([text('Parent observed fusion result from fusion_reason.')], 'stop');
+    if (callCount === 2) {
+      return assistant(
+        [text('Fusion launched; waiting for its terminal notification without polling.')],
+        'stop',
+      );
+    }
+    if (callCount === 3) {
+      const transcript = context.messages.map(messageText).join('\n');
+      const match =
+        /<task-id>((?:reason|investigate|research|validate)-[0-9a-f]{32})<\/task-id>/u.exec(
+          transcript,
+        );
+      if (match?.[1] === undefined) {
+        return assistant([text('Fusion terminal notification did not contain a task id.')], 'stop');
+      }
+      return assistant(
+        [toolCall('bg_result', { taskId: match[1], delivery: 'inline' }, 'call-fusion-result')],
+        'toolUse',
+      );
+    }
+    return assistant([text('Parent observed verified Fusion result from bg_result.')], 'stop');
   }
 
   if (scenario === 'json-tool-telemetry') {
@@ -379,7 +400,7 @@ export default function scriptedProviderExtension(pi: ExtensionAPI): void {
       });
       const stream = createAssistantMessageEventStream();
       queueMicrotask(() => {
-        pushMessage(stream, responseFor(scenario, callCount, eventDrivenContract));
+        pushMessage(stream, responseFor(scenario, callCount, eventDrivenContract, context));
       });
       return stream;
     },

@@ -11,8 +11,8 @@ covers_sources: []
 
 <!-- pi-docs:begin name="tool-contract-fusion_research" generator="scripts/docs/generate.mjs" -->
 - Label: **Fusion Research**
-- Source: `src/fusion-extension.ts:1066`
-- Description: Run a five-model Fusion research workflow over explicitly supplied public http(s) URLs. Targeted URL fetch is not web search; fetched pages and URLs are untrusted.
+- Source: `src/fusion-extension.ts:1216`
+- Description: Start a five-model Fusion research workflow as a tracked background task and return immediately after durable preflight. Retrieve the verified result with bg_result after notification. Targeted URL fetch is not web search; fetched pages and URLs are untrusted.
 - Root schema: `object`; additionalProperties: `false`
 
 | Field | Required | Type | Description | Constraints |
@@ -152,6 +152,10 @@ The private `fusion_web_fetch` schema is closed: `{url, extract?: 'text'|'markdo
 - strips script/style/noscript blocks and extracts text or Markdown with table preservation.
 
 Failures use typed error codes such as `invalid_url`, `unsupported_scheme`, `blocked_address`, `dns_failure`, `redirect_limit`, `redirect_blocked`, `response_too_large`, `unsupported_content_type`, `request_timeout`, `network_error`, `extraction_failed`, and `http_error`.
+
+## Background delivery
+
+After durable no-child preflight, the tool returns a tracked background task receipt. Wait for the terminal notification, then call `bg_result({taskId})` once; retrieval verifies the committed result and never truncates. Repository reads are live, so do not mutate relevant files while the task runs.
 
 ## Audit
 

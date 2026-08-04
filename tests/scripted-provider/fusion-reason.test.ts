@@ -14,7 +14,6 @@ import {
   type AgentSession,
 } from '@earendil-works/pi-coding-agent';
 import { parseJsonText } from '../../src/core/common.js';
-import { FUSION_RESULT_SCHEMA_VERSION } from '../../src/core/fusion/types.js';
 import { installFusionFakePi } from '../helpers/fusion-fake-pi.js';
 import { isolatedTestEnv } from '../helpers/normalize.js';
 
@@ -124,11 +123,11 @@ function assistantTexts(session: AgentSession): string[] {
   });
 }
 
-function fusionToolResults(session: AgentSession): JsonRecord[] {
+function toolResults(session: AgentSession, toolName: string): JsonRecord[] {
   return session.sessionManager.getEntries().flatMap((entry) => {
     if (!isRecord(entry) || !isRecord(entry['message'])) return [];
     const message = entry['message'];
-    if (message['role'] === 'toolResult' && message['toolName'] === 'fusion_reason') return [message];
+    if (message['role'] === 'toolResult' && message['toolName'] === toolName) return [message];
     return [];
   });
 }
@@ -219,7 +218,7 @@ afterEach(async () => {
 
 void describe('scripted provider fusion_reason integration', { concurrency: false }, () => {
   void it(
-    'lets the parent model call fusion_reason and consume the exact merged tool result',
+    'lets the parent launch Fusion, avoid polling, and consume the verified bg_result after wake',
     { timeout: 15_000 },
     async (t: TestContext) => {
       // This case intercepts the Pi child by placing a fake `pi` on PATH. That
@@ -239,8 +238,9 @@ void describe('scripted provider fusion_reason integration', { concurrency: fals
       try {
         await h.session.prompt('Use fusion for this scripted task.');
         await waitFor(
-          async () => (await providerEvents(h.eventsPath)).length >= 2,
-          'second parent provider call',
+          async () => (await providerEvents(h.eventsPath)).length >= 4,
+          'fourth parent provider call after background completion and retrieval',
+          15_000,
         );
         await h.session.agent.waitForIdle();
         assert.equal(await fakeCallCount(h.fakeLogPath), 6);
@@ -257,30 +257,53 @@ void describe('scripted provider fusion_reason integration', { concurrency: fals
         );
 
         const events = await providerEvents(h.eventsPath);
-        assert.equal(events.length, 2);
+        assert.equal(events.length, 4);
         assert.match((events[0]?.summaries ?? []).join('\n'), /user:Use fusion/);
         assert.match(
           (events[1]?.summaries ?? []).join('\n'),
-          /toolResult:fusion_reason:Scripted fused answer/,
+          /toolResult:fusion_reason:Started fusion reason in the background/,
+        );
+        assert.doesNotMatch(
+          (events[1]?.summaries ?? []).join('\n'),
+          /toolResult:bg_status|toolResult:bg_logs/,
+        );
+        assert.match(
+          (events[2]?.summaries ?? []).join('\n'),
+          /background-task-notification|<task-id>reason-/,
+        );
+        assert.match(
+          (events[3]?.summaries ?? []).join('\n'),
+          /toolResult:bg_result:.*Scripted fused answer/s,
         );
         assert.ok(
-          assistantTexts(h.session).some((text) => text.includes('Parent observed fusion result')),
+          assistantTexts(h.session).some((text) =>
+            text.includes('Parent observed verified Fusion result'),
+          ),
         );
 
-        const toolResults = fusionToolResults(h.session);
-        assert.equal(toolResults.length, 1);
-        const toolResult = toolResults[0];
-        assert.ok(toolResult, 'fusion tool result should be persisted');
-        const content = toolResult['content'];
-        assert.ok(Array.isArray(content), 'tool content should be an array');
-        assert.equal(
-          isRecord(content[0]) ? content[0]['text'] : undefined,
-          'Scripted fused answer.',
+        const launchResults = toolResults(h.session, 'fusion_reason');
+        assert.equal(launchResults.length, 1);
+        const launchResult = launchResults[0];
+        assert.ok(launchResult, 'Fusion launch result should be persisted');
+        const launchDetails = launchResult['details'];
+        assert.ok(isRecord(launchDetails));
+        assert.equal(launchDetails['schema_version'], 'pi-background-tasks.fusion-launch.v1');
+        assert.equal(Reflect.get(launchResult, 'usage'), undefined);
+
+        const retrievedResults = toolResults(h.session, 'bg_result');
+        assert.equal(retrievedResults.length, 1);
+        const retrieved = retrievedResults[0];
+        assert.ok(retrieved);
+        const content = retrieved['content'];
+        assert.ok(Array.isArray(content));
+        assert.match(
+          String(isRecord(content[0]) ? content[0]['text'] : ''),
+          /Scripted fused answer/,
         );
-        const details = toolResult['details'];
-        assert.ok(isRecord(details), 'fusion details should be an object');
-        assert.equal(details['schema_version'], FUSION_RESULT_SCHEMA_VERSION);
-        assert.equal(isRecord(details['usage']) ? details['usage']['totalTokens'] : undefined, 138);
+        const details = retrieved['details'];
+        assert.ok(isRecord(details));
+        assert.equal(details['schema_version'], 'pi-background-tasks.fusion-result-view.v1');
+        assert.equal(isRecord(details) ? details['usage_delivered'] : undefined, true);
       } finally {
         await disposeHarness(h);
       }

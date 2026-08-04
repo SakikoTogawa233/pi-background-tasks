@@ -1,15 +1,18 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { existsSync } from 'node:fs';
-import { mkdtemp, readFile, readdir, rm, stat } from 'node:fs/promises';
+import { mkdtemp, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { parseJsonText } from '../../src/core/common.js';
 import { FusionArtifactStore } from '../../src/core/fusion/artifacts.js';
 import { defaultFusionModelConfig } from '../../src/core/fusion/config.js';
+import { readFusionCommittedResult } from '../../src/core/fusion/result-package.js';
 import {
+  FUSION_RESULT_SCHEMA_VERSION,
   FUSION_TOOL_CALL_LOG_SCHEMA_VERSION,
   type FusionChildRunResult,
+  type FusionResultDetails,
   type ResolvedFusionModel,
   type ResolvedFusionModels,
 } from '../../src/core/fusion/types.js';
@@ -92,10 +95,7 @@ void describe('fusion artifacts', () => {
       });
       // Normalize separators: the artifact dir uses native path separators, so
       // it is backslash-delimited on Windows.
-      assert.match(
-        store.artifactDir.replaceAll('\\', '/'),
-        /^\.pi\/fusion\/session-id-/,
-      );
+      assert.match(store.artifactDir.replaceAll('\\', '/'), /^\.pi\/fusion\/session-id-/);
       const dirMode = (await stat(store.artifactDirAbs)).mode & 0o777;
       // Windows has no POSIX permission bits; NTFS ACLs are not modelled here.
       if (process.platform !== 'win32') assert.equal(dirMode, 0o700);
@@ -193,9 +193,17 @@ void describe('fusion artifacts', () => {
         records: [],
         summary: { count: 2, total_result_bytes: 52, trace_complete: true },
       };
-      await store.recordChildAttempt({ result, systemPrompt: 'system prompt', prompt: 'prompt', responseKind: 'md' });
+      await store.recordChildAttempt({
+        result,
+        systemPrompt: 'system prompt',
+        prompt: 'prompt',
+        responseKind: 'md',
+      });
       assert.equal(
-        await readFile(join(store.artifactDirAbs, 'candidate-1.attempt-1.tool-calls.jsonl'), 'utf8'),
+        await readFile(
+          join(store.artifactDirAbs, 'candidate-1.attempt-1.tool-calls.jsonl'),
+          'utf8',
+        ),
         logText,
       );
       const manifest = parseManifest(
@@ -205,7 +213,10 @@ void describe('fusion artifacts', () => {
       assert.ok(Array.isArray(attempts));
       const firstAttempt = attempts[0];
       assert.ok(typeof firstAttempt === 'object' && firstAttempt !== null);
-      assert.equal(field(firstAttempt, 'tool_calls_path'), 'candidate-1.attempt-1.tool-calls.jsonl');
+      assert.equal(
+        field(firstAttempt, 'tool_calls_path'),
+        'candidate-1.attempt-1.tool-calls.jsonl',
+      );
       assert.deepEqual(field(firstAttempt, 'tool_calls'), {
         count: 2,
         total_result_bytes: 52,
@@ -236,13 +247,60 @@ void describe('fusion artifacts', () => {
       await store.transition('evaluation_complete');
       await store.transition('merging');
       await assert.rejects(store.transition('completed'), /merged\.md/);
-      await store.writeMerged('final');
+      const merged = await store.writeMerged('final');
+      await assert.rejects(store.transition('completed'), /result\.json/);
+      const details: FusionResultDetails = {
+        schema_version: FUSION_RESULT_SCHEMA_VERSION,
+        run_id: store.runId,
+        workflow: 'reason',
+        source: 'tool',
+        status: 'completed',
+        context: { kind: 'session_projection', policy_id: 'test-policy' },
+        tool_policy: { candidate_tools: [], evaluation_tools: [], merge_tools: [] },
+        artifact_dir: store.artifactDir,
+        models: store.snapshot().models,
+        evaluator_attempts: 1,
+        usage: {
+          input: 0,
+          output: 0,
+          cacheRead: 0,
+          cacheWrite: 0,
+          totalTokens: 0,
+          cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+        },
+        budget: {
+          policy_id: 'test-policy',
+          calibration_version: 'test',
+          route_table: [],
+          rate_sources: [],
+          unknown_provider_warnings: [],
+          calibration_warnings: [],
+        },
+      };
+      await store.writeCommittedResult(merged, details);
       await store.transition('completed');
       const manifest = parseManifest(
         await readFile(join(store.artifactDirAbs, 'manifest.json'), 'utf8'),
       );
       assert.equal(field(manifest, 'state'), 'completed');
       assert.equal(await readFile(join(store.artifactDirAbs, 'merged.md'), 'utf8'), 'final');
+      const verified = await readFusionCommittedResult({
+        artifactDirAbs: store.artifactDirAbs,
+        artifactDir: store.artifactDir,
+        runId: store.runId,
+        workflow: 'reason',
+      });
+      assert.equal(verified.mergedText, 'final');
+      await writeFile(join(store.artifactDirAbs, 'merged.md'), 'tampered', 'utf8');
+      await assert.rejects(
+        readFusionCommittedResult({
+          artifactDirAbs: store.artifactDirAbs,
+          artifactDir: store.artifactDir,
+          runId: store.runId,
+          workflow: 'reason',
+        }),
+        /does not match its committed hash and length/,
+      );
     } finally {
       await rm(root, { recursive: true, force: true });
     }

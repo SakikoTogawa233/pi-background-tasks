@@ -240,7 +240,8 @@ function findTool(h: Harness, name: string): ToolLike {
       name,
       execute: execute as ToolLike['execute'],
     };
-    if (typeof prepare === 'function') tool.prepareArguments = prepare as (args: unknown) => unknown;
+    if (typeof prepare === 'function')
+      tool.prepareArguments = prepare as (args: unknown) => unknown;
     return tool;
   }
   throw new Error(`tool ${name} is not registered`);
@@ -405,83 +406,100 @@ void describe('bg_delegate and bg_result public surface', { concurrency: false }
     },
   );
 
-  void it('gives the child its own session and strips parent identity', { timeout: 30_000 }, async () => {
-    const h = await harness('commit');
-    try {
-      const launch = await runTool(h, 'bg_delegate', { name: 'Isolation', prompt: 'check' });
-      await waitForTerminal(h, String(detail(detail(launch.details, 'task'), 'id')));
-      const artifactDir = await artifactDirOf(h);
-      const argv = JSON.parse(await readFile(join(artifactDir, 'child-argv.json'), 'utf8')) as string[];
-      assert.ok(argv.includes('--session-id'));
-      const sessionDir = argv[argv.indexOf('--session-dir') + 1];
-      assert.ok(sessionDir?.startsWith(artifactDir), 'the child session dir must be task-owned');
-      assert.ok(argv.includes('--no-extensions'));
-      assert.ok(argv.includes('--no-builtin-tools'));
-      const tools = argv[argv.indexOf('--tools') + 1]?.split(',') ?? [];
-      assert.ok(!tools.includes('bash'));
-      assert.ok(!tools.includes('write'));
-      assert.ok(!tools.includes('bg_delegate'));
+  void it(
+    'gives the child its own session and strips parent identity',
+    { timeout: 30_000 },
+    async () => {
+      const h = await harness('commit');
+      try {
+        const launch = await runTool(h, 'bg_delegate', { name: 'Isolation', prompt: 'check' });
+        await waitForTerminal(h, String(detail(detail(launch.details, 'task'), 'id')));
+        const artifactDir = await artifactDirOf(h);
+        const argv = JSON.parse(
+          await readFile(join(artifactDir, 'child-argv.json'), 'utf8'),
+        ) as string[];
+        assert.ok(argv.includes('--session-id'));
+        const sessionDir = argv[argv.indexOf('--session-dir') + 1];
+        assert.ok(sessionDir?.startsWith(artifactDir), 'the child session dir must be task-owned');
+        assert.ok(argv.includes('--no-extensions'));
+        assert.ok(argv.includes('--no-builtin-tools'));
+        const tools = argv[argv.indexOf('--tools') + 1]?.split(',') ?? [];
+        assert.ok(!tools.includes('bash'));
+        assert.ok(!tools.includes('write'));
+        assert.ok(!tools.includes('bg_delegate'));
 
-      const env = JSON.parse(await readFile(join(artifactDir, 'child-env.json'), 'utf8')) as Record<
-        string,
-        unknown
-      >;
-      assert.equal(env['PI_SESSION_ID'], null);
-      assert.equal(env['PI_SESSION_FILE'], null);
-    } finally {
-      await dispose(h);
-    }
-  });
+        const env = JSON.parse(
+          await readFile(join(artifactDir, 'child-env.json'), 'utf8'),
+        ) as Record<string, unknown>;
+        assert.equal(env['PI_SESSION_ID'], null);
+        assert.equal(env['PI_SESSION_FILE'], null);
+      } finally {
+        await dispose(h);
+      }
+    },
+  );
 
-  void it('returns a typed not-ready result while the delegate is running', { timeout: 30_000 }, async () => {
-    const h = await harness('commit');
-    try {
-      const launch = await runTool(h, 'bg_delegate', { name: 'Not ready', prompt: 'slow work' });
-      const taskId = String(detail(detail(launch.details, 'task'), 'id'));
-      // Immediately after launch the task may still be running; either way the
-      // call must return rather than block.
-      const started = Date.now();
-      const result = await runTool(h, 'bg_result', { taskId });
-      assert.ok(Date.now() - started < 5_000, 'bg_result must never block');
-      const state = detail(result.details, 'state');
-      assert.ok(state === 'running' || state === 'committed');
-      if (state === 'running') assert.match(result.text, /never blocks/);
-      await waitForTerminal(h, taskId);
-    } finally {
-      await dispose(h);
-    }
-  });
+  void it(
+    'returns a typed not-ready result while the delegate is running',
+    { timeout: 30_000 },
+    async () => {
+      const h = await harness('commit');
+      try {
+        const launch = await runTool(h, 'bg_delegate', { name: 'Not ready', prompt: 'slow work' });
+        const taskId = String(detail(detail(launch.details, 'task'), 'id'));
+        // Immediately after launch the task may still be running; either way the
+        // call must return rather than block.
+        const started = Date.now();
+        const result = await runTool(h, 'bg_result', { taskId });
+        assert.ok(Date.now() - started < 5_000, 'bg_result must never block');
+        const state = detail(result.details, 'state');
+        assert.ok(state === 'running' || state === 'committed');
+        if (state === 'running') assert.match(result.text, /never blocks/);
+        await waitForTerminal(h, taskId);
+      } finally {
+        await dispose(h);
+      }
+    },
+  );
 
-  void it('reports a child that exits cleanly without committing', { timeout: 30_000 }, async () => {
-    const h = await harness('no-commit');
-    try {
-      const launch = await runTool(h, 'bg_delegate', { name: 'No commit', prompt: 'do nothing' });
-      const taskId = String(detail(detail(launch.details, 'task'), 'id'));
-      await waitForTerminal(h, taskId);
-      await assert.rejects(
-        runTool(h, 'bg_result', { taskId }),
-        (error: unknown) =>
-          error instanceof Error && /child_exited_without_commit/.test(error.message),
-      );
-    } finally {
-      await dispose(h);
-    }
-  });
+  void it(
+    'reports a child that exits cleanly without committing',
+    { timeout: 30_000 },
+    async () => {
+      const h = await harness('no-commit');
+      try {
+        const launch = await runTool(h, 'bg_delegate', { name: 'No commit', prompt: 'do nothing' });
+        const taskId = String(detail(detail(launch.details, 'task'), 'id'));
+        await waitForTerminal(h, taskId);
+        await assert.rejects(
+          runTool(h, 'bg_result', { taskId }),
+          (error: unknown) =>
+            error instanceof Error && /child_exited_without_commit/.test(error.message),
+        );
+      } finally {
+        await dispose(h);
+      }
+    },
+  );
 
-  void it('detects a corrupted answer and never returns its bytes', { timeout: 30_000 }, async () => {
-    const h = await harness('corrupt-answer');
-    try {
-      const launch = await runTool(h, 'bg_delegate', { name: 'Corrupt', prompt: 'x' });
-      const taskId = String(detail(detail(launch.details, 'task'), 'id'));
-      await waitForTerminal(h, taskId);
-      await assert.rejects(
-        runTool(h, 'bg_result', { taskId }),
-        (error: unknown) => error instanceof Error && /answer_hash_mismatch/.test(error.message),
-      );
-    } finally {
-      await dispose(h);
-    }
-  });
+  void it(
+    'detects a corrupted answer and never returns its bytes',
+    { timeout: 30_000 },
+    async () => {
+      const h = await harness('corrupt-answer');
+      try {
+        const launch = await runTool(h, 'bg_delegate', { name: 'Corrupt', prompt: 'x' });
+        const taskId = String(detail(detail(launch.details, 'task'), 'id'));
+        await waitForTerminal(h, taskId);
+        await assert.rejects(
+          runTool(h, 'bg_result', { taskId }),
+          (error: unknown) => error instanceof Error && /answer_hash_mismatch/.test(error.message),
+        );
+      } finally {
+        await dispose(h);
+      }
+    },
+  );
 
   void it('rejects an answer produced on a different route', { timeout: 30_000 }, async () => {
     const h = await harness('route-drift');
@@ -551,7 +569,8 @@ void describe('bg_delegate and bg_result public surface', { concurrency: false }
           prompt: 'x',
           route: { provider: 'nope', model: 'missing' },
         }),
-        (error: unknown) => error instanceof Error && /route_unresolved|not available/.test(error.message),
+        (error: unknown) =>
+          error instanceof Error && /route_unresolved|not available/.test(error.message),
       );
       assert.ok(
         !existsSync(join(h.cwd, '.pi', 'delegate')),
@@ -610,7 +629,9 @@ void describe('bg_delegate and bg_result public surface', { concurrency: false }
         runTool(h, 'bg_result', { taskId }),
         (error: unknown) =>
           isDelegateFailure(error, 'task_unknown') &&
-          /not a bg_delegate task/.test(String(Reflect.get(Object(error), 'message'))),
+          /no retrievable delegate or Fusion result/.test(
+            String(Reflect.get(Object(error), 'message')),
+          ),
       );
     } finally {
       await dispose(h);

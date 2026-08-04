@@ -45,6 +45,7 @@ Every production file under `src/**` and `extensions/**` has exactly one primary
 | `src/core/fusion/orchestrator.ts` | [subsystems/fusion](./subsystems/fusion.md) |
 | `src/core/fusion/pi-child.ts` | [subsystems/fusion](./subsystems/fusion.md) |
 | `src/core/fusion/prompts.ts` | [subsystems/fusion](./subsystems/fusion.md) |
+| `src/core/fusion/result-package.ts` | [subsystems/fusion](./subsystems/fusion.md) |
 | `src/core/fusion/source-policy.ts` | [subsystems/fusion](./subsystems/fusion.md) |
 | `src/core/fusion/types.ts` | [subsystems/fusion](./subsystems/fusion.md) |
 | `src/core/fusion/web-fetch.ts` | [subsystems/fusion](./subsystems/fusion.md) |

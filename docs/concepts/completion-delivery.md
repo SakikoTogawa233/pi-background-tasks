@@ -25,6 +25,7 @@ Background tasks can finish silently, notify the terminal, or notify and wake th
 - `/bg` is display-only by default: it sets `notifyOnCompletion:true` and `triggerOnCompletion:false`.
 - `bg_run` defaults to durable notification plus follow-up turn: `notifyOnCompletion:true` and `triggerOnCompletion:true`.
 - `bg_status` and `bg_logs` are point-in-time inspection tools, not polling primitives.
+- Tool-launched Fusion tasks default to notification plus follow-up wake and are retrieved once with `bg_result`; `/fusion` uses notification-only.
 - A received `<background-task-notification>` is metadata-backed terminal-status truth. The output stream has finished/closed, but ordinary `.output` bytes are not explicitly fsynced. Do not call `bg_status` only to reconfirm status; call `bg_logs` only if output bytes are needed.
 
 ## Notification payload

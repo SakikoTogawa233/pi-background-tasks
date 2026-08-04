@@ -204,8 +204,6 @@ function renderPlainResult(result: TextToolResult, options: ToolRenderResultOpti
 }
 
 export default function backgroundTasksExtension(pi: ExtensionAPI): void {
-  registerFusionExtension(pi);
-
   const seenTaskIds = new Set<string>();
   let currentCtx: ExtensionContext | undefined;
   let dockOpen = false;
@@ -213,7 +211,6 @@ export default function backgroundTasksExtension(pi: ExtensionAPI): void {
   let latestKnownVersion: string | undefined;
   let updateCheckStarted = false;
 
-  let eventService: BackgroundTaskExtensionService | undefined;
   const registry = new BackgroundTaskRegistry({
     onChange: () => {
       updateUi();
@@ -222,15 +219,23 @@ export default function backgroundTasksExtension(pi: ExtensionAPI): void {
       pi.sendMessage(message, options);
     },
     publishTerminal: (task) => {
-      if (!eventService) throw new Error('Background task EventBus service is not installed');
       eventService.publishTerminal(task);
     },
   });
-  eventService = installBackgroundTaskExtensionApi({
+  const eventService: BackgroundTaskExtensionService = installBackgroundTaskExtensionApi({
     events: pi.events,
     registry,
     getContext: () => currentCtx,
     isShuttingDown: () => registry.isShuttingDown(),
+  });
+
+  registerFusionExtension(pi, {
+    startManagedTask: async (ctx, options) => {
+      currentCtx = ctx;
+      return registry.startManagedTask(ctx, options);
+    },
+    snapshot: (task) => registry.snapshot(task),
+    updateManagedTask: (task, state, line) => registry.updateManagedTask(task, state, line),
   });
 
   registerDelegateExtension(pi, {
@@ -240,6 +245,7 @@ export default function backgroundTasksExtension(pi: ExtensionAPI): void {
     },
     snapshot: (task) => registry.snapshot(task),
     resolveTask: (idOrPrefix) => registry.resolveTask(idOrPrefix),
+    claimFusionUsage: (task) => registry.claimFusionUsage(task),
   });
 
   function unseenFinishedTasks(): BgTask[] {
@@ -359,6 +365,11 @@ export default function backgroundTasksExtension(pi: ExtensionAPI): void {
               return result;
             },
             rerunTask: async (task: BackgroundTaskForUi) => {
+              if (task.fusion !== undefined || task.delegate !== undefined) {
+                throw new Error(
+                  'Only shell-command tasks can be rerun from the dock; relaunch this typed workflow through its owning tool.',
+                );
+              }
               const rerunOptions: StartTaskOptions = {
                 name: taskDisplayName(task),
                 isAgent: task.isAgent,
@@ -499,7 +510,7 @@ export default function backgroundTasksExtension(pi: ExtensionAPI): void {
         ctx.ui.notify(`Background task cleanup failed:\n${failures.join('\n')}`, 'error');
       }
     } finally {
-      eventService?.close();
+      eventService.close();
     }
   });
 

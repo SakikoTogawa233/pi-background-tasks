@@ -40,7 +40,7 @@ A finished badge is cleared when that task's detail view is opened, or when `/bg
 
 `/tasks`, `/bg-tasks`, and `Shift+Down` open the same overlay. Non-interactive contexts receive an error notification directing users to `/jobs`, `/logs`, `bg_status`, or `bg_logs`.
 
-The list view supports selection, paging, stop, confirmed stop-all, history toggle, rerun, output path, and close. The detail view shows task identity, status, runtime, output path, description, task-owned model/context/tokens/tools when reported, command, error, and an output tail.
+The list view supports selection, paging, stop, confirmed stop-all, history toggle, rerun, output path, and close. Rerun is shell-task-only: typed delegate and Fusion tasks fail with guidance to relaunch through their owning tool rather than executing their display command as a shell command. The detail view shows task identity, status, runtime, output path, description, task-owned model/context/tokens/tools when reported, command, error, and an output tail.
 
 Detail output semantics:
 

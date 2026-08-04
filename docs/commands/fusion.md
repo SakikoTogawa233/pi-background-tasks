@@ -12,7 +12,7 @@ covers_sources: []
 <!-- pi-docs:begin name="command-contract-fusion" generator="scripts/docs/generate.mjs" -->
 | Command | Description | Provenance |
 | --- | --- | --- |
-| `/fusion` | Run fixed-purpose Fusion reason (no candidate tools) and append the merged result directly. | `src/fusion-extension.ts:891` |
+| `/fusion` | Start fixed-purpose Fusion reason in the background and return immediately. | `src/fusion-extension.ts:996` |
 <!-- pi-docs:end name="command-contract-fusion" -->
 
 Run the fixed-purpose Fusion **reason** workflow from the command line.
@@ -47,20 +47,17 @@ Reason/session-projection input uses schema `pi-background-tasks.fusion-input.v5
 
 Omitted payload bytes are not summarized or previewed for the children. If a fact exists only inside omitted tool output, restate it in the prompt.
 
-## Result delivery
+## Background result delivery
 
-After a successful run, `/fusion` appends two custom messages without asking the parent model to rewrite the answer:
+`/fusion` freezes its reason input, completes durable no-child preflight, registers a managed background task, and returns control immediately. It does not hold a loader open or append a premature result message. The footer dock, `/jobs`, `bg_status`, `bg_logs`, and `bg_kill` operate on the tracked run.
 
-1. a hidden `fusion-request` record for the command request/run id;
-2. a visible `fusion-result` record whose content is the merger's exact text and whose details include run id, artifact directory, model summary, usage/cost, evaluator-attempt count, and budget metadata.
-
-In TUI mode `/fusion` uses a cancellable loader. Cancelling aborts the active child process tree and records a cancelled run when a run directory exists.
+On terminal state the command emits the standard background-task notification without automatically starting a model turn. Retrieve the verified answer with `bg_result({taskId})`; running retrieval is non-blocking, and oversized results become artifact references rather than truncation.
 
 ## Calls and failure shape
 
 A successful run uses three candidate children, one blind evaluator, and one merger. If the first evaluator response is invalid JSON or violates the closed evaluation schema, Fusion performs exactly one evaluator-repair attempt before failing or continuing. Therefore a successful run may have five or six child invocations; preflight failures launch zero children, and candidate/evaluator/merge failures stop the workflow rather than substituting another model.
 
-Failures are reported as `Fusion failed: ...`; tool/stage errors include the artifact directory when one exists. Prompt-budget forecast failures happen before child creation. Child cancellation, timeout, output caps, model-route admission failures, invalid evaluator JSON after repair, invalid compact child metadata, and invalid tool-call audits are loud failures.
+Admission failures are reported immediately as `Fusion failed: ...`; prompt-budget forecast failures happen before child creation. Failures after the receipt become terminal failed tasks whose notification and `bg_result` error preserve stage coordinates and artifact directory. Child cancellation, timeout, output caps, model-route admission failures, invalid evaluator JSON after repair, invalid compact child metadata, and invalid tool-call audits remain loud failures.
 
 ## Related
 

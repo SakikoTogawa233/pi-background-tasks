@@ -176,7 +176,7 @@ send "x"
   );
 
   void it(
-    'renders a Fusion command result directly in the real TUI',
+    'launches Fusion in the background and renders terminal completion in the real TUI',
     { timeout: 65_000 },
     async (t) => {
       if (!(await ptyInputSupported())) {
@@ -188,8 +188,12 @@ send "x"
 send "/fusion pty fusion prompt"
 send "\\r"
 expect {
-  -re "PTY fused answer" {}
-  timeout { puts "FUSION_RESULT_TIMEOUT"; exit 41 }
+  -re "Started fusion reason" {}
+  timeout { puts "FUSION_LAUNCH_TIMEOUT"; exit 41 }
+}
+expect {
+  -re "\\[bg completed\\].*fusion reason" {}
+  timeout { puts "FUSION_TERMINAL_TIMEOUT"; exit 42 }
 }
 `,
         55,
@@ -204,7 +208,8 @@ expect {
           fusionFakeMergedText: 'PTY fused answer.',
         },
       );
-      assert.match(output, /PTY fused answer/);
+      assert.match(output, /Started fusion reason/);
+      assert.match(output, /\[bg completed\].*fusion reason/);
     },
   );
 

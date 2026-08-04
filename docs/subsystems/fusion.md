@@ -5,7 +5,7 @@ mode: mixed
 review_policy: behavioral
 stability: stable
 covers_surfaces: [renderer:fusion-result, workflow:investigate, workflow:reason, workflow:research, workflow:validate]
-covers_sources: [extensions/fusion-child.ts, src/core/fusion/artifacts.ts, src/core/fusion/budget.ts, src/core/fusion/child-protocol.ts, src/core/fusion/claude-cache.ts, src/core/fusion/clean-context.ts, src/core/fusion/config.ts, src/core/fusion/context.ts, src/core/fusion/evaluation.ts, src/core/fusion/orchestrator.ts, src/core/fusion/pi-child.ts, src/core/fusion/prompts.ts, src/core/fusion/source-policy.ts, src/core/fusion/types.ts, src/core/fusion/web-fetch.ts, src/core/fusion/workflows.ts, src/fusion-child-extension.ts, src/fusion-extension.ts, src/ui/fusion-model-selector.ts]
+covers_sources: [extensions/fusion-child.ts, src/core/fusion/artifacts.ts, src/core/fusion/budget.ts, src/core/fusion/child-protocol.ts, src/core/fusion/claude-cache.ts, src/core/fusion/clean-context.ts, src/core/fusion/config.ts, src/core/fusion/context.ts, src/core/fusion/evaluation.ts, src/core/fusion/orchestrator.ts, src/core/fusion/pi-child.ts, src/core/fusion/prompts.ts, src/core/fusion/result-package.ts, src/core/fusion/source-policy.ts, src/core/fusion/types.ts, src/core/fusion/web-fetch.ts, src/core/fusion/workflows.ts, src/fusion-child-extension.ts, src/fusion-extension.ts, src/ui/fusion-model-selector.ts]
 ---
 
 # Fusion subsystem
@@ -36,7 +36,7 @@ Every public tool schema is closed and has no public capability/mode switch. The
 
 ## Commands
 
-`/fusion <prompt>` trims the command text and runs the reason workflow. `/fusion` with no arguments opens the multiline editor when UI is available; editor cancellation or blank edited text returns without child spawn. TUI mode wraps the run in a cancellable loader. Success sends a hidden `fusion-request` custom message and a visible `fusion-result` custom message containing the merger's exact text; the parent model is not asked to rewrite the result.
+`/fusion <prompt>` trims the command text and starts the reason workflow as a managed background task. `/fusion` with no arguments opens the multiline editor when UI is available; editor cancellation or blank edited text returns without child spawn. Durable preflight and task registration finish before the command returns; no loader remains open and no premature result message is appended. Terminal state uses the standard background notification, and `bg_result` verifies and retrieves the committed result.
 
 `/fusion-models` requires TUI mode. It edits five slots (`Candidate 1`, `Candidate 2`, `Candidate 3`, `Evaluator`, `Merger`), allows duplicates, supports `$current`, shows unavailable configured choices, and persists `fusion-models.json` with schema `pi-background-tasks.fusion-models.v1`. Saves are lock-protected, atomic, and revision-safe: if the file changed after load, the selector reports a config conflict instead of overwriting concurrent work.
 
@@ -51,11 +51,13 @@ Investigate, research, and validate receive clean-task canonical input: exactly 
 All workflows use the same orchestrator shape:
 
 1. plan budget and write artifacts before any child exists;
-2. run three candidate children in parallel;
-3. anonymize candidate identities as A/B/C before evaluation;
-4. run a blind no-tool evaluator;
-5. run one no-tool evaluator-repair child only if the first evaluator JSON is invalid or schema-invalid;
-6. run a no-tool merger.
+2. pause at a no-child-yet readiness barrier while the managed background-task receipt becomes durable;
+3. run three candidate children in parallel;
+4. anonymize candidate identities as A/B/C before evaluation;
+5. run a blind no-tool evaluator;
+6. run one no-tool evaluator-repair child only if the first evaluator JSON is invalid or schema-invalid;
+7. run a no-tool merger;
+8. durably commit `merged.md` plus manifest-bound `result.json`, then publish terminal task state.
 
 Do not describe Fusion as unconditionally exactly five model calls. A completed run may use five or six child invocations, while preflight failures use zero; candidate failures, cancellation, spawn retry, output caps, or invalid repair alter observed attempts.
 
@@ -104,13 +106,15 @@ Output contracts are checked after durable attempt recording: candidate response
 
 ## Artifacts, usage, and lifecycle
 
-Run artifacts are private local evidence under `.pi/fusion/<session-id>-<pid>/<run-id>/`. They include `manifest.json`, `canonical-input.json`, `budget-plan.json`, per-attempt prompts/events/stderr/responses, optional partial responses for failed attempts, optional tool-call logs/seals, `blind-candidates.json`, `evaluation.json`, `merged.md`, `error.json`, and workflow-specific context/source-policy artifacts.
+Run artifacts are private local evidence under `.pi/fusion/<session-id>-<pid>/<run-id>/`. They include `manifest.json`, `canonical-input.json`, `budget-plan.json`, per-attempt prompts/events/stderr/responses, optional partial responses for failed attempts, optional tool-call logs/seals, `blind-candidates.json`, `evaluation.json`, `merged.md`, manifest-bound `result.json`, `error.json`, and workflow-specific context/source-policy artifacts. `bg_result` verifies manifest state, fixed artifact references, byte lengths, SHA-256 values, UTF-8, run/workflow identity, and result details before returning merged bytes.
 
 Artifact writes use durable private temp-file/fsync/rename. Manifests enforce legal state transitions and record config, resolved models, fixed capabilities, context policy, tool policy, anonymous map, attempts, artifact refs, cumulative usage, and errors. Successful, failed, and cancelled observed attempts preserve complete Pi usage/cost components; public tool results clone the same `Usage` shape.
 
 For tool-enabled children, the private audit journal remains open across every low-level `agent_end`, because Pi may still retry, compact and retry, or process a queued continuation. Only terminal `agent_settled` can exclusively publish the complete hash/count/byte seal. Runtime-guard refusal latches process failure, makes that seal incomplete, and forces the result settlement to failed. The child emits one closed `pi-background-tasks.fusion-runtime-guard.v1` stderr frame containing the refusal code, route capacities, request/tool ordinals, exact payload byte count and SHA-256, conservative token estimate, and a bounded message; it never emits the payload itself. The parent validates this frame and reports typed `child_runtime_budget_exceeded` for runtime capacity/loop refusals or `child_cache_policy_invalid` for Claude cache-policy refusal, instead of accepting a later clean-looking result or reducing it to an unexplained exit code. Tool activity after finalization, duplicate settlement, pre-settlement shutdown, extension diagnostics, malformed/duplicate runtime-guard frames, and missing/failed/stale seals are fatal. This lifecycle requires Pi 0.81.1 or newer; older Pi lines do not expose the required terminal event and are not claimed as compatible.
 
-Cancellation and shutdown are loud and durable when a run store exists. The extension tracks active runs, links external abort signals, aborts on session shutdown/reload, and waits for settlement. Child processes have a 30 minute wall timeout, 20 minute idle watchdog, SIGTERM grace, SIGKILL wait, process-group kill on POSIX, bounded stdout/stderr, and cleanup-error propagation.
+The four public Fusion tools return a background launch receipt after the readiness barrier. Tool-launched runs default to terminal notification plus follow-up wake; `/fusion` uses notification-only. The first successful `bg_result` retrieval durably claims and attaches complete Fusion usage exactly once; repeated retrieval returns the answer without duplicating session accounting. Running retrieval never waits.
+
+Cancellation and shutdown are loud and durable when a run store exists. The extension tracks active runs, managed tasks own their abort controllers, `bg_kill` and session shutdown abort them, and terminal task publication waits for workflow settlement. Child processes have a 30 minute wall timeout, 20 minute idle watchdog, SIGTERM grace, SIGKILL wait, process-group kill on POSIX, bounded stdout/stderr, and cleanup-error propagation.
 
 ## Troubleshooting
 

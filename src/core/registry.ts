@@ -28,6 +28,7 @@ import {
   type KillKind,
   type StartAttestedPiTaskOptions,
   type StartDelegateTaskOptions,
+  type StartManagedTaskOptions,
   type StartTaskOptions,
   type TaskContextUsage,
   type TaskStatus,
@@ -740,11 +741,13 @@ export class BackgroundTaskRegistry {
     this.killProcess = options.killProcess ?? process.kill.bind(process);
     this.platform = options.platform ?? process.platform;
     this.env = options.env ?? process.env;
-    this.killTree = options.killTree ?? ((pid, phase, signal) => {
-      const taskkillOptions: WindowsTaskkillOptions =
-        signal === undefined ? { env: this.env } : { env: this.env, signal };
-      return runWindowsTaskkill(pid, phase, taskkillOptions);
-    });
+    this.killTree =
+      options.killTree ??
+      ((pid, phase, signal) => {
+        const taskkillOptions: WindowsTaskkillOptions =
+          signal === undefined ? { env: this.env } : { env: this.env, signal };
+        return runWindowsTaskkill(pid, phase, taskkillOptions);
+      });
     this.makeTaskIdFn = options.makeTaskId ?? defaultTaskId;
     this.now = options.now ?? Date.now;
     this.maxOutputBytes = options.maxOutputBytes ?? MAX_OUTPUT_BYTES;
@@ -869,7 +872,8 @@ export class BackgroundTaskRegistry {
       let commandToSpawn = normalizedCommand;
       if (piTelemetryRequested) {
         if (baseInvocation.dialect === 'posix') {
-          if (piTelemetryLaunch === undefined) throw new Error('Pi telemetry launch spec was not resolved');
+          if (piTelemetryLaunch === undefined)
+            throw new Error('Pi telemetry launch spec was not resolved');
           const wrapperAbsPath = join(dir.abs, `${id}.pi-telemetry-wrapper.cjs`);
           await writeFile(
             wrapperAbsPath,
@@ -960,6 +964,128 @@ export class BackgroundTaskRegistry {
       await this.finalizeTask(task, 'failed', null, undefined, message);
       throw new Error(`Failed to start background task: ${message}`);
     }
+  }
+
+  /**
+   * Track an in-process asynchronous workflow through the same durable task,
+   * notification, status, log, and cancellation surfaces as child processes.
+   * The supplied completion promise must own all workflow cleanup before it
+   * settles; terminal publication happens only after that settlement.
+   */
+  async startManagedTask(
+    ctx: BackgroundTaskContext,
+    request: StartManagedTaskOptions,
+  ): Promise<BgTask> {
+    if (this.shuttingDown)
+      throw new Error('Cannot start a managed background task while Pi is shutting down');
+    if (!/^[a-zA-Z0-9_.-]+$/u.test(request.id))
+      throw new Error(`Managed background task id is invalid: ${request.id}`);
+    if (this.tasks.has(request.id))
+      throw new Error(`Background task id already exists: ${request.id}`);
+
+    const dir = await this.ensureRuntimeDir(ctx);
+    const outputAbsPath = join(dir.abs, `${request.id}.output`);
+    const metadataAbsPath = join(dir.abs, `${request.id}.json`);
+    const outputPath = join(dir.display, `${request.id}.output`);
+    const task: BgTask = {
+      id: request.id,
+      name: normalizeTaskName(request.name) ?? 'Managed background task',
+      command: request.command,
+      description: request.description,
+      status: 'running',
+      outputPath,
+      outputAbsPath,
+      metadataAbsPath,
+      cwd: ctx.cwd,
+      startTime: this.now(),
+      exitCode: undefined,
+      pid: undefined,
+      bytesWritten: 0,
+      isAgent: request.isAgent,
+      notified: false,
+      notifyOnCompletion: request.notifyOnCompletion,
+      triggerOnCompletion: request.triggerOnCompletion,
+      fusion: request.fusion,
+      managedCancel: request.cancel,
+      managedStopWaitMs: request.stopWaitMs,
+      terminalPublicationGate: request.terminalPublicationGate,
+      waiters: [],
+    };
+    this.tasks.set(task.id, task);
+    const stream = createWriteStream(outputAbsPath, { flags: 'a', encoding: 'utf8' });
+    task.stream = stream;
+    stream.on('error', (error) => {
+      task.error = `Output file write failed: ${error.message}`;
+      if (task.status === 'running' && !task.managedCancelRequested) {
+        task.managedCancelRequested = true;
+        try {
+          request.cancel();
+        } catch (cancelError) {
+          task.error = `${task.error}; cancellation failed: ${BackgroundTaskRegistry.errorMessage(cancelError)}`;
+        }
+      }
+    });
+
+    try {
+      await this.writeMetadata(task);
+      this.onChange();
+    } catch (error) {
+      this.tasks.delete(task.id);
+      if (!stream.destroyed) stream.destroy();
+      try {
+        request.cancel();
+      } catch (cancelError) {
+        this.logger.error(
+          `[background-tasks] managed task cancellation after metadata failure also failed for ${task.id}:`,
+          cancelError,
+        );
+      }
+      throw new Error(
+        `Failed to register managed background task: ${BackgroundTaskRegistry.errorMessage(error)}`,
+      );
+    }
+
+    void request.completion
+      .then(
+        () => this.finalizeTask(task, 'completed', 0),
+        (error: unknown) => {
+          const message = BackgroundTaskRegistry.errorMessage(error);
+          const killed = task.killKind === 'user' || task.killKind === 'shutdown';
+          return this.finalizeTask(task, killed ? 'killed' : 'failed', null, undefined, message);
+        },
+      )
+      .catch((error: unknown) => {
+        this.logger.error(
+          `[background-tasks] managed task finalization failed for ${task.id}:`,
+          error,
+        );
+      });
+    return task;
+  }
+
+  async updateManagedTask(task: BgTask, state: string, line?: string): Promise<void> {
+    if (task.status !== 'running' || task.fusion === undefined) return;
+    task.fusion.state = state;
+    if (line !== undefined && line.length > 0) this.writeNotice(task, `${line}\n`);
+    await this.writeMetadata(task);
+    this.onChange();
+  }
+
+  /** Claim deferred Fusion usage exactly once before returning it from bg_result. */
+  async claimFusionUsage(task: BgTask): Promise<boolean> {
+    if (task.fusion === undefined) throw new Error(`Task ${task.id} is not a Fusion task`);
+    let claimed = false;
+    const write = async () => {
+      if (!task.fusion || task.fusion.usageDelivered) return;
+      task.fusion.usageDelivered = true;
+      await writeJsonAtomic(task.metadataAbsPath, snapshot(task));
+      claimed = true;
+    };
+    const previous = task.metadataWriteChain ?? Promise.resolve();
+    const next = previous.then(write, write);
+    task.metadataWriteChain = next.catch(() => undefined);
+    await next;
+    return claimed;
   }
 
   /**
@@ -1420,15 +1546,16 @@ export class BackgroundTaskRegistry {
     task.killKind = kind;
     if (reason) task.error = reason;
     this.requestKill(task, 'SIGTERM');
+    const stopWaitMs = task.managedStopWaitMs ?? this.stopWaitMs;
     const stopped =
-      this.platform === 'win32'
-        ? await this.waitForEndOrWindowsForceFailure(task, this.stopWaitMs)
-        : await this.waitForEnd(task, this.stopWaitMs);
+      this.platform === 'win32' && task.managedCancel === undefined
+        ? await this.waitForEndOrWindowsForceFailure(task, stopWaitMs)
+        : await this.waitForEnd(task, stopWaitMs);
     const forceFailure = this.windowsKillStates.get(task)?.forceFailure;
     if (forceFailure !== undefined) throw forceFailure;
     if (!stopped) {
       throw new Error(
-        `Task ${task.id} did not exit within ${formatDuration(this.stopWaitMs)} after SIGTERM/SIGKILL`,
+        `Task ${task.id} did not exit within ${formatDuration(stopWaitMs)} after cancellation`,
       );
     }
     return task;
@@ -1880,7 +2007,10 @@ export class BackgroundTaskRegistry {
     const rejectForceReady = rejectForce;
     state.forcePromise = forcePromise;
     void forcePromise.catch((error: unknown) => {
-      this.logger.error(`[background-tasks] Windows force tree termination failed for ${task.id}:`, error);
+      this.logger.error(
+        `[background-tasks] Windows force tree termination failed for ${task.id}:`,
+        error,
+      );
     });
 
     this.clearKillEscalationTimer(task);
@@ -1922,7 +2052,11 @@ export class BackgroundTaskRegistry {
           resolveForceReady();
           return;
         }
-        const failure = this.makeWindowsForceFailure(task, pid, BackgroundTaskRegistry.errorMessage(error));
+        const failure = this.makeWindowsForceFailure(
+          task,
+          pid,
+          BackgroundTaskRegistry.errorMessage(error),
+        );
         this.recordWindowsForceFailure(task, failure);
         rejectForceReady(failure);
       },
@@ -1964,6 +2098,19 @@ export class BackgroundTaskRegistry {
   private requestKill(task: BgTask, signal: NodeJS.Signals = 'SIGTERM'): void {
     if (task.status !== 'running') {
       throw new Error(`Task ${task.id} is ${task.status}, not running`);
+    }
+    if (task.managedCancel !== undefined) {
+      if (task.managedCancelRequested) return;
+      task.managedCancelRequested = true;
+      try {
+        task.managedCancel();
+      } catch (error) {
+        throw new Error(
+          `Could not cancel managed task ${task.id}: ${BackgroundTaskRegistry.errorMessage(error)}`,
+        );
+      }
+      task.killSignalSent = true;
+      return;
     }
     if (!task.child) {
       throw new Error(`Task ${task.id} has no child process handle`);
@@ -2145,6 +2292,12 @@ export class BackgroundTaskRegistry {
       task.exitCode === undefined ? '' : `\n  <exit-code>${String(task.exitCode)}</exit-code>`;
     const error = task.error ? `\n  <error>${escapeXml(task.error)}</error>` : '';
     const taskName = taskDisplayName(task);
+    const guidance =
+      task.fusion === undefined
+        ? 'Terminal state and output metadata are durable. Do not call bg_status to reconfirm; use bg_logs only if output is needed.'
+        : task.status === 'completed'
+          ? `Fusion result is durably committed at ${task.fusion.artifactDir}. Call bg_result({taskId:${JSON.stringify(task.id)}}) once to retrieve it; do not poll.`
+          : `Fusion ended ${task.status}. Inspect the preserved artifacts at ${task.fusion.artifactDir}; do not poll.`;
     const content = [
       '<background-task-notification>',
       `  <task-id>${task.id}</task-id>`,
@@ -2154,7 +2307,7 @@ export class BackgroundTaskRegistry {
       error,
       `  <output-file>${escapeXml(task.outputPath)}</output-file>`,
       `  <summary>${escapeXml(`Background task ${JSON.stringify(taskName)} ${task.status}`)}</summary>`,
-      '  <guidance>Terminal state and output metadata are durable. Do not call bg_status to reconfirm; use bg_logs only if output is needed.</guidance>',
+      `  <guidance>${escapeXml(guidance)}</guidance>`,
       '</background-task-notification>',
     ]
       .filter(Boolean)
@@ -2250,13 +2403,27 @@ export class BackgroundTaskRegistry {
     for (const waiter of task.waiters.splice(0)) waiter();
     this.onChange();
     this.publishTerminal(task);
-    try {
-      this.notifyCompletion(task);
-    } catch (notificationError) {
-      this.logger.error(
-        `[background-tasks] notification failed for ${task.id}:`,
-        notificationError,
-      );
+    let deliveryGateReady = true;
+    if (task.terminalPublicationGate !== undefined) {
+      try {
+        await task.terminalPublicationGate;
+      } catch (error) {
+        deliveryGateReady = false;
+        this.logger.error(
+          `[background-tasks] completion delivery gate failed for ${task.id}:`,
+          error,
+        );
+      }
+    }
+    if (deliveryGateReady) {
+      try {
+        this.notifyCompletion(task);
+      } catch (notificationError) {
+        this.logger.error(
+          `[background-tasks] notification failed for ${task.id}:`,
+          notificationError,
+        );
+      }
     }
     try {
       await this.writeMetadata(task);

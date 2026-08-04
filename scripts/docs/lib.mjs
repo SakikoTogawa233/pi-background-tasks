@@ -1429,6 +1429,7 @@ function runtimeArtifacts(ts, root) {
     { kind: 'fusion-artifact', value: 'blind-candidates.json', source: source('src/core/fusion/artifacts.ts', 'blind-candidates.json') },
     { kind: 'fusion-artifact', value: 'evaluation.json', source: source('src/core/fusion/artifacts.ts', 'evaluation.json') },
     { kind: 'fusion-artifact', value: 'merged.md', source: source('src/core/fusion/artifacts.ts', 'merged.md') },
+    { kind: 'fusion-artifact', value: 'result.json', source: source('src/core/fusion/artifacts.ts', 'result.json') },
     { kind: 'fusion-artifact', value: 'error.json', source: source('src/core/fusion/artifacts.ts', 'error.json') },
     { kind: 'fusion-artifact', value: '<attempt-prefix> = candidate-<slot>.attempt-<n> | evaluation.attempt-<n> | merge.attempt-<n>', source: sourceText('src/core/fusion/artifacts.ts', 'function attemptPrefix') },
     { kind: 'fusion-artifact', value: '<attempt-prefix>.prompt.txt', source: source('src/core/fusion/artifacts.ts', '.prompt.txt') },

@@ -224,7 +224,8 @@ function addExportedPathSyncViolations(
   file: string,
   source: string,
 ): void {
-  const exportedFunction = /\bexport\s+(?:async\s+)?function\s+([A-Za-z_$][\w$]*)\s*\(\s*([A-Za-z_$][\w$]*)\b/g;
+  const exportedFunction =
+    /\bexport\s+(?:async\s+)?function\s+([A-Za-z_$][\w$]*)\s*\(\s*([A-Za-z_$][\w$]*)\b/g;
   for (const match of source.matchAll(exportedFunction)) {
     const name = match[1];
     const parameter = match[2];
@@ -234,11 +235,16 @@ function addExportedPathSyncViolations(
       isPathSyncHelperName(name) &&
       isPathLikeParameter(parameter)
     ) {
-      violations.push({ file, rule: 'exported path sync helper', excerpt: compactExcerpt(match[0]) });
+      violations.push({
+        file,
+        rule: 'exported path sync helper',
+        excerpt: compactExcerpt(match[0]),
+      });
     }
   }
 
-  const exportedConst = /\bexport\s+const\s+([A-Za-z_$][\w$]*)\s*=\s*(?:async\s*)?\(?\s*([A-Za-z_$][\w$]*)\b/g;
+  const exportedConst =
+    /\bexport\s+const\s+([A-Za-z_$][\w$]*)\s*=\s*(?:async\s*)?\(?\s*([A-Za-z_$][\w$]*)\b/g;
   for (const match of source.matchAll(exportedConst)) {
     const name = match[1];
     const parameter = match[2];
@@ -248,7 +254,11 @@ function addExportedPathSyncViolations(
       isPathSyncHelperName(name) &&
       isPathLikeParameter(parameter)
     ) {
-      violations.push({ file, rule: 'exported path sync helper', excerpt: compactExcerpt(match[0]) });
+      violations.push({
+        file,
+        rule: 'exported path sync helper',
+        excerpt: compactExcerpt(match[0]),
+      });
     }
   }
 
@@ -256,7 +266,11 @@ function addExportedPathSyncViolations(
   for (const match of source.matchAll(exportedList)) {
     const names = match[1];
     if (names !== undefined && names.split(',').some((name) => isPathSyncHelperName(name.trim()))) {
-      violations.push({ file, rule: 'exported path sync helper', excerpt: compactExcerpt(match[0]) });
+      violations.push({
+        file,
+        rule: 'exported path sync helper',
+        excerpt: compactExcerpt(match[0]),
+      });
     }
   }
 }
@@ -266,14 +280,19 @@ function addSwallowedSyncViolations(
   file: string,
   source: string,
 ): void {
-  const syncTryCatch = /try\s*\{(?:(?!\}\s*catch)[\s\S])*?\.sync\s*\([^)]*\)[\s\S]*?\}\s*catch\s*(?:\([^)]*\))?\s*\{([\s\S]*?)\}/g;
+  const syncTryCatch =
+    /try\s*\{(?:(?!\}\s*catch)[\s\S])*?\.sync\s*\([^)]*\)[\s\S]*?\}\s*catch\s*(?:\([^)]*\))?\s*\{([\s\S]*?)\}/g;
   for (const match of source.matchAll(syncTryCatch)) {
     const body = match[1] ?? '';
     const trimmed = body.trim();
-    const recordsFailure = /failure\(\s*['"]sync_(?:file|directory)['"]/.test(body) ||
-      /throwDurable\b/.test(body);
+    const recordsFailure =
+      /failure\(\s*['"]sync_(?:file|directory)['"]/.test(body) || /throwDurable\b/.test(body);
     const throwsImmediately = /^throw\b/.test(trimmed);
-    if (trimmed.length === 0 || /\breturn\b/.test(body) || (!recordsFailure && !throwsImmediately)) {
+    if (
+      trimmed.length === 0 ||
+      /\breturn\b/.test(body) ||
+      (!recordsFailure && !throwsImmediately)
+    ) {
       violations.push({ file, rule: 'silent sync catch', excerpt: compactExcerpt(match[0] ?? '') });
     }
   }
@@ -318,8 +337,10 @@ function isolatedNpmEnv(rootDir: string): NodeJS.ProcessEnv {
 function offlineNpmEnv(rootDir: string): NodeJS.ProcessEnv {
   const env = isolatedNpmEnv(rootDir);
   const home = process.env['HOME'] ?? process.env['USERPROFILE'];
-  const cache = process.env['NPM_CONFIG_CACHE'] ?? (home === undefined ? undefined : join(home, '.npm'));
-  if (cache === undefined) throw new Error('npm cache path is required for offline package install');
+  const cache =
+    process.env['NPM_CONFIG_CACHE'] ?? (home === undefined ? undefined : join(home, '.npm'));
+  if (cache === undefined)
+    throw new Error('npm cache path is required for offline package install');
   env['NPM_CONFIG_CACHE'] = cache;
   env['npm_config_cache'] = cache;
   env['NPM_CONFIG_REGISTRY'] = 'https://registry.npmjs.org/';
@@ -359,7 +380,10 @@ void describe('package', () => {
     assert.ok(p.keywords.includes('pi-package'));
     assert.ok(p.keywords.includes('pi-extension'));
     assert.deepEqual(p.pi.extensions, ['./extensions/background-tasks.ts']);
-    assert.equal(p.pi.image, 'https://raw.githubusercontent.com/ismailsaleekh/pi-background-tasks/main/logo.png');
+    assert.equal(
+      p.pi.image,
+      'https://raw.githubusercontent.com/ismailsaleekh/pi-background-tasks/main/logo.png',
+    );
     assert.match(p.scripts['test:agent-loop'] ?? '', /scripted-provider/);
     assert.match(p.scripts['test:full'] ?? '', /test:agent-loop/);
     assert.match(p.scripts['test:compat'] ?? '', /test-compat/);
@@ -397,6 +421,7 @@ void describe('package', () => {
       'src/core/fusion/child-protocol.ts',
       'src/core/fusion/budget.ts',
       'src/core/fusion/workflows.ts',
+      'src/core/fusion/result-package.ts',
       'src/fusion-extension.ts',
       'src/fusion-child-extension.ts',
       'src/core/context/visible-conversation-v2.ts',
@@ -420,7 +445,7 @@ void describe('package', () => {
       assert.ok(existsSync(new URL(f, root)), f);
 
     const extensionSource = await text('src/extension.ts');
-    assert.match(extensionSource, /registerFusionExtension\(pi\)/);
+    assert.match(extensionSource, /registerFusionExtension\(pi, \{/);
     assert.match(extensionSource, /registerDelegateExtension\(pi, \{/);
     assert.match(p.scripts['test:hook-contract'] ?? '', /pi-hook-contract/);
     assert.match(
@@ -578,14 +603,25 @@ void describe('package', () => {
       /duplicates canonical URL/,
     );
 
-    for (const schema of [FusionReasonParams, FusionInvestigateParams, FusionResearchParams, FusionValidateParams]) {
+    for (const schema of [
+      FusionReasonParams,
+      FusionInvestigateParams,
+      FusionResearchParams,
+      FusionValidateParams,
+    ]) {
       assert.equal(Reflect.get(schema, 'additionalProperties'), false);
     }
     const investigateProperties = Reflect.get(FusionInvestigateParams, 'properties');
-    assert.equal(Reflect.get(Reflect.get(investigateProperties, 'scope'), 'additionalProperties'), undefined);
+    assert.equal(
+      Reflect.get(Reflect.get(investigateProperties, 'scope'), 'additionalProperties'),
+      undefined,
+    );
     const researchProperties = Reflect.get(FusionResearchParams, 'properties');
     assert.equal(Reflect.get(Reflect.get(researchProperties, 'sources'), 'minItems'), 1);
-    const verification = Reflect.get(Reflect.get(FusionValidateParams, 'properties'), 'verification');
+    const verification = Reflect.get(
+      Reflect.get(FusionValidateParams, 'properties'),
+      'verification',
+    );
     assert.equal(Reflect.get(verification, 'additionalProperties'), false);
     const status = Reflect.get(Reflect.get(verification, 'properties'), 'status');
     assert.deepEqual(Reflect.get(status, 'enum'), ['provided', 'not_run']);
@@ -682,8 +718,7 @@ void describe('package', () => {
       'manifest capabilities must keep evaluator and merger no-tools',
     );
     // Both non-candidate launch sites annotate the invariant and pass the no-tools constant.
-    const stagePolicyComments =
-      orchestrator.match(/Stage policy, not caller input/g) ?? [];
+    const stagePolicyComments = orchestrator.match(/Stage policy, not caller input/g) ?? [];
     assert.equal(
       stagePolicyComments.length,
       2,
@@ -738,7 +773,10 @@ void describe('package', () => {
       }).verification,
       { status: 'not_run', evidence: [], reason: 'core branch unavailable' },
     );
-    assert.throws(() => prepareFusionValidateArguments({ prompt: '  review it  ' }), /no longer accepts \{prompt\}/);
+    assert.throws(
+      () => prepareFusionValidateArguments({ prompt: '  review it  ' }),
+      /no longer accepts \{prompt\}/,
+    );
     assert.throws(
       () =>
         prepareFusionValidateArguments({
@@ -759,7 +797,11 @@ void describe('package', () => {
           changeSummary: 'x',
           scope: ['x'],
           acceptanceCriteria: ['x'],
-          verification: { status: 'not_run', evidence: [{ check: 'x', outcome: 'x' }], reason: 'x' },
+          verification: {
+            status: 'not_run',
+            evidence: [{ check: 'x', outcome: 'x' }],
+            reason: 'x',
+          },
         }),
       /must not include evidence/,
     );
@@ -780,7 +822,10 @@ void describe('package', () => {
     assert.match(extension, /FUSION_REASON_TOOL_NAME = 'fusion_reason'/);
     assert.match(extension, /FUSION_INVESTIGATE_TOOL_NAME = 'fusion_investigate'/);
     assert.match(extension, /FUSION_RESEARCH_TOOL_NAME = 'fusion_research'/);
-    assert.match(extension, /RETIRED_FUSION_TOOL_NAMES = new Set<string>\(\['fusion_brainstorm'\]\)/);
+    assert.match(
+      extension,
+      /RETIRED_FUSION_TOOL_NAMES = new Set<string>\(\['fusion_brainstorm'\]\)/,
+    );
   });
 
   void it('ships the Anthropic sanitizer as a real dependency for Claude children', async () => {
@@ -862,7 +907,9 @@ void describe('package', () => {
 
   void it('Fusion facade exposes four fixed-purpose tools and no public capability mode', async () => {
     const extension = await text('src/fusion-extension.ts');
-    const registeredNames = [...extension.matchAll(/registerTool\(\{\s*name:\s*(FUSION_[A-Z_]+_TOOL_NAME)/g)].map((match) => match[1]);
+    const registeredNames = [
+      ...extension.matchAll(/registerTool\(\{\s*name:\s*(FUSION_[A-Z_]+_TOOL_NAME)/g),
+    ].map((match) => match[1]);
     assert.deepEqual(registeredNames, [
       'FUSION_REASON_TOOL_NAME',
       'FUSION_INVESTIGATE_TOOL_NAME',
@@ -871,7 +918,11 @@ void describe('package', () => {
     ]);
     assert.doesNotMatch(extension, /registerTool[\s\S]*?name:\s*['"]fusion_brainstorm['"]/);
     assert.match(extension, /CURRENT_FUSION_TOOL_NAMES = Object\.freeze\(\[/);
-    assert.match(extension, /pi\.setActiveTools\(next\)/, 'session_start must rewrite stale active tools deterministically');
+    assert.match(
+      extension,
+      /pi\.setActiveTools\(next\)/,
+      'session_start must rewrite stale active tools deterministically',
+    );
     assert.match(extension, /no capability argument/);
     assert.match(extension, /targeted fetches of supplied URLs only/);
     assert.match(extension, /no longer accepts \{prompt\}/);
@@ -930,6 +981,8 @@ void describe('package', () => {
       'src/core/fusion/child-protocol.ts',
       'src/core/fusion/orchestrator.ts',
       'src/core/fusion/artifacts.ts',
+      'src/core/fusion/result-package.ts',
+      'src/delegate-extension.ts',
     ];
     for (const file of files) {
       const source = await text(file);
@@ -945,8 +998,38 @@ void describe('package', () => {
     assert.match(types, /fusion-manifest\.v3/);
     assert.match(types, /export type FusionUsage = Usage/);
     const extension = await text('src/fusion-extension.ts');
-    assert.match(extension, /usage: Usage/);
-    assert.match(extension, /usage: cloneFusionUsage\(result\.details\.usage\)/);
+    assert.match(extension, /usageDelivered: false/);
+    assert.match(extension, /resultDetails: result\.details/);
+    const resultExtension = await text('src/delegate-extension.ts');
+    assert.match(resultExtension, /claimFusionUsage/);
+    assert.match(resultExtension, /usage: cloneFusionUsage\(verified\.details\.usage\)/);
+  });
+
+  void it('keeps background Fusion retrieval durable, verified, and once-accounted', async () => {
+    const artifacts = await text('src/core/fusion/artifacts.ts');
+    const resultPackage = await text('src/core/fusion/result-package.ts');
+    const resultExtension = await text('src/delegate-extension.ts');
+    const registry = await text('src/core/registry.ts');
+    const fusionFacade = await text('src/fusion-extension.ts');
+    assert.match(artifacts, /manifest\.artifacts\['result\.json'\]/);
+    assert.match(artifacts, /writeCommittedResult/);
+    assert.match(resultPackage, /sha256Buffer\(resultFile\.bytes\)/);
+    assert.match(resultPackage, /sha256Buffer\(mergedFile\.bytes\)/);
+    assert.match(resultPackage, /TextDecoder\('utf-8', \{ fatal: true \}\)/);
+    assert.doesNotMatch(resultPackage, /\.slice\(|\.substring\(/);
+    assert.match(resultExtension, /await readFusionCommittedResult/);
+    assert.match(resultExtension, /await deps\.claimFusionUsage\(task\)/);
+    assert.ok(
+      resultExtension.indexOf('await readFusionCommittedResult') <
+        resultExtension.indexOf('await deps.claimFusionUsage(task)'),
+      'verification must finish before the once-only usage claim',
+    );
+    assert.match(registry, /async claimFusionUsage/);
+    assert.match(
+      fusionFacade,
+      /The workflow passed durable preflight and no longer blocks this tool call/,
+    );
+    assert.match(fusionFacade, /onReady/);
   });
 
   void it('keeps the Fusion context/budget path free of silent truncation and fallback shapes', async () => {
@@ -1024,7 +1107,10 @@ void describe('package', () => {
     assert.match(tokenBudget, /TOKEN_BUDGET_PROVABLE_RATE_X100 = 100/);
     assert.match(tokenBudget, /TOKEN_BUDGET_CONSERVATIVE_RATE_X100 = 200/);
     assert.match(tokenBudget, /TOKEN_BUDGET_DENSE_ASCII_WHITESPACE_THRESHOLD_X10000/);
-    assert.match(tokenBudget, /TOKEN_BUDGET_DELEGATE_CONSERVATIVE_RATE_X100 = TOKEN_BUDGET_PROVABLE_RATE_X100/);
+    assert.match(
+      tokenBudget,
+      /TOKEN_BUDGET_DELEGATE_CONSERVATIVE_RATE_X100 = TOKEN_BUDGET_PROVABLE_RATE_X100/,
+    );
     assert.doesNotMatch(tokenBudget, /sessions:/);
     assert.doesNotMatch(tokenBudget, /days:/);
     assert.match(tokenBudget, /Math\.min\(configured, TOKEN_BUDGET_CONSERVATIVE_RATE_X100\)/);
@@ -1210,6 +1296,7 @@ void describe('package', () => {
       'src/core/fusion/orchestrator.ts',
       'src/core/fusion/budget.ts',
       'src/core/fusion/web-fetch.ts',
+      'src/core/fusion/result-package.ts',
       'README.md',
       'BACKGROUND-TASKS-INSTRUCTIONS.md',
       'logo.png',
@@ -1303,6 +1390,7 @@ void describe('package', () => {
         'src/core/fusion/orchestrator.ts',
         'src/core/fusion/pi-child.ts',
         'src/core/fusion/child-protocol.ts',
+        'src/core/fusion/result-package.ts',
         'src/ui/background-tasks-manager.ts',
         'src/ui/fusion-model-selector.ts',
       ]) {

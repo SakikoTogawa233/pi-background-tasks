@@ -26,7 +26,7 @@
 | Fact | Value |
 | --- | --- |
 | Package | `pi-background-tasks` |
-| Version | `1.0.7` |
+| Version | `2.0.0` |
 | Node engine | `>=22.19.0` |
 | Pi entrypoint | `./extensions/background-tasks.ts` |
 | Package image | [logo.png](https://raw.githubusercontent.com/ismailsaleekh/pi-background-tasks/main/logo.png) |
@@ -123,13 +123,13 @@ Local paths are loaded from disk without copying; use the path to this package f
 
    Call this with `bg_result`. Retrieval is hash-verified and never silently truncated.
 
-6. For a self-contained synthesis, ask Fusion:
+6. For a self-contained synthesis, start Fusion in the background:
 
    ```json
    {"prompt":"Compare the tradeoffs between a watcher, a one-shot build, and a delegated repo inspection for a large refactor."}
    ```
 
-   Call this with `fusion_reason`, or use `/fusion <prompt>` interactively.
+   Call this with `fusion_reason`, or use `/fusion <prompt>` interactively. The launch returns after durable preflight; wait for its terminal notification, then retrieve the verified result with `bg_result`.
 
 More walkthrough detail: [Getting started](docs/getting-started.md).
 
@@ -142,10 +142,10 @@ More walkthrough detail: [Getting started](docs/getting-started.md).
 | `bg_run` | No | No model child unless command starts one | Runs your shell command; **not sandboxed** | Agent-started long commands | Returns task id/output path; defaults to notification plus automatic follow-up wake. |
 | `bg_delegate` + `bg_result` | No launch; retrieval is point-in-time | Frozen visible conversation projection | Inspect-only child: read, grep, find, ls, artifact read; no shell, writes, network, recursion | Context-aware read-only investigation while parent continues | Launch returns immediately; result is committed by child and hash-verified by retrieval. |
 | `bg_run_pi_attested` | No | Prompt passed to one direct child Pi run | Direct `pi --mode json`; no shell command; writes requested report path | Evidence-oriented direct Pi task | Emits local attestation sidecar only after successful completion. |
-| `/fusion` / `fusion_reason` | Synchronous | Versioned conversation projection plus prompt | Candidates/evaluator/repair/merger run with no tools | Self-contained reasoning and synthesis | Three candidates → blind evaluator → optional bounded repair if evaluator JSON is invalid → merger. |
-| `fusion_investigate` | Synchronous | Clean task input only | Candidate read-only repo tools; evaluator/repair/merger no tools | Independent repo investigation | Restate all needed facts in fields; parent hidden/tool context is not visible. |
-| `fusion_research` | Synchronous | Clean task input only | Candidate read-only repo tools plus targeted fetch of caller-supplied public URLs only | URL-backed synthesis | Targeted URL retrieval, **not web search**. |
-| `fusion_validate` | Synchronous | Clean task input only | Advisory read-only validation review | Second-opinion review of completed work | Not a replacement for tests, builds, linters, security scans, or human review. |
+| `/fusion` / `fusion_reason` | Background launch; point-in-time `bg_result` retrieval | Versioned conversation projection plus prompt | Candidates/evaluator/repair/merger run with no tools | Self-contained reasoning and synthesis | Returns after durable preflight; three candidates → blind evaluator → optional bounded repair → merger. |
+| `fusion_investigate` | Background launch; point-in-time `bg_result` retrieval | Clean task input only | Candidate read-only repo tools; evaluator/repair/merger no tools | Independent repo investigation | Restate needed facts; continue only independent work while the live repository is inspected. |
+| `fusion_research` | Background launch; point-in-time `bg_result` retrieval | Clean task input only | Candidate read-only repo tools plus targeted fetch of caller-supplied public URLs only | URL-backed synthesis | Targeted URL retrieval, **not web search**. |
+| `fusion_validate` | Background launch; point-in-time `bg_result` retrieval | Clean task input only | Advisory read-only validation review | Second-opinion review of completed work | Do not mutate the reviewed scope while it runs; not a substitute for mechanical gates. |
 
 See [Choose a workflow](docs/choose-a-workflow.md) for a decision tree and tradeoffs.
 

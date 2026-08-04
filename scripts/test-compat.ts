@@ -132,6 +132,7 @@ async function runRpcSessionStats(
     let stderrDiagnostic = '';
     let stats: RpcSessionStats | undefined;
     let statsRequested = false;
+    let agentEndCount = 0;
     let settled = false;
     const appendDiagnostic = (current: string, chunk: string): string =>
       `${current}${chunk}`.slice(-64 * 1024);
@@ -166,7 +167,10 @@ async function runRpcSessionStats(
         finish(new Error(`RPC emitted a non-object frame: ${line.slice(0, 1000)}`));
         return;
       }
-      if (prompt !== undefined && parsed['type'] === 'agent_end') requestStats();
+      if (prompt !== undefined && parsed['type'] === 'agent_end') {
+        agentEndCount += 1;
+        if (agentEndCount >= 2) requestStats();
+      }
       if (
         parsed['type'] === 'response' &&
         parsed['command'] === 'get_session_stats' &&
@@ -275,7 +279,7 @@ async function runRpcPromptUntil(
           ),
         );
     });
-    child.stdin.end(
+    child.stdin.write(
       `${JSON.stringify({ type: 'prompt', message: prompt, id: 'compat-rpc-prompt' })}\n`,
     );
   });
@@ -292,12 +296,12 @@ async function readPersistedFusionToolResult(
     if (
       isRecord(message) &&
       message['role'] === 'toolResult' &&
-      message['toolName'] === 'fusion_reason'
+      message['toolName'] === 'bg_result'
     ) {
       return message;
     }
   }
-  throw new Error('persisted session is missing the fusion_reason tool result');
+  throw new Error('persisted session is missing the bg_result Fusion tool result');
 }
 
 function parsePack(text: string): PackFileEntry {
@@ -503,10 +507,12 @@ async function smokeVersion(version: string, tarballPath: string): Promise<void>
       temp,
       env,
     );
-    run(
+    await runRpcPromptUntil(
       process.execPath,
       [
         cli,
+        '--mode',
+        'rpc',
         '--no-extensions',
         '-e',
         scriptedProviderPath,
@@ -517,11 +523,11 @@ async function smokeVersion(version: string, tarballPath: string): Promise<void>
         '--no-session',
         '--model',
         'pi-bg-scripted/scripted-model',
-        '-p',
-        '/fusion compatibility prompt',
       ],
       temp,
       env,
+      '/fusion compatibility prompt',
+      /background-task-notification.*completed/s,
     );
     const childCalls = await readFile(fake.logPath, 'utf8');
     const childCallRecords =
@@ -641,11 +647,11 @@ async function verifyCurrentHostFusionUsage(): Promise<string> {
       'Use fusion for the current-host usage contract test.',
     );
     const expectedTokens = {
-      input: 75,
-      output: 45,
+      input: 95,
+      output: 55,
       cacheRead: 10,
       cacheWrite: 15,
-      total: 145,
+      total: 175,
     };
     const persistedToolResult = await readPersistedFusionToolResult(stats.sessionFile);
     const persistedUsage = persistedToolResult['usage'];

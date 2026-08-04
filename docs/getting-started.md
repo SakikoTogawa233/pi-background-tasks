@@ -113,7 +113,7 @@ Call this with `fusion_reason`, or use:
 /fusion Compare a foreground command, bg_run, and bg_delegate for a ten-minute repository audit.
 ```
 
-Fusion runs three candidates, blind evaluation, optional bounded repair only if evaluator JSON is invalid, and merger. `/fusion` and `fusion_reason` receive a versioned conversation projection; investigate/research/validate receive clean task input only.
+Fusion returns a tracked background-task receipt after durable no-child preflight. It then runs three candidates, blind evaluation, optional bounded repair only if evaluator JSON is invalid, and merger. Wait for the terminal notification and call `bg_result` once; do not poll. `/fusion` and `fusion_reason` receive a versioned conversation projection; investigate/research/validate receive clean task input only.
 
 ## Next links
 

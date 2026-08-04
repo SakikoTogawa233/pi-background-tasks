@@ -20,6 +20,12 @@ The runtime owns task identity, shell invocation, process lifecycle, bounded log
 - In-memory recent retention prunes oldest finished tasks over the limit while preserving running tasks.
 - `resolveTask` accepts exact ids or unambiguous prefixes and fails loudly for empty, unknown, or ambiguous ids.
 
+## Starting managed tasks
+
+`startManagedTask` tracks a package-owned in-process asynchronous workflow through the same metadata, output, dock, status, logs, kill, EventBus terminal, and notification surfaces as process tasks. Fusion uses this path only after its no-child-yet durable preflight barrier. Managed cancellation invokes a task-owned callback; terminal state is not published until the workflow promise has settled and completed its own child cleanup/audit sealing.
+
+Managed task ids are explicit and path-safe. Fusion uses its run id as the single task/run identity. Progress is written as bounded task output and persisted in Fusion task facts. `claimFusionUsage` serializes a once-only durable accounting claim so repeated `bg_result` calls cannot duplicate usage.
+
 ## Starting ordinary tasks
 
 `startTask` trims surrounding command whitespace and rejects an empty command. It derives task name from explicit `name`, then `description`, then command. Names are compacted and truncated; callers should still provide concise names.
@@ -54,7 +60,7 @@ During finalization, the runtime flushes wrapped-agent output, ends and waits fo
 
 ## Stopping tasks
 
-Only `running` tasks can be stopped.
+Only `running` tasks can be stopped. Managed tasks invoke their task-owned cancellation callback and wait for workflow settlement; process tasks use the platform paths below.
 
 POSIX stop path:
 

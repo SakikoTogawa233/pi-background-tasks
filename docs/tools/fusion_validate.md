@@ -11,8 +11,8 @@ covers_sources: []
 
 <!-- pi-docs:begin name="tool-contract-fusion_validate" generator="scripts/docs/generate.mjs" -->
 - Label: **Fusion Validate**
-- Source: `src/fusion-extension.ts:1084`
-- Description: Run an advisory, read-only Fusion validation review from a structured contract. It is not a build/test/lint substitute and never modifies files.
+- Source: `src/fusion-extension.ts:1236`
+- Description: Start an advisory, read-only Fusion validation review as a tracked background task and return immediately after durable preflight. Retrieve the verified result with bg_result after notification. It is not a build/test/lint substitute and never modifies files.
 - Root schema: `object`; additionalProperties: `false`
 
 | Field | Required | Type | Description | Constraints |
@@ -197,7 +197,9 @@ Each candidate must return closed JSON (`pi-background-tasks.fusion-validation-c
 
 After the no-tool merger child runs, the host renders the final validation report from validated accounting so included findings are preserved, duplicate groups are merged deterministically, excluded findings are listed only as exclusions, and candidate labels/source ids are sanitized from rationale text.
 
-## Advisory limitation
+## Background delivery and advisory limitation
+
+After durable no-child preflight, the tool returns a tracked background task receipt. Wait for the terminal notification, then call `bg_result({taskId})` once; retrieval verifies the committed report and never truncates. The repository is read live, so do not mutate the reviewed scope while the task runs.
 
 `fusion_validate` never modifies files, never runs builds/tests/linters/security scanners, and does not gate anything. It is an advisory read-only review. Supply real verification evidence when available, and state known limitations/exclusions explicitly.
 

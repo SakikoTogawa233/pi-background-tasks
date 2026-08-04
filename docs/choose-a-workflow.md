@@ -26,10 +26,10 @@ covers_sources: []
 | `bg_run` | Async | None by package | Command decides | Command decides | Command decides | Not a model route unless command invokes one | Pi should launch a long command and resume later. |
 | `bg_delegate` + `bg_result` | Async launch, point-in-time retrieval | Frozen visible conversation projection | Yes, inspect-only | No | No | Pinned at launch; no substitution | Context-aware read-only investigation. |
 | `bg_run_pi_attested` | Async | Prompt only | Child Pi decides from prompt/tools | Child Pi route/tools decide | Report path requested | Structured provider/model; OAuth observed for supported subscription routes | Local evidence-producing Pi run. |
-| `fusion_reason` / `/fusion` | Synchronous | Versioned conversation projection plus prompt | No | No | No | Configured Fusion slots; no silent fallback | Self-contained reasoning/synthesis. |
-| `fusion_investigate` | Synchronous | Clean task input only | Candidate read-only tools | No | No | Configured Fusion slots; no silent fallback | Independent repository investigation. |
-| `fusion_research` | Synchronous | Clean task input only | Candidate read-only tools | Only declared public URLs | No | Configured Fusion slots; no silent fallback | Targeted URL-backed synthesis, not search. |
-| `fusion_validate` | Synchronous | Clean task input only | Candidate read-only tools | No | No | Configured Fusion slots; no silent fallback | Advisory review of completed work. |
+| `fusion_reason` / `/fusion` | Async launch, point-in-time `bg_result` retrieval | Versioned conversation projection plus prompt | No | No | No | Configured Fusion slots; no silent fallback | Self-contained reasoning/synthesis. |
+| `fusion_investigate` | Async launch, point-in-time `bg_result` retrieval | Clean task input only | Candidate read-only tools | No | No | Configured Fusion slots; no silent fallback | Independent repository investigation. |
+| `fusion_research` | Async launch, point-in-time `bg_result` retrieval | Clean task input only | Candidate read-only tools | Only declared public URLs | No | Configured Fusion slots; no silent fallback | Targeted URL-backed synthesis, not search. |
+| `fusion_validate` | Async launch, point-in-time `bg_result` retrieval | Clean task input only | Candidate read-only tools | No | No | Configured Fusion slots; no silent fallback | Advisory review of completed work. |
 
 ## Tradeoffs and boundaries
 

@@ -4,6 +4,7 @@ import { extname, isAbsolute, join, win32 } from 'node:path';
 import { DEFAULT_MAX_BYTES } from '@earendil-works/pi-coding-agent';
 import type { BackgroundTaskChildProcess } from './registry.js';
 import type { DelegateBudgetRouteSource } from './delegate/types.js';
+import type { FusionResultDetails, FusionUsage, FusionWorkflowId } from './fusion/types.js';
 
 export const TASK_STATUS_VALUES = ['running', 'completed', 'failed', 'killed'] as const;
 export const TERMINAL_TASK_STATUS_VALUES = ['completed', 'failed', 'killed'] as const;
@@ -62,6 +63,7 @@ export interface BgTaskSnapshot {
   telemetryUnavailableReason?: string | undefined;
   attestationPath?: string | undefined;
   delegate?: DelegateTaskFacts | undefined;
+  fusion?: FusionTaskFacts | undefined;
 }
 
 export interface AttestedPiTaskFiles {
@@ -99,6 +101,25 @@ export interface DelegateTaskOutcome {
   toolCalls?: number | undefined;
 }
 
+/** Fusion-specific task facts surfaced through snapshots and `bg_result`. */
+export interface FusionTaskFacts {
+  runId: string;
+  workflow: FusionWorkflowId;
+  artifactDir: string;
+  artifactDirAbs: string;
+  state: string;
+  outcome?: FusionTaskOutcome | undefined;
+  /** Durable once-only accounting claim made by the first successful bg_result retrieval. */
+  usageDelivered: boolean;
+}
+
+export interface FusionTaskOutcome {
+  status: 'committed' | 'failed' | 'cancelled';
+  resultDetails?: FusionResultDetails | undefined;
+  usage?: FusionUsage | undefined;
+  error?: string | undefined;
+}
+
 export interface BgTask extends Omit<BgTaskSnapshot, 'name'> {
   name: string;
   outputAbsPath: string;
@@ -129,6 +150,11 @@ export interface BgTask extends Omit<BgTaskSnapshot, 'name'> {
   attestationPath?: string | undefined;
   attestedPi?: AttestedPiTaskFiles | undefined;
   delegate?: DelegateTaskFacts | undefined;
+  fusion?: FusionTaskFacts | undefined;
+  /** Cancellation hook for an in-process managed task such as Fusion. */
+  managedCancel?: (() => void) | undefined;
+  managedCancelRequested?: boolean | undefined;
+  managedStopWaitMs?: number | undefined;
   metadataWriteChain?: Promise<void> | undefined;
   waiters: Array<() => void>;
 }
@@ -226,6 +252,22 @@ export interface StartTaskOptions {
 }
 
 /** Prepared delegate launch handed to the registry after preflight has succeeded. */
+export interface StartManagedTaskOptions {
+  id: string;
+  name: string;
+  command: string;
+  description?: string | undefined;
+  isAgent: boolean;
+  completion: Promise<void>;
+  cancel: () => void;
+  notifyOnCompletion: boolean;
+  triggerOnCompletion: boolean;
+  fusion: FusionTaskFacts;
+  stopWaitMs?: number | undefined;
+  /** Prevent terminal publication until the launch receipt handoff is observable. */
+  terminalPublicationGate?: Promise<void> | undefined;
+}
+
 export interface StartDelegateTaskOptions {
   name: string;
   argv: readonly string[];
@@ -687,10 +729,15 @@ export function shellInvocation(
     failShellInvocation('PI_BG_SHELL must be exactly cmd or bash');
   }
   const explicitPath =
-    requestedPath !== undefined ? validateWindowsShellPath(requestedPath, 'PI_BG_SHELL_PATH') : undefined;
+    requestedPath !== undefined
+      ? validateWindowsShellPath(requestedPath, 'PI_BG_SHELL_PATH')
+      : undefined;
   if (requestedShell === 'cmd') {
     const comSpec = env['ComSpec'];
-    return cmdShellInvocation(command, explicitPath ?? (comSpec && comSpec.length > 0 ? comSpec : 'cmd.exe'));
+    return cmdShellInvocation(
+      command,
+      explicitPath ?? (comSpec && comSpec.length > 0 ? comSpec : 'cmd.exe'),
+    );
   }
   return posixShellInvocation(command, explicitPath ?? resolveWindowsBash(env));
 }
@@ -728,6 +775,7 @@ export function snapshot(task: BgTask): BgTaskSnapshot {
     telemetryUnavailableReason: task.telemetryUnavailableReason,
     attestationPath: task.attestationPath,
     delegate: task.delegate,
+    fusion: task.fusion,
   };
 }
 

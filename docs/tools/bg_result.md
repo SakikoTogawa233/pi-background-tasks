@@ -10,15 +10,15 @@ covers_sources: []
 # `bg_result`
 
 <!-- pi-docs:begin name="tool-contract-bg_result" generator="scripts/docs/generate.mjs" -->
-- Label: **Delegate Result**
-- Source: `src/delegate-extension.ts:428`
-- Description: Retrieve the hash-verified answer from a bg_delegate task. Never blocks: a running task returns a typed not-ready result. A completed answer is verified against its recorded SHA-256 before it is returned, and an oversized answer is never truncated.
+- Label: **Background Result**
+- Source: `src/delegate-extension.ts:453`
+- Description: Retrieve a hash-verified result from a bg_delegate or background Fusion task. Never blocks: a running task returns a typed not-ready result. Oversized answers are never truncated.
 - Root schema: `object`; additionalProperties: `false`
 
 | Field | Required | Type | Description | Constraints |
 | --- | --- | --- | --- | --- |
 | `delivery` | no | `string` | inline returns the verified answer text; artifact returns metadata plus the artifact reference. Oversized answers are never truncated. |  |
-| `taskId` | yes | `string` | Delegate task id returned by bg_delegate. |  |
+| `taskId` | yes | `string` | Background delegate or Fusion task id returned by its launch tool. |  |
 
 <details>
 <summary>Normalized TypeBox contract</summary>
@@ -33,7 +33,7 @@ covers_sources: []
       "type": "string"
     },
     "taskId": {
-      "description": "Delegate task id returned by bg_delegate.",
+      "description": "Background delegate or Fusion task id returned by its launch tool.",
       "type": "string"
     }
   },
@@ -47,13 +47,13 @@ covers_sources: []
 </details>
 <!-- pi-docs:end name="tool-contract-bg_result" -->
 
-`bg_result` retrieves the result of a `bg_delegate` task. It never blocks: a running task returns a typed not-ready view, and a terminal task is verified before any answer bytes are returned.
+`bg_result` retrieves the result of a `bg_delegate` or background Fusion task. It never blocks: a running task returns a typed not-ready view, and a terminal task is verified before any answer bytes are returned.
 
 ## Public arguments
 
 Required:
 
-- `taskId: string` — task id or unambiguous prefix resolved by the background-task registry. Must be non-empty after trimming.
+- `taskId: string` — delegate or Fusion task id, or an unambiguous prefix resolved by the background-task registry. Must be non-empty after trimming.
 
 Optional:
 
@@ -74,7 +74,7 @@ This is not an error and does not wait. End the turn or do other independent wor
 
 ## Verification before return
 
-For terminal tasks, the parent evaluates the child artifacts. `result.json` is the child-written commit point. If it is absent, the task has no accepted answer even if the child exited `0`.
+For terminal delegate tasks, the parent evaluates the child artifacts. `result.json` is the child-written commit point. If it is absent, the task has no accepted answer even if the child exited `0`.
 
 A present package is accepted only after verifying:
 
@@ -90,6 +90,10 @@ A present package is accepted only after verifying:
 
 The returned text is decoded from the same aggregate buffer that was hashed. Corruption, stale packages, missing attestations, route drift, or invalid UTF-8 produce typed failures and no answer bytes.
 
+## Fusion retrieval
+
+A completed Fusion task is accepted only when `manifest.json` is terminal `completed`, its `result.json` and `merged.md` fixed references match, both files match manifest-bound byte lengths and SHA-256 values, run/workflow/artifact identity matches the task, result details carry the current schema, usage is complete, and merged bytes are well-formed UTF-8. The first successful retrieval attaches complete Fusion usage exactly once; later retrievals omit usage to prevent double-counting.
+
 ## Inline/artifact delivery and no truncation
 
 `bg_result` never truncates an answer.
@@ -102,7 +106,7 @@ Large answers remain complete in `result.json` as base64 blocks plus aggregate h
 
 ## Failure classes users see
 
-Common retrieval outcomes:
+Common delegate retrieval outcomes:
 
 - `task_unknown` — unknown id/prefix or not a delegate task.
 - `result_unavailable` / `child_exited_without_commit` — terminal task produced no committed result package.
@@ -113,7 +117,7 @@ Common retrieval outcomes:
 - `artifact_read_failed`, `artifact_spill_failed`, `artifact_error` — artifact I/O failure.
 - `result_too_large_for_inline` — explicit inline request exceeded the inline cap.
 
-Delegate errors include whether a child process was created, preserved artifact hints when known, and remediation text. Usage missing from the provider is reported as `unavailable`, not synthesized as zero.
+Delegate errors include whether a child process was created, preserved artifact hints when known, and remediation text. Usage missing from the provider is reported as `unavailable`, not synthesized as zero. Fusion retrieval additionally fails on non-completed manifests, identity/schema drift, malformed usage/details, invalid UTF-8, or any manifest/result/merged hash or byte-length mismatch; failed/cancelled runs return their preserved terminal error rather than partial output.
 
 ## Parent outcome separation
 

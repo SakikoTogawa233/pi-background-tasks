@@ -228,14 +228,15 @@ async function withRpc(
   }
 }
 
-function fusionResultMessage(event: JsonRecord): boolean {
-  if (event['type'] !== 'message_end') return false;
-  const message = event['message'];
-  return (
-    isRecord(message) &&
-    message['customType'] === 'fusion-result' &&
-    message['content'] === 'RPC fused answer.'
-  );
+function fusionTerminalMessage(status: 'completed' | 'failed'): (event: JsonRecord) => boolean {
+  return (event) => {
+    if (event['type'] !== 'message_end') return false;
+    const message = event['message'];
+    if (!isRecord(message) || message['customType'] !== 'background-task-notification')
+      return false;
+    const details = message['details'];
+    return isRecord(details) && isRecord(details['fusion']) && details['status'] === status;
+  };
 }
 
 function notifyWith(text: RegExp): (event: JsonRecord) => boolean {
@@ -258,7 +259,7 @@ void describe('fusion RPC integration', () => {
       const promptText = '/fusion rpc prompt with separators \u2028 and \u2029 kept';
       const response = await rpc.send({ type: 'prompt', message: promptText });
       assert.equal(response['success'], true);
-      await rpc.wait(fusionResultMessage);
+      await rpc.wait(fusionTerminalMessage('completed'));
       assert.equal(
         rpc.events.some((event) => event['type'] === 'agent_start'),
         false,
@@ -299,7 +300,7 @@ void describe('fusion RPC integration', () => {
       rpc.sendUiResponse(requireString(editor['id'], 'editor id'), 'rpc editor prompt');
       const response = await pendingPrompt;
       assert.equal(response['success'], true);
-      await rpc.wait(fusionResultMessage);
+      await rpc.wait(fusionTerminalMessage('completed'));
       const calls = await readInvocations(fakeLogPath);
       assert.equal(calls.length, 5);
 
@@ -329,7 +330,13 @@ void describe('fusion RPC integration', () => {
       async (rpc, fakeLogPath) => {
         const response = await rpc.send({ type: 'prompt', message: '/fusion child failure' });
         assert.equal(response['success'], true);
-        await rpc.wait(notifyWith(/Fusion failed:.*exited with code 42/s));
+        const terminal = await rpc.wait(fusionTerminalMessage('failed'));
+        const message = terminal['message'];
+        assert.ok(isRecord(message));
+        assert.match(
+          String(message['content'] ?? ''),
+          /Fusion failed(?: \([^)]*\))?:.*exited with code 42/s,
+        );
         const calls = await readInvocations(fakeLogPath);
         // The candidate wave launches three children, but the first failure
         // aborts its siblings. A sibling that is signalled while still blocked

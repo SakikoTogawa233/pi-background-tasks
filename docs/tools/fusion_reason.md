@@ -11,8 +11,8 @@ covers_sources: []
 
 <!-- pi-docs:begin name="tool-contract-fusion_reason" generator="scripts/docs/generate.mjs" -->
 - Label: **Fusion Reason**
-- Source: `src/fusion-extension.ts:1032`
-- Description: Run a five-model Fusion reason workflow. Candidate children receive the reason projection and no tools; evaluator and merger also run without tools.
+- Source: `src/fusion-extension.ts:1179`
+- Description: Start a five-model Fusion reason workflow as a tracked background task and return immediately after durable preflight. Retrieve the verified result with bg_result after notification. Candidate children receive the reason projection and no tools; evaluator and merger also run without tools.
 - Root schema: `object`; additionalProperties: `false`
 
 | Field | Required | Type | Description | Constraints |
@@ -59,11 +59,11 @@ The schema is closed: `prompt` is required, must trim to non-blank text, and no 
 
 Candidate children run with `--no-tools`. The blind evaluator, conditional evaluator-repair, and merger also run with `--no-tools` by stage policy.
 
-## Execution model
+## Execution and delivery model
 
-A successful run starts three candidate children, then a blind evaluator, then a merger. If the evaluator output is not valid closed-schema JSON, Fusion performs one evaluator-repair attempt and revalidates. Do not assume exactly five child calls: repair, preflight refusal, cancellation, spawn retry, and failures change the observed attempt count.
+The tool freezes its input, completes durable no-child preflight, registers a managed background task, and returns its task/run id immediately. The workflow then starts three candidate children, a blind evaluator, optional evaluator repair, and a merger.
 
-The tool result returns the merger's exact text directly, with `details` containing the Fusion result metadata and `usage` cloning the complete Pi `Usage` object including all cost fields.
+Wait for the terminal notification and call `bg_result({taskId})` once. `bg_result` verifies `manifest.json`, `result.json`, and `merged.md` hashes before returning bytes; oversized output becomes an artifact reference, never truncation. Complete Fusion usage is attached to the first successful retrieval exactly once so repeated retrieval cannot double-count session cost.
 
 ## Limitations
 

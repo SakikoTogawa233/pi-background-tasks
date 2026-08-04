@@ -11,8 +11,8 @@ covers_sources: []
 
 <!-- pi-docs:begin name="tool-contract-fusion_investigate" generator="scripts/docs/generate.mjs" -->
 - Label: **Fusion Investigate**
-- Source: `src/fusion-extension.ts:1049`
-- Description: Run a five-model Fusion investigation from a structured, self-contained objective/background/deliverable. Candidate children run in clean bounded read-only contexts.
+- Source: `src/fusion-extension.ts:1197`
+- Description: Start a five-model Fusion investigation as a tracked background task and return immediately after durable preflight. Retrieve the verified result with bg_result after notification. Candidate children run in clean bounded read-only contexts.
 - Root schema: `object`; additionalProperties: `false`
 
 | Field | Required | Type | Description | Constraints |
@@ -103,9 +103,11 @@ Investigate uses clean-task canonical input (`pi-background-tasks.fusion-input.v
 
 Candidate children run with the fixed inspect policy: `read`, `grep`, `find`, and `ls` only, with built-in tools disabled and Fusion/background/write/shell tools denied. Evaluator, evaluator-repair, and merger run with no tools.
 
-## Execution model
+## Execution and delivery model
 
-Three inspect candidates independently re-derive repository facts, a blind evaluator compares anonymous candidate answers, and a merger synthesizes the final answer. One evaluator-repair child is run only when the first evaluator response is invalid JSON or fails the evaluation schema.
+After durable no-child preflight, the tool returns a tracked background task receipt. Three inspect candidates independently re-derive repository facts, a blind evaluator compares anonymous candidate answers, and a merger synthesizes the final answer. One evaluator-repair child is run only when the first evaluator response is invalid JSON or fails the evaluation schema.
+
+Wait for the terminal notification, then call `bg_result({taskId})` once. Retrieval verifies the committed result and never truncates. Repository reads are live, so continue only independent work and do not mutate the investigated scope while the task runs.
 
 ## Failure behavior
 

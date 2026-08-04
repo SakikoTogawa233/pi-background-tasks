@@ -10,6 +10,9 @@ import { Text } from '@earendil-works/pi-tui';
 import { Type, type Static } from 'typebox';
 import type { BgTask, BgTaskSnapshot, StartDelegateTaskOptions } from './core/common.js';
 import { truncateChars } from './core/common.js';
+import { sha256Buffer } from './core/attested-pi-run.js';
+import { readFusionCommittedResult } from './core/fusion/result-package.js';
+import { cloneFusionUsage, type FusionUsage, type FusionWorkflowId } from './core/fusion/types.js';
 import {
   DELEGATE_AUTO_DELIVER_MODES,
   DELEGATE_CAPABILITIES,
@@ -74,7 +77,10 @@ const DelegateParams = Type.Object(
           provider: Type.String({ description: 'Exact provider name to pin.' }),
           model: Type.String({ description: 'Exact provider-local model id to pin.' }),
         },
-        { additionalProperties: false, description: 'Explicit route. Defaults to the current model.' },
+        {
+          additionalProperties: false,
+          description: 'Explicit route. Defaults to the current model.',
+        },
       ),
     ),
     capability: Type.Optional(
@@ -83,7 +89,9 @@ const DelegateParams = Type.Object(
       }),
     ),
     maxTurns: Type.Optional(
-      Type.Number({ description: `Maximum agent turns. Default ${String(DELEGATE_DEFAULT_MAX_TURNS)}.` }),
+      Type.Number({
+        description: `Maximum agent turns. Default ${String(DELEGATE_DEFAULT_MAX_TURNS)}.`,
+      }),
     ),
     maxToolCalls: Type.Optional(
       Type.Number({
@@ -113,7 +121,9 @@ const DelegateParams = Type.Object(
 
 const ResultParams = Type.Object(
   {
-    taskId: Type.String({ description: 'Delegate task id returned by bg_delegate.' }),
+    taskId: Type.String({
+      description: 'Background delegate or Fusion task id returned by its launch tool.',
+    }),
     delivery: Type.Optional(
       Type.String({
         description:
@@ -140,6 +150,20 @@ export interface DelegateLaunchDetails {
   notify_on_completion: boolean;
   trigger_on_completion: boolean;
 }
+
+export interface FusionBackgroundResultDetails {
+  schema_version: 'pi-background-tasks.fusion-result-view.v1';
+  task_id: string;
+  state: 'running' | 'committed' | 'failed' | 'cancelled';
+  delivery: DelegateDeliveryMode | 'none';
+  workflow: FusionWorkflowId;
+  artifact_dir: string;
+  answer_bytes?: number | undefined;
+  answer_sha256?: string | undefined;
+  usage_delivered?: boolean | undefined;
+}
+
+export type BackgroundResultDetails = DelegateResultDetails | FusionBackgroundResultDetails;
 
 export interface DelegateResultDetails {
   schema_version: 'pi-background-tasks.delegate-result-view.v1';
@@ -217,7 +241,12 @@ function requireRoute(value: unknown): DelegateRoute | undefined {
 
 function optionalPositiveInteger(value: unknown, label: string): number | undefined {
   if (value === undefined) return undefined;
-  if (typeof value !== 'number' || !Number.isFinite(value) || !Number.isInteger(value) || value <= 0)
+  if (
+    typeof value !== 'number' ||
+    !Number.isFinite(value) ||
+    !Number.isInteger(value) ||
+    value <= 0
+  )
     throw new DelegateError(`bg_delegate ${label} must be a positive integer`, {
       code: 'invalid_arguments',
       childCreated: false,
@@ -226,12 +255,10 @@ function optionalPositiveInteger(value: unknown, label: string): number | undefi
 }
 
 export interface DelegateExtensionDependencies {
-  startDelegateTask: (
-    ctx: ExtensionContext,
-    options: StartDelegateTaskOptions,
-  ) => Promise<BgTask>;
+  startDelegateTask: (ctx: ExtensionContext, options: StartDelegateTaskOptions) => Promise<BgTask>;
   snapshot: (task: BgTask) => BgTaskSnapshot;
   resolveTask: (idOrPrefix: string) => BgTask;
+  claimFusionUsage: (task: BgTask) => Promise<boolean>;
   /** Overridable so tests can supply observed evidence without touching disk. */
   loadHookEvidence?: (() => Promise<DelegateHookContractEvidence>) | undefined;
 }
@@ -326,13 +353,11 @@ export function registerDelegateExtension(
                 id: ctx.model.id,
                 contextWindow: ctx.model.contextWindow,
               },
-        availableModels: ctx.modelRegistry
-          .getAll()
-          .map((model) => ({
-            provider: model.provider,
-            id: model.id,
-            contextWindow: model.contextWindow,
-          })),
+        availableModels: ctx.modelRegistry.getAll().map((model) => ({
+          provider: model.provider,
+          id: model.id,
+          contextWindow: model.contextWindow,
+        })),
         thinkingLevel: pi.getThinkingLevel(),
       });
 
@@ -425,15 +450,15 @@ export function registerDelegateExtension(
     },
   });
 
-  pi.registerTool<typeof ResultParams, DelegateResultDetails>({
+  pi.registerTool<typeof ResultParams, BackgroundResultDetails>({
     name: DELEGATE_RESULT_TOOL_NAME,
-    label: 'Delegate Result',
+    label: 'Background Result',
     description:
-      'Retrieve the hash-verified answer from a bg_delegate task. Never blocks: a running task returns a typed not-ready result. A completed answer is verified against its recorded SHA-256 before it is returned, and an oversized answer is never truncated.',
-    promptSnippet: 'Retrieve the verified answer from a completed bg_delegate task',
+      'Retrieve a hash-verified result from a bg_delegate or background Fusion task. Never blocks: a running task returns a typed not-ready result. Oversized answers are never truncated.',
+    promptSnippet: 'Retrieve the verified answer from a completed delegate or Fusion task',
     promptGuidelines: [
-      'Call bg_result once the delegate terminal notification has arrived. It never blocks and must not be polled.',
-      'A not-ready result means the delegate is still running; end the turn and wait for the notification.',
+      'Call bg_result once the delegate or Fusion terminal notification has arrived. It never blocks and must not be polled.',
+      'A not-ready result means the task is still running; end the turn and wait for the notification.',
     ],
     parameters: ResultParams,
     prepareArguments(args): ResultParamsValue {
@@ -463,10 +488,86 @@ export function registerDelegateExtension(
           { code: 'task_unknown', childCreated: false },
         );
       }
+      const fusion = task.fusion;
+      if (fusion !== undefined) {
+        const requestedDelivery = requireDelivery(params.delivery);
+        if (task.status === 'running') {
+          const details: FusionBackgroundResultDetails = {
+            schema_version: 'pi-background-tasks.fusion-result-view.v1',
+            task_id: task.id,
+            state: 'running',
+            delivery: 'none',
+            workflow: fusion.workflow,
+            artifact_dir: fusion.artifactDir,
+          };
+          return {
+            content: textContent(
+              `Fusion ${task.id} is still running. bg_result never blocks. End this turn; the terminal notification will wake you, then call bg_result again.`,
+            ),
+            details,
+          };
+        }
+        if (task.status !== 'completed' || fusion.outcome?.status !== 'committed') {
+          throw new Error(
+            `Fusion ${task.id} did not commit a result (${task.status}): ${fusion.outcome?.error ?? task.error ?? 'no terminal detail'}`,
+          );
+        }
+        const verified = await readFusionCommittedResult({
+          artifactDirAbs: fusion.artifactDirAbs,
+          artifactDir: fusion.artifactDir,
+          runId: fusion.runId,
+          workflow: fusion.workflow,
+        });
+        const answerBytes = Buffer.byteLength(verified.mergedText, 'utf8');
+        const answerSha256 = sha256Buffer(Buffer.from(verified.mergedText, 'utf8'));
+        const useArtifact =
+          requestedDelivery === 'artifact' ||
+          (requestedDelivery === undefined && answerBytes > DELEGATE_INLINE_ANSWER_BYTES);
+        if (requestedDelivery === 'inline' && answerBytes > DELEGATE_INLINE_ANSWER_BYTES) {
+          throw new Error(
+            `Fusion result ${task.id} is ${String(answerBytes)} bytes, above the ${String(DELEGATE_INLINE_ANSWER_BYTES)}-byte inline limit. Use delivery:"artifact"; nothing was truncated.`,
+          );
+        }
+        const usageDelivered = await deps.claimFusionUsage(task);
+        const details: FusionBackgroundResultDetails = {
+          schema_version: 'pi-background-tasks.fusion-result-view.v1',
+          task_id: task.id,
+          state: 'committed',
+          delivery: useArtifact ? 'artifact' : 'inline',
+          workflow: fusion.workflow,
+          artifact_dir: fusion.artifactDir,
+          answer_bytes: answerBytes,
+          answer_sha256: answerSha256,
+          usage_delivered: usageDelivered,
+        };
+        const header = [
+          `Fusion ${task.id} completed (${fusion.workflow}).`,
+          `Answer: ${String(answerBytes)} bytes, ${answerSha256} (verified).`,
+          `Artifacts: ${fusion.artifactDir}`,
+          usageDelivered
+            ? 'Usage: attached to this retrieval exactly once.'
+            : 'Usage: already attached by an earlier retrieval; not counted again.',
+        ].join('\n');
+        const result = useArtifact
+          ? {
+              content: textContent(
+                `${header}\nDelivery: artifact. The complete answer is ${fusion.artifactDir}/merged.md; it was not truncated.`,
+              ),
+              details,
+            }
+          : { content: textContent(`${header}\n\n${verified.mergedText}`), details };
+        if (!usageDelivered) return result;
+        const resultWithUsage: typeof result & { usage: FusionUsage } = {
+          ...result,
+          usage: cloneFusionUsage(verified.details.usage),
+        };
+        return resultWithUsage;
+      }
+
       const facts = task.delegate;
       if (facts === undefined) {
         throw new DelegateError(
-          `bg_result task ${task.id} is not a bg_delegate task; use bg_logs for ordinary background tasks`,
+          `bg_result task ${task.id} has no retrievable delegate or Fusion result; use bg_logs for ordinary background tasks`,
           { code: 'task_unknown', childCreated: false },
         );
       }
@@ -565,10 +666,15 @@ export function registerDelegateExtension(
     renderResult(result, options: ToolRenderResultOptions, theme: Theme) {
       void options;
       const details = result.details;
+      const fusion = details.schema_version === 'pi-background-tasks.fusion-result-view.v1';
       if (details.state === 'running')
-        return new Text(theme.fg('warning', `delegate ${details.task_id} still running`), 0, 0);
+        return new Text(
+          theme.fg('warning', `${fusion ? 'fusion' : 'delegate'} ${details.task_id} still running`),
+          0,
+          0,
+        );
       return new Text(
-        `${theme.fg('success', '✓ delegate answer')} ${theme.fg('dim', `${String(details.answer_bytes ?? 0)}B · ${details.delivery}`)}`,
+        `${theme.fg('success', fusion ? '✓ fusion answer' : '✓ delegate answer')} ${theme.fg('dim', `${String(details.answer_bytes ?? 0)}B · ${details.delivery}`)}`,
         0,
         0,
       );

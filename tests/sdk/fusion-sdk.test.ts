@@ -102,10 +102,6 @@ function isRecord(value: unknown): value is JsonRecord {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
-}
-
 function stringField(record: JsonRecord, key: string): string {
   const value = record[key];
   if (typeof value !== 'string') throw new Error(`${key} must be a string`);
@@ -165,6 +161,64 @@ function isFusionResultDetails(value: unknown): value is FusionResultDetails {
   );
 }
 
+function isFusionLaunchDetails(value: unknown): value is JsonRecord {
+  return (
+    isRecord(value) &&
+    value['schema_version'] === 'pi-background-tasks.fusion-launch.v1' &&
+    typeof value['run_id'] === 'string' &&
+    isRecord(value['task'])
+  );
+}
+
+async function waitForFusionTerminal(session: AgentSession, taskId?: string): Promise<JsonRecord> {
+  const start = Date.now();
+  while (Date.now() - start < 30_000) {
+    const found = customEntries(session, 'background-task-notification').find((entry) => {
+      const details = entry['details'];
+      return (
+        isRecord(details) &&
+        details['status'] !== 'running' &&
+        isRecord(details['fusion']) &&
+        (taskId === undefined || details['id'] === taskId)
+      );
+    });
+    if (found !== undefined) return found;
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  throw new Error(`timed out waiting for Fusion task ${taskId ?? '(unspecified)'}`);
+}
+
+async function retrieveFusionLaunch(h: Harness, launch: { details?: unknown }) {
+  assert.ok(
+    isFusionLaunchDetails(launch.details),
+    'Fusion tool must return a background launch receipt',
+  );
+  const task = launch.details['task'];
+  assert.ok(isRecord(task));
+  const taskId = stringField(task, 'id');
+  await waitForFusionTerminal(h.session, taskId);
+  const resultTool = h.session.getToolDefinition('bg_result');
+  assert.ok(resultTool, 'bg_result should be registered');
+  const result = await resultTool.execute(
+    `result-${taskId}`,
+    { taskId, delivery: 'inline' },
+    undefined,
+    undefined,
+    h.session.extensionRunner.createContext(),
+  );
+  return { result, launchDetails: launch.details };
+}
+
+async function committedDetails(h: Harness, launchDetails: unknown): Promise<FusionResultDetails> {
+  assert.ok(isFusionLaunchDetails(launchDetails));
+  const artifactDir = stringField(launchDetails, 'artifact_dir');
+  const committed = parseJsonText(await readFile(join(h.cwd, artifactDir, 'result.json'), 'utf8'));
+  assert.ok(isRecord(committed));
+  const details = committed['details'];
+  assert.ok(isFusionResultDetails(details));
+  return details;
+}
+
 function customEntries(session: AgentSession, customType: string): JsonRecord[] {
   const entries: readonly unknown[] = session.sessionManager.getEntries();
   return entries.filter((entry): entry is JsonRecord => {
@@ -192,7 +246,11 @@ async function assertCleanArtifactBoundary(
   sentinel: string,
 ): Promise<void> {
   const artifacts = await fusionArtifactText(cwd, details.artifact_dir);
-  assert.equal(artifacts.has('context-omission-ledger.json'), false, 'clean runs must not write a parent omission ledger');
+  assert.equal(
+    artifacts.has('context-omission-ledger.json'),
+    false,
+    'clean runs must not write a parent omission ledger',
+  );
   assert.ok(artifacts.has('canonical-input.json'), 'clean runs must persist canonical input');
   assert.ok(artifacts.has('budget-plan.json'), 'clean runs must persist budget plan');
   assert.ok(artifacts.has('manifest.json'), 'clean runs must persist manifest');
@@ -437,13 +495,18 @@ void describe('fusion SDK integration', { concurrency: false }, () => {
     assert.equal((await readFile(fake.packageCliPath, 'utf8')).startsWith('#!'), false);
   });
 
-  void it('registers real public surfaces and /fusion appends direct custom messages without a parent rewrite', async (t) => {
+  void it('registers real public surfaces and /fusion launches a tracked background run', async (t) => {
     if (skipWin32FusionChildPathFixture(t)) return;
     const h = await harness();
     try {
       const activeTools = h.session.getActiveToolNames();
       assert.ok(!activeTools.includes('fusion_brainstorm'));
-      for (const name of ['fusion_reason', 'fusion_investigate', 'fusion_research', 'fusion_validate']) {
+      for (const name of [
+        'fusion_reason',
+        'fusion_investigate',
+        'fusion_research',
+        'fusion_validate',
+      ]) {
         assert.ok(activeTools.includes(name), `${name} should be active`);
       }
       const fusionTool = h.session.getToolDefinition('fusion_reason');
@@ -495,20 +558,12 @@ void describe('fusion SDK integration', { concurrency: false }, () => {
       assert.ok(legacyRendered, 'historical v4 fusion result should still render');
       assert.match(stripAnsi(legacyRendered.render(100).join('\n')), /Historical fused answer/);
       assert.ok(!h.session.getActiveToolNames().includes('fusion_brainstorm'));
-      const base = baseUi(h.session);
-      const statuses: string[] = [];
-      h.session.extensionRunner.setUIContext({
-        ...base,
-        setStatus: (key, value) => {
-          if (key === 'fusion' && value !== undefined) statuses.push(value);
-          base.setStatus(key, value);
-        },
-      });
-
       await command(h.session, 'fusion').handler(
         '  command prompt\nwith body  ',
         commandContext(h.session, 'print'),
       );
+      await waitForInvocationCount(h.fakeLogPath, 5);
+      const terminal = await waitForFusionTerminal(h.session);
       const calls = await invocations(h.fakeLogPath);
       assert.equal(calls.length, 5);
       assert.equal(calls.filter((call) => call.stage === 'candidate').length, 3);
@@ -552,33 +607,14 @@ void describe('fusion SDK integration', { concurrency: false }, () => {
       assert.equal(commandRequest['source'], 'command');
       assert.equal(commandRequest['authority'], 'directive_over_projected_conversation');
 
-      const requests = customEntries(h.session, 'fusion-request');
-      const results = customEntries(h.session, 'fusion-result');
-      assert.equal(requests.length, 1);
-      assert.equal(results.length, 1);
-      assert.equal(requests[0]?.['display'], false);
-      assert.equal(requests[0]?.['content'], 'command prompt\nwith body');
-      assert.equal(results[0]?.['display'], true);
-      assert.equal(results[0]?.['content'], 'SDK fused answer.');
-      const details = results[0]?.['details'];
-      assert.ok(isFusionResultDetails(details));
-      const rendered = renderer(
-        {
-          role: 'custom',
-          customType: 'fusion-result',
-          content: 'SDK fused answer.',
-          display: true,
-          details,
-          timestamp: Date.now(),
-        },
-        { expanded: true, outputPad: 0 },
-        makeTheme(),
-      );
-      assert.ok(rendered, 'fusion renderer should produce a component');
-      assert.match(stripAnsi(rendered.render(100).join('\n')), /fusion complete|SDK fused answer/);
-      assert.ok(
-        statuses.some((status) => /candidates 3\/3 complete|merging final answer/.test(status)),
-      );
+      assert.equal(customEntries(h.session, 'fusion-request').length, 0);
+      assert.equal(customEntries(h.session, 'fusion-result').length, 0);
+      const terminalDetails = terminal['details'];
+      assert.ok(isRecord(terminalDetails));
+      assert.equal(terminalDetails['status'], 'completed');
+      const terminalFusion = terminalDetails['fusion'];
+      assert.ok(isRecord(terminalFusion));
+      assert.equal(terminalFusion['workflow'], 'reason');
       assert.equal(assistantMessageCount(h.session), 0);
     } finally {
       await disposeHarness(h);
@@ -591,21 +627,23 @@ void describe('fusion SDK integration', { concurrency: false }, () => {
     try {
       const tool = h.session.getToolDefinition('fusion_reason');
       assert.ok(tool, 'fusion_reason tool should be registered');
-      const result = await tool.execute(
+      const launch = await tool.execute(
         'call-fusion-reason',
         { prompt: 'reason without repository inspection' },
         undefined,
         undefined,
         h.session.extensionRunner.createContext(),
       );
-      assert.ok(isFusionResultDetails(result.details));
+      assert.ok(isFusionLaunchDetails(launch.details));
+      const { launchDetails } = await retrieveFusionLaunch(h, launch);
+      const details = await committedDetails(h, launchDetails);
       const calls = await invocations(h.fakeLogPath);
       assert.equal(calls.length, 5);
       for (const call of calls) {
         assert.ok(call.args.includes('--no-tools'));
         assert.equal(call.args.includes('--no-builtin-tools'), false);
       }
-      const artifactFiles = await readdir(join(h.cwd, result.details.artifact_dir));
+      const artifactFiles = await readdir(join(h.cwd, details.artifact_dir));
       assert.equal(
         artifactFiles.some((name) => name.includes('.tool-calls.')),
         false,
@@ -699,21 +737,26 @@ void describe('fusion SDK integration', { concurrency: false }, () => {
         await writeFile(h.fakeLogPath, '', 'utf8');
         const tool = h.session.getToolDefinition(item.name);
         assert.ok(tool, `${item.name} should be registered`);
-        const result = await tool.execute(
+        const launch = await tool.execute(
           `call-${item.workflow}`,
           item.params,
           undefined,
           undefined,
           h.session.extensionRunner.createContext(),
         );
-        assert.ok(isFusionResultDetails(result.details));
-        assert.equal(result.details.workflow, item.workflow);
-        assert.ok(result.details.run_id.startsWith(`${item.workflow}-`));
-        assert.deepEqual(result.details.context, { kind: 'clean_task', policy_id: 'fusion-clean-task-v1' });
-        assert.deepEqual(result.details.tool_policy.evaluation_tools, []);
-        assert.deepEqual(result.details.tool_policy.merge_tools, []);
-        assert.deepEqual(result.details.tool_policy.candidate_tools, item.candidateTools.split(','));
-        await assertCleanArtifactBoundary(h.cwd, result.details, sentinel);
+        assert.ok(isFusionLaunchDetails(launch.details));
+        const retrieved = await retrieveFusionLaunch(h, launch);
+        const details = await committedDetails(h, retrieved.launchDetails);
+        assert.equal(details.workflow, item.workflow);
+        assert.ok(details.run_id.startsWith(`${item.workflow}-`));
+        assert.deepEqual(details.context, {
+          kind: 'clean_task',
+          policy_id: 'fusion-clean-task-v1',
+        });
+        assert.deepEqual(details.tool_policy.evaluation_tools, []);
+        assert.deepEqual(details.tool_policy.merge_tools, []);
+        assert.deepEqual(details.tool_policy.candidate_tools, item.candidateTools.split(','));
+        await assertCleanArtifactBoundary(h.cwd, details, sentinel);
 
         const calls = await invocations(h.fakeLogPath);
         assert.equal(calls.length, 5, `${item.name} must make exactly five child calls`);
@@ -785,7 +828,7 @@ void describe('fusion SDK integration', { concurrency: false }, () => {
       const tool = h.session.getToolDefinition('fusion_reason');
       assert.ok(tool, 'fusion_reason tool should be registered');
       const updates: string[] = [];
-      const result = await tool.execute(
+      const launch = await tool.execute(
         'call-fusion',
         { prompt: 'tool prompt' },
         undefined,
@@ -795,11 +838,13 @@ void describe('fusion SDK integration', { concurrency: false }, () => {
         },
         h.session.extensionRunner.createContext(),
       );
-      assert.equal(
-        result.content[0]?.type === 'text' ? result.content[0].text : '',
-        'SDK fused answer.',
-      );
-      assert.ok(isFusionResultDetails(result.details));
+      assert.ok(isFusionLaunchDetails(launch.details));
+      const retrieved = await retrieveFusionLaunch(h, launch);
+      const result = retrieved.result;
+      const resultText = result.content[0]?.type === 'text' ? result.content[0].text : '';
+      assert.match(resultText, /SDK fused answer\.$/);
+      const details = await committedDetails(h, retrieved.launchDetails);
+      assert.equal(details.workflow, 'reason');
       const resultUsage = Reflect.get(result, 'usage');
       assert.ok(isRecord(resultUsage));
       assert.equal(resultUsage['totalTokens'], 115);
@@ -813,8 +858,23 @@ void describe('fusion SDK integration', { concurrency: false }, () => {
         cacheWrite: 0.02,
         total: 0.05,
       });
-      assert.ok(updates.some((update) => /candidates 3\/3 complete/.test(update)));
-      assert.ok(updates.some((update) => /merging final answer/.test(update)));
+      const task = retrieved.launchDetails['task'];
+      assert.ok(isRecord(task));
+      const resultTool = h.session.getToolDefinition('bg_result');
+      assert.ok(resultTool);
+      const repeated = await resultTool.execute(
+        'repeat-result',
+        { taskId: stringField(task, 'id'), delivery: 'inline' },
+        undefined,
+        undefined,
+        h.session.extensionRunner.createContext(),
+      );
+      assert.equal(
+        Reflect.get(repeated, 'usage'),
+        undefined,
+        'repeated retrieval must not double-count usage',
+      );
+      assert.ok(updates.every((update) => !/failed/.test(update)));
 
       const calls = await invocations(h.fakeLogPath);
       const candidate = calls.find((call) => call.stage === 'candidate');
@@ -847,17 +907,55 @@ void describe('fusion SDK integration', { concurrency: false }, () => {
     }
   });
 
+  void it('hands cancellation ownership from the tool call to the managed task after launch', async (t) => {
+    if (skipWin32FusionChildPathFixture(t)) return;
+    const h = await harness({ fakeDelayMs: 100 });
+    try {
+      const tool = h.session.getToolDefinition('fusion_reason');
+      assert.ok(tool);
+      const callController = new AbortController();
+      const launch = await tool.execute(
+        'call-signal-handoff',
+        { prompt: 'continue after parent tool signal closes' },
+        callController.signal,
+        undefined,
+        h.session.extensionRunner.createContext(),
+      );
+      callController.abort();
+      const retrieved = await retrieveFusionLaunch(h, launch);
+      const text =
+        retrieved.result.content[0]?.type === 'text' ? retrieved.result.content[0].text : '';
+      assert.match(text, /SDK fused answer/);
+    } finally {
+      await disposeHarness(h);
+    }
+  });
+
   void it('reports tool failure stage, slot, attempt, and durable artifact directory', async (t) => {
     if (skipWin32FusionChildPathFixture(t)) return;
     const h = await harness({ fakeFailStage: 'candidate' });
     try {
       const tool = h.session.getToolDefinition('fusion_reason');
       assert.ok(tool, 'fusion_reason tool should be registered');
+      const launch = await tool.execute(
+        'call-failure-diagnostics',
+        { prompt: 'fail with coordinates' },
+        undefined,
+        undefined,
+        h.session.extensionRunner.createContext(),
+      );
+      assert.ok(isFusionLaunchDetails(launch.details));
+      const task = launch.details['task'];
+      assert.ok(isRecord(task));
+      const taskId = stringField(task, 'id');
+      await waitForFusionTerminal(h.session, taskId);
+      const resultTool = h.session.getToolDefinition('bg_result');
+      assert.ok(resultTool);
       await assert.rejects(
         () =>
-          tool.execute(
-            'call-failure-diagnostics',
-            { prompt: 'fail with coordinates' },
+          resultTool.execute(
+            'result-failure-diagnostics',
+            { taskId },
             undefined,
             undefined,
             h.session.extensionRunner.createContext(),
@@ -876,32 +974,37 @@ void describe('fusion SDK integration', { concurrency: false }, () => {
     try {
       const tool = h.session.getToolDefinition('fusion_reason');
       assert.ok(tool, 'fusion_reason tool should be registered');
-      const running = tool.execute(
+      const launchStarted = Date.now();
+      const launch = await tool.execute(
         'call-shutdown',
         { prompt: 'shutdown prompt' },
         undefined,
         undefined,
         h.session.extensionRunner.createContext(),
       );
-      const observed = running.then(
-        () => ({ type: 'resolved' as const }),
-        (error: unknown) => ({ type: 'rejected' as const, error }),
+      assert.ok(isFusionLaunchDetails(launch.details));
+      assert.ok(
+        Date.now() - launchStarted < 2_000,
+        'launch receipt must not wait for delayed Fusion children',
       );
-      const ready = await Promise.race([
-        waitForInvocationCount(h.fakeLogPath, 3).then(() => ({ type: 'ready' as const })),
-        observed,
-      ]);
-      if (ready.type === 'resolved')
-        assert.fail('fusion completed before delayed child invocations were observed');
-      if (ready.type === 'rejected')
-        throw new Error(
-          `fusion rejected before child invocations were observed: ${errorMessage(ready.error)}`,
-        );
+      const task = launch.details['task'];
+      assert.ok(isRecord(task));
+      const taskId = stringField(task, 'id');
+      await waitForInvocationCount(h.fakeLogPath, 3);
       await h.session.extensionRunner.emit({ type: 'session_shutdown', reason: 'reload' });
-      const outcome = await observed;
-      assert.equal(outcome.type, 'rejected');
-      if (outcome.type === 'rejected')
-        assert.match(errorMessage(outcome.error), /cancelled|SIGTERM|exited/i);
+      const resultTool = h.session.getToolDefinition('bg_result');
+      assert.ok(resultTool);
+      await assert.rejects(
+        () =>
+          resultTool.execute(
+            'result-shutdown',
+            { taskId },
+            undefined,
+            undefined,
+            h.session.extensionRunner.createContext(),
+          ),
+        /cancelled|killed|SIGTERM|exited/i,
+      );
       h.session.dispose();
       disposed = true;
     } finally {
@@ -932,6 +1035,8 @@ void describe('fusion SDK integration', { concurrency: false }, () => {
         editor: () => Promise.resolve(' editor prompt '),
       });
       await command(h.session, 'fusion').handler('', commandContext(h.session, 'print'));
+      await waitForInvocationCount(h.fakeLogPath, 5);
+      await waitForFusionTerminal(h.session);
       assert.equal((await invocations(h.fakeLogPath)).length, 5);
 
       await writeFile(h.fakeLogPath, '', 'utf8');
@@ -1013,16 +1118,13 @@ void describe('fusion SDK integration', { concurrency: false }, () => {
       const tool = h.session.getToolDefinition('fusion_validate');
       assert.ok(tool, 'fusion_validate should be registered at load');
       assert.equal(Reflect.get(tool.parameters, 'additionalProperties'), false);
-      assert.throws(
-        () => tool.prepareArguments?.({ prompt: 'x' }),
-        /no longer accepts \{prompt\}/,
-      );
+      assert.throws(() => tool.prepareArguments?.({ prompt: 'x' }), /no longer accepts \{prompt\}/);
       assert.throws(
         () => tool.prepareArguments?.({ objective: 'x', extra: true }),
         /unsupported key\(s\): extra/,
       );
 
-      const result = await tool.execute(
+      const launch = await tool.execute(
         'call-validate',
         {
           objective: 'validate the change',
@@ -1036,12 +1138,15 @@ void describe('fusion SDK integration', { concurrency: false }, () => {
         undefined,
         h.session.extensionRunner.createContext(),
       );
-      const validateText = result.content[0]?.type === 'text' ? result.content[0].text : '';
-      assert.match(validateText, /^# Validation report/);
+      assert.ok(isFusionLaunchDetails(launch.details));
+      const retrieved = await retrieveFusionLaunch(h, launch);
+      const validateText =
+        retrieved.result.content[0]?.type === 'text' ? retrieved.result.content[0].text : '';
+      assert.match(validateText, /# Validation report/);
       assert.match(validateText, /Location: README\.md:1/);
-      assert.ok(isFusionResultDetails(result.details));
-      assert.equal(result.details.workflow, 'validate');
-      assert.ok(result.details.run_id.startsWith('validate-'));
+      const details = await committedDetails(h, retrieved.launchDetails);
+      assert.equal(details.workflow, 'validate');
+      assert.ok(details.run_id.startsWith('validate-'));
 
       const calls = await invocations(h.fakeLogPath);
       assert.equal(calls.length, 5, 'validate must make exactly five child calls');
@@ -1076,5 +1181,4 @@ void describe('fusion SDK integration', { concurrency: false }, () => {
       await disposeHarness(h);
     }
   });
-
 });

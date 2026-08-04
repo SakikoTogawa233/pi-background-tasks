@@ -6,6 +6,7 @@ import { sanitizePathSegment } from '../common.js';
 import { replaceFileDurable } from '../durable-fs.js';
 import {
   EMPTY_FUSION_USAGE,
+  FUSION_COMMITTED_RESULT_SCHEMA_VERSION,
   FUSION_MANIFEST_SCHEMA_VERSION,
   FUSION_VALIDATE_CANDIDATE_CONTRACT_EVENT_SCHEMA_VERSION,
   FusionError,
@@ -19,6 +20,8 @@ import {
   type FusionCapability,
   type FusionContextOmissionLedgerV2,
   type FusionChildRunResult,
+  type FusionCommittedResultV1,
+  type FusionResultDetails,
   type FusionModelConfigV1,
   type FusionSource,
   type FusionStage,
@@ -57,8 +60,17 @@ interface MutableFusionArtifactManifest {
     evaluation: FusionCapability;
     merge: FusionCapability;
   };
-  context: { kind: import('./types.js').FusionContextKind; policy_id: string; ledger_artifact?: string; source_policy_artifact?: string };
-  tool_policy: { candidate_tools: readonly string[]; evaluation_tools: readonly []; merge_tools: readonly [] };
+  context: {
+    kind: import('./types.js').FusionContextKind;
+    policy_id: string;
+    ledger_artifact?: string;
+    source_policy_artifact?: string;
+  };
+  tool_policy: {
+    candidate_tools: readonly string[];
+    evaluation_tools: readonly [];
+    merge_tools: readonly [];
+  };
   usage: FusionUsage;
   attempts: FusionAttemptArtifactRecord[];
   artifacts: Record<string, FusionArtifactRef>;
@@ -206,7 +218,11 @@ function publicManifest(manifest: MutableFusionArtifactManifest): FusionArtifact
     models: manifest.models,
     capabilities: manifest.capabilities,
     context: { ...manifest.context },
-    tool_policy: { candidate_tools: [...manifest.tool_policy.candidate_tools], evaluation_tools: [], merge_tools: [] },
+    tool_policy: {
+      candidate_tools: [...manifest.tool_policy.candidate_tools],
+      evaluation_tools: [],
+      merge_tools: [],
+    },
     usage: cloneFusionUsage(manifest.usage),
     attempts: [...manifest.attempts],
     artifacts: { ...manifest.artifacts },
@@ -295,8 +311,18 @@ export class FusionArtifactStore {
         evaluation: 'reason',
         merge: 'reason',
       },
-      context: { kind: profile.contextKind, policy_id: profile.contextKind === 'session_projection' ? 'fusion-session-projection-v1' : 'fusion-clean-task-v1' },
-      tool_policy: { candidate_tools: profile.candidateTools, evaluation_tools: [], merge_tools: [] },
+      context: {
+        kind: profile.contextKind,
+        policy_id:
+          profile.contextKind === 'session_projection'
+            ? 'fusion-session-projection-v1'
+            : 'fusion-clean-task-v1',
+      },
+      tool_policy: {
+        candidate_tools: profile.candidateTools,
+        evaluation_tools: [],
+        merge_tools: [],
+      },
       usage: cloneFusionUsage(EMPTY_FUSION_USAGE),
       attempts: [],
       artifacts: {},
@@ -339,11 +365,18 @@ export class FusionArtifactStore {
           childCreated: false,
         });
       }
-      if (to === 'completed' && manifest.artifacts['merged.md'] === undefined) {
-        throw new FusionError('fusion cannot complete before merged.md is durable', {
-          code: 'state_transition_invalid',
-          childCreated: false,
-        });
+      if (
+        to === 'completed' &&
+        (manifest.artifacts['merged.md'] === undefined ||
+          manifest.artifacts['result.json'] === undefined)
+      ) {
+        throw new FusionError(
+          'fusion cannot complete before merged.md and result.json are durable',
+          {
+            code: 'state_transition_invalid',
+            childCreated: false,
+          },
+        );
       }
       manifest.state = to;
     });
@@ -403,8 +436,21 @@ export class FusionArtifactStore {
     await this.writeArtifact('evaluation.json', canonicalJson(value));
   }
 
-  async writeMerged(text: string): Promise<void> {
-    await this.writeArtifact('merged.md', text);
+  async writeMerged(text: string): Promise<FusionArtifactRef> {
+    return this.writeArtifact('merged.md', text);
+  }
+
+  async writeCommittedResult(
+    merged: FusionArtifactRef,
+    details: FusionResultDetails,
+  ): Promise<FusionArtifactRef> {
+    const value: FusionCommittedResultV1 = {
+      schema_version: FUSION_COMMITTED_RESULT_SCHEMA_VERSION,
+      run_id: this.runId,
+      merged,
+      details,
+    };
+    return this.writeArtifact('result.json', `${canonicalJson(value)}\n`);
   }
 
   async writeError(state: Exclude<FusionTerminalState, 'completed'>, error: string): Promise<void> {
@@ -466,20 +512,26 @@ export class FusionArtifactStore {
     violation: FusionCalibrationViolation;
   }): Promise<FusionArtifactRef> {
     const prefix = attemptPrefix(input.stage, input.slot, input.attempt);
-    return this.writeArtifact(calibrationViolationName(prefix), `${canonicalJson(input.violation)}\n`);
+    return this.writeArtifact(
+      calibrationViolationName(prefix),
+      `${canonicalJson(input.violation)}\n`,
+    );
   }
 
   async recordValidationCandidateContractEvent(
     input: RecordValidationCandidateContractEventInput,
   ): Promise<FusionArtifactRef> {
     const name = `candidate-${String(input.slot)}.output-contract-${input.status}.json`;
-    return this.writeArtifact(name, `${canonicalJson({
-      schema_version: FUSION_VALIDATE_CANDIDATE_CONTRACT_EVENT_SCHEMA_VERSION,
-      ...input.detail,
-      candidate_id: input.candidateId,
-      slot: input.slot,
-      status: input.status,
-    })}\n`);
+    return this.writeArtifact(
+      name,
+      `${canonicalJson({
+        schema_version: FUSION_VALIDATE_CANDIDATE_CONTRACT_EVENT_SCHEMA_VERSION,
+        ...input.detail,
+        candidate_id: input.candidateId,
+        slot: input.slot,
+        status: input.status,
+      })}\n`,
+    );
   }
 
   async recordFailedAttempt(input: RecordFusionFailedAttemptInput): Promise<void> {
