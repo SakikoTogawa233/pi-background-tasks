@@ -26,6 +26,7 @@ function resolved(qualifiedId: string): ResolvedFusionModel {
     qualifiedId,
     thinkingLevel: 'medium',
     contextWindow: 1000,
+    maxOutputTokens: 128,
   };
 }
 

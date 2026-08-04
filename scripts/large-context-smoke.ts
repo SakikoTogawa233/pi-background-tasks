@@ -20,7 +20,9 @@ import { buildFusionCanonicalInput } from '../src/core/fusion/context.js';
 import {
   FUSION_CANDIDATE_MAX_OUTPUT_BYTES,
   FUSION_EVALUATION_MAX_OUTPUT_BYTES,
+  FUSION_MIN_CANONICAL_INPUT_TOKENS,
   FUSION_MIN_CONTEXT_WINDOW_TOKENS,
+  FUSION_RESERVED_OUTPUT_TOKENS,
   FusionBudget,
   fusionTokenUpperBound,
 } from '../src/core/fusion/budget.js';
@@ -160,6 +162,7 @@ function resolvedModel(qualifiedId: string, contextWindow: number): ResolvedFusi
     qualifiedId,
     thinkingLevel: 'high',
     contextWindow,
+    maxOutputTokens: 128_000,
   };
 }
 
@@ -236,7 +239,9 @@ async function main(): Promise<void> {
       `  context window ${String(smallest.context_window_tokens)} tok, allowed input ${String(smallest.allowed_input_tokens)} tok`,
     );
     const plan = budget.plan(built.input);
-    console.log(`  minimum viable window:   ${String(FUSION_MIN_CONTEXT_WINDOW_TOKENS)} tok`);
+    console.log(
+      `  minimum viable window:   ${String(smallest.reserved_output_tokens + smallest.framing_reserve_tokens + smallest.safety_reserve_tokens + FUSION_MIN_CANONICAL_INPUT_TOKENS)} tok (${String(FUSION_MIN_CONTEXT_WINDOW_TOKENS)}-token baseline when model max output is <= ${String(FUSION_RESERVED_OUTPUT_TOKENS)})`,
+    );
 
     console.log('\n=== PRE-FIX (full transcript forwarding) ===');
     console.log(`transcript:              ${fmt(Buffer.byteLength(legacy, 'utf8'))}`);
@@ -302,20 +307,23 @@ async function main(): Promise<void> {
       const tokens = fusionTokenUpperBound(bytes);
       budget.assertStagePrompt(stage, system, user);
       console.log(
-        `  ${stage.padEnd(18)} ${fmt(bytes).padStart(12)}  <= ${String(tokens).padStart(7)} tok / ${String(budget.allowedInputTokens)} allowed  OK`,
+        `  ${stage.padEnd(18)} ${fmt(bytes).padStart(12)}  rendered check OK; 1-B/token ceiling ${String(tokens)} vs ${String(budget.allowedInputTokens)} allowed`,
       );
     }
-    console.log(
-      `\ninput estimator: ${plan.policy.calibration_version} (${plan.policy.id})`,
-    );
+    console.log(`\ninput estimator: ${plan.policy.calibration_version} (${plan.policy.id})`);
     console.log('\nPer-stage forecast:');
     for (const entry of plan.stages) {
       const slot = entry.slot === undefined ? '' : `-${String(entry.slot)}`;
+      const reservation = entry.reservation_fits
+        ? 'worst-case contract reservation fits'
+        : 'input fits; worst-case contract reservation warning';
       console.log(
-        `  ${entry.budget_stage}${slot}: ${String(entry.forecast_input_tokens_upper_bound)} tok / ${String(entry.allowed_input_tokens)} allowed on ${entry.route.qualified_id} (${entry.fits ? 'fits' : 'over'})`,
+        `  ${entry.budget_stage}${slot}: input-only ${String(entry.input_only_input_tokens_upper_bound)} tok; reservation ${String(entry.forecast_input_tokens_upper_bound)} tok / ${String(entry.allowed_input_tokens)} allowed on ${entry.route.qualified_id} (${reservation})`,
       );
     }
-    console.log('\nAll four expansion stages fit their configured routes at contract maxima.');
+    console.log(
+      '\nKnown rendered contract-maximum fixtures pass route-aware checks; conservative unknown-output pressure remains explicit, and every actual provider payload is governed again before transport.',
+    );
 
     const evidence = join(root, 'canonical-input.json');
     await writeFile(evidence, built.serialized, 'utf8');

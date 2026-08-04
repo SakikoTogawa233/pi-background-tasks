@@ -32,6 +32,7 @@ function resolved(qualifiedId: string, contextWindow: number): ResolvedFusionMod
     qualifiedId,
     thinkingLevel: 'high',
     contextWindow,
+    maxOutputTokens: 32_768,
   };
 }
 

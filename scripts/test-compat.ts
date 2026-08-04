@@ -365,8 +365,8 @@ function assertBundledTypeBox(temp: string, version: string, expectedRange: stri
   console.log(`  Pi ${version}: typebox ${installed} (peer, not bundled)`);
 }
 
-/** Fusion audit sealing requires the terminal lifecycle event introduced before Pi 0.81.1. */
-function assertAgentSettledSupport(temp: string, version: string): void {
+/** Fusion requires both terminal settlement and final provider-payload interception. */
+function assertFusionLifecycleHookSupport(temp: string, version: string): void {
   const typesPath = join(
     temp,
     'node_modules',
@@ -380,8 +380,14 @@ function assertAgentSettledSupport(temp: string, version: string): void {
   if (!existsSync(typesPath)) {
     throw new Error(`Pi ${version}: extension event declarations are missing at ${typesPath}`);
   }
-  if (!readFileSync(typesPath, 'utf8').includes('agent_settled')) {
+  const declarations = readFileSync(typesPath, 'utf8');
+  if (!declarations.includes('agent_settled')) {
     throw new Error(`Pi ${version}: agent_settled is required for terminal Fusion audit sealing`);
+  }
+  if (!declarations.includes('before_provider_request')) {
+    throw new Error(
+      `Pi ${version}: before_provider_request is required for Fusion runtime context governance`,
+    );
   }
 }
 
@@ -412,7 +418,7 @@ async function smokeVersion(version: string, tarballPath: string): Promise<void>
       temp,
     );
     assertBundledTypeBox(temp, version, typebox.prefix);
-    assertAgentSettledSupport(temp, version);
+    assertFusionLifecycleHookSupport(temp, version);
     await assertNoRemovedTypeBoxApis(
       join(temp, 'node_modules', 'pi-background-tasks'),
       `Pi ${version}`,

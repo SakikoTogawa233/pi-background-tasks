@@ -21,7 +21,7 @@ export const FUSION_LEGACY_MANIFEST_SCHEMA_VERSION = 'pi-background-tasks.fusion
 export const FUSION_MANIFEST_SCHEMA_VERSION = 'pi-background-tasks.fusion-manifest.v4';
 export const FUSION_CONTEXT_LEDGER_SCHEMA_VERSION = 'pi-background-tasks.fusion-context-ledger.v2';
 export const FUSION_SOURCE_POLICY_SCHEMA_VERSION = 'pi-background-tasks.fusion-source-policy.v1';
-export const FUSION_BUDGET_PLAN_SCHEMA_VERSION = 'pi-background-tasks.fusion-budget-plan.v3';
+export const FUSION_BUDGET_PLAN_SCHEMA_VERSION = 'pi-background-tasks.fusion-budget-plan.v4';
 export const FUSION_CALIBRATION_VIOLATION_SCHEMA_VERSION =
   'pi-background-tasks.fusion-calibration-violation.v1';
 export const FUSION_TOOL_CALL_LOG_SCHEMA_VERSION = 'pi-background-tasks.fusion-tool-call.v1';
@@ -186,6 +186,7 @@ export interface ResolvedFusionModel {
   qualifiedId: string;
   thinkingLevel: FusionThinkingLevel;
   contextWindow: number;
+  maxOutputTokens: number;
 }
 
 export interface ResolvedFusionModels {
@@ -595,6 +596,7 @@ export type FusionErrorCode =
   | 'child_stdin_failed'
   | 'child_event_invalid'
   | 'child_exit_failed'
+  | 'child_runtime_budget_exceeded'
   | 'child_timeout'
   | 'child_output_cap'
   | 'child_cancelled'
@@ -913,7 +915,8 @@ export interface FusionBudgetPlanV1 {
 
 /** Documented, versioned budget policy. */
 export interface FusionBudgetPolicyDescriptor {
-  id: 'fusion-budget-policy-v3';
+  id: 'fusion-budget-policy-v4';
+  route_output_reserve_strategy: 'max_fusion_contract_or_model_max';
   calibration_version: string;
   calibration_table: Readonly<Record<TokenBudgetFamily, TokenBudgetFamilyCalibration>>;
   reserved_output_tokens: number;

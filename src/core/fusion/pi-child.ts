@@ -6,16 +6,31 @@ import { createRequire } from 'node:module';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
+  FUSION_CHILD_MAX_PROVIDER_REQUESTS,
+  FUSION_CHILD_MAX_TOOL_CALLS,
+  FUSION_CHILD_MIN_OUTPUT_RESERVE_TOKENS,
   FUSION_CHILD_RESULT_PREFIX,
   FUSION_CHILD_RESULT_SCHEMA_VERSION,
+  FUSION_CHILD_SAFETY_RESERVE_TOKENS,
+  FUSION_CHILD_SETTLEMENT_PREFIX,
+  FUSION_CHILD_SETTLEMENT_SCHEMA_VERSION,
   FUSION_RESEARCH_ENABLED_ENV,
+  FUSION_RUNTIME_GUARD_PREFIX,
+  FUSION_RUNTIME_GUARD_SCHEMA_VERSION,
   FUSION_SOURCE_POLICY_PATH_ENV,
   FUSION_SOURCE_POLICY_SHA256_ENV,
   FUSION_TOOL_CALL_LOG_PATH_ENV,
   FUSION_TOOL_CALL_SEAL_SCHEMA_VERSION,
   FUSION_TOOL_CALL_SEAL_SUFFIX,
   FUSION_CHILD_MAX_TOTAL_TOOL_RESULT_BYTES,
+  buildFusionChildSettlement,
+  isRecoverableFusionChildErrorRecord,
+  serializeFusionChildResultRecords,
   type FusionChildResultMetadata,
+  type FusionChildSettlementFailureReason,
+  type FusionChildSettlementRecord,
+  type FusionRuntimeGuardCode,
+  type FusionRuntimeGuardRecord,
 } from './child-protocol.js';
 import {
   FUSION_FORBIDDEN_TOOLS,
@@ -405,8 +420,9 @@ function fusionToolArgv(capability: FusionCapability): string[] {
  *
  * `--no-extensions` disables discovery but still honours explicit `--extension`
  * paths, so this list is the complete set a child receives. The metadata
- * extension is always present; the Anthropic sanitizer is appended only for
- * Claude routes, keeping non-Anthropic child argv byte-identical to before.
+ * extension is always present. For Claude routes the sanitizer loads first so
+ * the private runtime governor observes the final post-sanitizer payload; non-
+ * Anthropic child argv remains unchanged.
  */
 export function fusionChildExtensionPaths(
   model: ResolvedFusionModel,
@@ -414,7 +430,7 @@ export function fusionChildExtensionPaths(
   resolveSanitizer: () => string = resolveAnthropicSanitizerExtensionPath,
 ): readonly string[] {
   if (model.provider !== FUSION_SANITIZED_PROVIDER) return [childExtensionPath];
-  return [childExtensionPath, resolveSanitizer()];
+  return [resolveSanitizer(), childExtensionPath];
 }
 
 export function buildFusionPiChildArgv(
@@ -453,6 +469,8 @@ export function buildFusionPiChildArgv(
 
 const SHA256_HEX_PATTERN = /^[0-9a-f]{64}$/;
 const FUSION_CHILD_RESULT_PREFIX_BYTES = Buffer.from(FUSION_CHILD_RESULT_PREFIX, 'utf8');
+const FUSION_CHILD_SETTLEMENT_PREFIX_BYTES = Buffer.from(FUSION_CHILD_SETTLEMENT_PREFIX, 'utf8');
+const FUSION_RUNTIME_GUARD_PREFIX_BYTES = Buffer.from(FUSION_RUNTIME_GUARD_PREFIX, 'utf8');
 const PI_EXTENSION_ERROR_PREFIX_BYTES = Buffer.from('Extension error (', 'utf8');
 
 interface ParsedFusionChildStderr {
@@ -527,6 +545,16 @@ function requireUsageInteger(
   return value;
 }
 
+function requirePositiveSafeInteger(
+  record: Record<PropertyKey, unknown>,
+  key: string,
+  label: string,
+): number {
+  const value = requireUsageInteger(record, key, label);
+  if (value === 0) throw new Error(`${label}.${key} must be a positive safe integer`);
+  return value;
+}
+
 function requireCostNumber(
   record: Record<PropertyKey, unknown>,
   key: string,
@@ -596,7 +624,322 @@ function parseChildResultMetadata(value: unknown): FusionChildResultMetadata {
   };
 }
 
+const FUSION_RUNTIME_GUARD_CODES = new Set<FusionRuntimeGuardCode>([
+  'provider_request_limit',
+  'provider_request_budget',
+  'provider_payload_invalid',
+  'tool_call_limit',
+]);
+
+export function parseFusionRuntimeGuard(stderr: Buffer): FusionRuntimeGuardRecord | undefined {
+  const frames: FusionRuntimeGuardRecord[] = [];
+  let cursor = 0;
+  for (;;) {
+    const frameStart = stderr.indexOf(FUSION_RUNTIME_GUARD_PREFIX_BYTES, cursor);
+    if (frameStart < 0) break;
+    const payloadStart = frameStart + FUSION_RUNTIME_GUARD_PREFIX_BYTES.length;
+    const newline = stderr.indexOf(10, payloadStart);
+    if (newline < 0) throw new Error('fusion runtime guard frame is not newline-terminated');
+    const bytes = stderr.subarray(payloadStart, newline);
+    const text = bytes.toString('utf8');
+    if (!Buffer.from(text, 'utf8').equals(bytes)) {
+      throw new Error('fusion runtime guard frame is not valid UTF-8');
+    }
+    const record = assertClosedRecord(
+      parseJsonText(text),
+      [
+        'schema_version',
+        'code',
+        'provider',
+        'model',
+        'request_ordinal',
+        'tool_call_count',
+        'payload_bytes',
+        'payload_sha256',
+        'estimated_input_tokens',
+        'context_window_tokens',
+        'reserved_output_tokens',
+        'safety_reserve_tokens',
+        'allowed_input_tokens',
+        'message',
+      ],
+      'fusion runtime guard',
+    );
+    if (record['schema_version'] !== FUSION_RUNTIME_GUARD_SCHEMA_VERSION) {
+      throw new Error('fusion runtime guard schema_version mismatch');
+    }
+    const code = requireNonBlankString(record, 'code', 'fusion runtime guard');
+    if (!FUSION_RUNTIME_GUARD_CODES.has(code as FusionRuntimeGuardCode)) {
+      throw new Error(`fusion runtime guard code is unsupported: ${code}`);
+    }
+    const frame: FusionRuntimeGuardRecord = {
+      schema_version: FUSION_RUNTIME_GUARD_SCHEMA_VERSION,
+      code: code as FusionRuntimeGuardCode,
+      provider: requireNonBlankString(record, 'provider', 'fusion runtime guard'),
+      model: requireNonBlankString(record, 'model', 'fusion runtime guard'),
+      request_ordinal: requirePositiveSafeInteger(
+        record,
+        'request_ordinal',
+        'fusion runtime guard',
+      ),
+      tool_call_count: requireUsageInteger(record, 'tool_call_count', 'fusion runtime guard'),
+      payload_bytes: requireUsageInteger(record, 'payload_bytes', 'fusion runtime guard'),
+      payload_sha256: requireSha256(record, 'payload_sha256', 'fusion runtime guard'),
+      estimated_input_tokens: requireUsageInteger(
+        record,
+        'estimated_input_tokens',
+        'fusion runtime guard',
+      ),
+      context_window_tokens: requireUsageInteger(
+        record,
+        'context_window_tokens',
+        'fusion runtime guard',
+      ),
+      reserved_output_tokens: requirePositiveSafeInteger(
+        record,
+        'reserved_output_tokens',
+        'fusion runtime guard',
+      ),
+      safety_reserve_tokens: requirePositiveSafeInteger(
+        record,
+        'safety_reserve_tokens',
+        'fusion runtime guard',
+      ),
+      allowed_input_tokens: requireUsageInteger(
+        record,
+        'allowed_input_tokens',
+        'fusion runtime guard',
+      ),
+      message: requireNonBlankString(record, 'message', 'fusion runtime guard'),
+    };
+    if (frame.code !== 'provider_payload_invalid') {
+      if (frame.context_window_tokens === 0) {
+        throw new Error('fusion runtime guard.context_window_tokens must be positive');
+      }
+      const expectedAllowed =
+        frame.context_window_tokens - frame.reserved_output_tokens - frame.safety_reserve_tokens;
+      if (expectedAllowed < 0 || frame.allowed_input_tokens !== expectedAllowed) {
+        throw new Error('fusion runtime guard allowed-input arithmetic mismatch');
+      }
+    }
+    if (
+      frame.code === 'provider_request_budget' &&
+      frame.estimated_input_tokens <= frame.allowed_input_tokens
+    ) {
+      throw new Error('fusion runtime guard provider budget code has no token overage');
+    }
+    if (
+      frame.code === 'provider_request_limit' &&
+      frame.request_ordinal <= FUSION_CHILD_MAX_PROVIDER_REQUESTS
+    ) {
+      throw new Error('fusion runtime guard provider request limit was not exceeded');
+    }
+    if (frame.code === 'tool_call_limit') {
+      if (frame.tool_call_count <= FUSION_CHILD_MAX_TOOL_CALLS) {
+        throw new Error('fusion runtime guard tool call limit was not exceeded');
+      }
+      if (
+        frame.payload_bytes !== 0 ||
+        frame.payload_sha256 !== createHash('sha256').update(Buffer.alloc(0)).digest('hex') ||
+        frame.estimated_input_tokens !== 0
+      ) {
+        throw new Error('fusion runtime guard tool call limit payload evidence mismatch');
+      }
+    }
+    frames.push(frame);
+    cursor = newline + 1;
+  }
+  if (frames.length > 1) throw new Error('fusion child emitted multiple runtime guard frames');
+  return frames[0];
+}
+
+const FUSION_CHILD_SETTLEMENT_FAILURE_REASONS = new Set<FusionChildSettlementFailureReason>([
+  'no_records',
+  'final_not_stop',
+  'invalid_non_final',
+  'runtime_guard',
+]);
+
+export function parseFusionChildSettlement(
+  stderr: Buffer,
+): FusionChildSettlementRecord | undefined {
+  const frames: FusionChildSettlementRecord[] = [];
+  let cursor = 0;
+  for (;;) {
+    const frameStart = stderr.indexOf(FUSION_CHILD_SETTLEMENT_PREFIX_BYTES, cursor);
+    if (frameStart < 0) break;
+    const payloadStart = frameStart + FUSION_CHILD_SETTLEMENT_PREFIX_BYTES.length;
+    const newline = stderr.indexOf(10, payloadStart);
+    if (newline < 0) throw new Error('fusion child settlement frame is not newline-terminated');
+    const bytes = stderr.subarray(payloadStart, newline);
+    const text = bytes.toString('utf8');
+    if (!Buffer.from(text, 'utf8').equals(bytes)) {
+      throw new Error('fusion child settlement frame is not valid UTF-8');
+    }
+    const record = assertClosedRecord(
+      parseJsonText(text),
+      [
+        'schema_version',
+        'status',
+        'record_count',
+        'records_sha256',
+        'final_record_index',
+        'final_text_sha256',
+        'recovered_error_ordinals',
+        'failure_reason',
+      ],
+      'fusion child settlement',
+    );
+    if (record['schema_version'] !== FUSION_CHILD_SETTLEMENT_SCHEMA_VERSION) {
+      throw new Error('fusion child settlement schema_version mismatch');
+    }
+    const status = record['status'];
+    if (status !== 'complete' && status !== 'failed') {
+      throw new Error('fusion child settlement.status is invalid');
+    }
+    const recordCount = requireUsageInteger(record, 'record_count', 'fusion child settlement');
+    const finalIndexValue = record['final_record_index'];
+    const finalRecordIndex =
+      finalIndexValue === null
+        ? null
+        : requireUsageInteger(record, 'final_record_index', 'fusion child settlement');
+    const finalHashValue = record['final_text_sha256'];
+    const finalTextSha256 =
+      finalHashValue === null
+        ? null
+        : requireSha256(record, 'final_text_sha256', 'fusion child settlement');
+    const recoveredValue = record['recovered_error_ordinals'];
+    if (!Array.isArray(recoveredValue)) {
+      throw new Error('fusion child settlement.recovered_error_ordinals must be an array');
+    }
+    const recoveredErrorOrdinals = recoveredValue.map((value, index) => {
+      if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0) {
+        throw new Error(
+          `fusion child settlement.recovered_error_ordinals[${String(index)}] must be a non-negative safe integer`,
+        );
+      }
+      return value;
+    });
+    for (let index = 0; index < recoveredErrorOrdinals.length; index += 1) {
+      const ordinal = recoveredErrorOrdinals[index];
+      if (
+        ordinal === undefined ||
+        ordinal >= recordCount - 1 ||
+        (index > 0 && ordinal <= (recoveredErrorOrdinals[index - 1] ?? -1))
+      ) {
+        throw new Error('fusion child settlement recovered-error ordinals are not canonical');
+      }
+    }
+    const failureValue = record['failure_reason'];
+    let failureReason: FusionChildSettlementFailureReason | null;
+    if (failureValue === null) failureReason = null;
+    else if (
+      typeof failureValue === 'string' &&
+      FUSION_CHILD_SETTLEMENT_FAILURE_REASONS.has(
+        failureValue as FusionChildSettlementFailureReason,
+      )
+    ) {
+      failureReason = failureValue as FusionChildSettlementFailureReason;
+    } else {
+      throw new Error('fusion child settlement.failure_reason is invalid');
+    }
+    if ((status === 'complete') !== (failureReason === null)) {
+      throw new Error('fusion child settlement status/failure_reason mismatch');
+    }
+    if (recordCount === 0) {
+      if (finalRecordIndex !== null || finalTextSha256 !== null) {
+        throw new Error('fusion child settlement empty stream has final-record evidence');
+      }
+    } else if (finalRecordIndex !== recordCount - 1 || finalTextSha256 === null) {
+      throw new Error('fusion child settlement final-record evidence mismatch');
+    }
+    frames.push({
+      schema_version: FUSION_CHILD_SETTLEMENT_SCHEMA_VERSION,
+      status,
+      record_count: recordCount,
+      records_sha256: requireSha256(record, 'records_sha256', 'fusion child settlement'),
+      final_record_index: finalRecordIndex,
+      final_text_sha256: finalTextSha256,
+      recovered_error_ordinals: recoveredErrorOrdinals,
+      failure_reason: failureReason,
+    });
+    cursor = newline + 1;
+  }
+  if (frames.length > 1) throw new Error('fusion child emitted multiple settlement frames');
+  return frames[0];
+}
+
+function assertFusionChildSettlementOrdering(stderr: Buffer): void {
+  const settlementStart = stderr.indexOf(FUSION_CHILD_SETTLEMENT_PREFIX_BYTES);
+  if (settlementStart < 0) return;
+  if (stderr.indexOf(FUSION_CHILD_RESULT_PREFIX_BYTES, settlementStart) >= 0) {
+    throw new Error('fusion child emitted result metadata after terminal settlement');
+  }
+}
+
+function stripChildControlFrames(stderr: Buffer): Buffer {
+  const prefixes = [FUSION_CHILD_SETTLEMENT_PREFIX_BYTES, FUSION_RUNTIME_GUARD_PREFIX_BYTES];
+  const diagnostics: Buffer[] = [];
+  let cursor = 0;
+  for (;;) {
+    let next = -1;
+    let prefix: Buffer | undefined;
+    for (const candidate of prefixes) {
+      const found = stderr.indexOf(candidate, cursor);
+      if (found >= 0 && (next < 0 || found < next)) {
+        next = found;
+        prefix = candidate;
+      }
+    }
+    if (next < 0 || prefix === undefined) {
+      if (cursor < stderr.length) diagnostics.push(stderr.subarray(cursor));
+      break;
+    }
+    if (next > cursor) diagnostics.push(stderr.subarray(cursor, next));
+    const newline = stderr.indexOf(10, next + prefix.length);
+    if (newline < 0) throw new Error('fusion child control frame is not newline-terminated');
+    cursor = newline + 1;
+  }
+  return Buffer.concat(diagnostics);
+}
+
+export function assertFusionRuntimeGuardMatchesModel(
+  guard: FusionRuntimeGuardRecord,
+  model: ResolvedFusionModel,
+): void {
+  const routeUnknown = guard.provider === 'unknown' && guard.model === 'unknown';
+  if (!routeUnknown && (guard.provider !== model.provider || guard.model !== model.model)) {
+    throw new Error(
+      `fusion runtime guard route mismatch: expected ${model.qualifiedId}, observed ${guard.provider}/${guard.model}`,
+    );
+  }
+  if (routeUnknown && guard.code !== 'provider_payload_invalid') {
+    throw new Error('fusion runtime guard omitted the route for a capacity-backed refusal');
+  }
+  if (guard.code === 'provider_payload_invalid') return;
+  const expectedReservedOutput = Math.max(
+    FUSION_CHILD_MIN_OUTPUT_RESERVE_TOKENS,
+    model.maxOutputTokens,
+  );
+  const expectedAllowedInput =
+    model.contextWindow - expectedReservedOutput - FUSION_CHILD_SAFETY_RESERVE_TOKENS;
+  if (
+    guard.context_window_tokens !== model.contextWindow ||
+    guard.reserved_output_tokens !== expectedReservedOutput ||
+    guard.safety_reserve_tokens !== FUSION_CHILD_SAFETY_RESERVE_TOKENS ||
+    guard.allowed_input_tokens !== expectedAllowedInput
+  ) {
+    throw new Error('fusion runtime guard capacity evidence does not match the resolved route');
+  }
+}
+
 export function parseFusionChildStderr(stderr: Buffer): ParsedFusionChildStderr {
+  // Validate every package-owned side frame even though result metadata is parsed
+  // independently below. Malformed refusal/settlement evidence must never degrade
+  // into opaque diagnostics.
+  parseFusionRuntimeGuard(stderr);
+  const settlement = parseFusionChildSettlement(stderr);
+  assertFusionChildSettlementOrdering(stderr);
   const records: FusionChildResultMetadata[] = [];
   const diagnostics: Buffer[] = [];
   let cursor = 0;
@@ -625,11 +968,16 @@ export function parseFusionChildStderr(stderr: Buffer): ParsedFusionChildStderr 
     records.push(parseChildResultMetadata(parsed));
     cursor = newline + 1;
   }
-  const events = Buffer.from(
-    records.length === 0 ? '' : `${records.map((record) => JSON.stringify(record)).join('\n')}\n`,
-    'utf8',
-  );
-  return { records, events, diagnostics: Buffer.concat(diagnostics) };
+  const resultEvents = serializeFusionChildResultRecords(records);
+  const events =
+    settlement === undefined
+      ? resultEvents
+      : Buffer.concat([resultEvents, Buffer.from(`${JSON.stringify(settlement)}\n`, 'utf8')]);
+  return {
+    records,
+    events,
+    diagnostics: stripChildControlFrames(Buffer.concat(diagnostics)),
+  };
 }
 
 function parseToolCallLogRecord(value: unknown, label: string): FusionToolCallLogRecord {
@@ -965,6 +1313,16 @@ export class FusionPiCompactResultParser {
     diagnostics: Buffer;
   } {
     const parsed = parseFusionChildStderr(stderr);
+    const runtimeGuard = parseFusionRuntimeGuard(stderr);
+    if (runtimeGuard !== undefined) {
+      throw new Error(`Pi child runtime guard refused the run: ${runtimeGuard.message}`);
+    }
+    const settlement = parseFusionChildSettlement(stderr);
+    if (settlement === undefined) throw new Error('Pi child emitted no terminal result settlement');
+    const expectedSettlement = buildFusionChildSettlement(parsed.records);
+    if (JSON.stringify(settlement) !== JSON.stringify(expectedSettlement)) {
+      throw new Error('Pi child terminal result settlement does not match the metadata stream');
+    }
     if (parsed.diagnostics.includes(PI_EXTENSION_ERROR_PREFIX_BYTES)) {
       throw new Error('Pi child reported an extension error diagnostic');
     }
@@ -972,6 +1330,11 @@ export class FusionPiCompactResultParser {
     if (final === undefined) throw new Error('Pi child emitted no compact result metadata');
     for (const record of parsed.records) this.assertModel(record);
     this.assertTranscriptStopReasons(parsed.records);
+    if (settlement.status !== 'complete') {
+      throw new Error(
+        `Pi child terminal result settlement failed: ${settlement.failure_reason ?? 'unknown'}`,
+      );
+    }
     const observed = this.observedFromRecords(parsed.records);
     return {
       text: reconstructFinalText(response, final),
@@ -999,9 +1362,14 @@ export class FusionPiCompactResultParser {
         if (record.stop_reason !== 'stop') {
           throw new Error(this.stopReasonError('final', 'stop', record.stop_reason, true));
         }
-      } else if (record.stop_reason !== 'toolUse') {
+      } else if (record.stop_reason !== 'toolUse' && !isRecoverableFusionChildErrorRecord(record)) {
         throw new Error(
-          this.stopReasonError(`non-final record ${index}`, 'toolUse', record.stop_reason, true),
+          this.stopReasonError(
+            `non-final record ${index}`,
+            'toolUse or a settled zero-usage retry marker',
+            record.stop_reason,
+            true,
+          ),
         );
       }
     }
@@ -1495,11 +1863,35 @@ export async function runPiChild(options: RunPiChildOptions): Promise<FusionChil
         observed,
       );
     if (close.code !== 0 || close.signal !== null) {
+      let runtimeGuard: FusionRuntimeGuardRecord | undefined;
+      try {
+        runtimeGuard = parseFusionRuntimeGuard(rawStderr);
+        if (runtimeGuard !== undefined) {
+          assertFusionRuntimeGuardMatchesModel(runtimeGuard, options.model);
+        }
+      } catch (error) {
+        throw new FusionChildRunError(
+          withCleanupErrors(
+            childError(
+              `Pi child runtime guard evidence invalid: ${error instanceof Error ? error.message : String(error)}`,
+              'child_event_invalid',
+              options,
+            ),
+            state.cleanupErrors,
+          ),
+          compactEvents,
+          response,
+          diagnostics,
+          close,
+          observed,
+        );
+      }
       throw new FusionChildRunError(
         withCleanupErrors(
           childError(
-            `Pi child exited with code ${close.code === null ? 'null' : String(close.code)}${close.signal === null ? '' : ` (${close.signal})`}`,
-            'child_exit_failed',
+            runtimeGuard?.message ??
+              `Pi child exited with code ${close.code === null ? 'null' : String(close.code)}${close.signal === null ? '' : ` (${close.signal})`}`,
+            runtimeGuard === undefined ? 'child_exit_failed' : 'child_runtime_budget_exceeded',
             options,
           ),
           state.cleanupErrors,

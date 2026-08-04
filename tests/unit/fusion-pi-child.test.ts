@@ -12,10 +12,13 @@ import {
   FUSION_CHILD_TIMEOUT_MS,
   FusionChildRunError,
   FusionPiCompactResultParser,
+  assertFusionRuntimeGuardMatchesModel,
   assertFusionToolPolicyDisjoint,
   buildFusionPiChildArgv,
   fusionPiChildEnv,
+  parseFusionChildSettlement,
   parseFusionChildStderr,
+  parseFusionRuntimeGuard,
   parseFusionToolCallLog,
   resolveAnthropicSanitizerExtensionPath,
   runPiChild,
@@ -31,8 +34,15 @@ import {
   type ResolvedFusionModel,
 } from '../../src/core/fusion/types.js';
 import fusionChildExtension, {
+  FUSION_CHILD_MAX_PROVIDER_REQUESTS,
+  FUSION_CHILD_MAX_TOOL_CALLS,
   FUSION_CHILD_RESULT_PREFIX,
+  FUSION_CHILD_SETTLEMENT_PREFIX,
   FUSION_CHILD_MAX_TOTAL_TOOL_RESULT_BYTES,
+  FUSION_RUNTIME_GUARD_PREFIX,
+  evaluateFusionRuntimeRequest,
+  evaluateFusionRuntimeToolLimit,
+  prepareFusionRuntimeRequest,
   FUSION_RESEARCH_ENABLED_ENV,
   FUSION_SOURCE_POLICY_PATH_ENV,
   FUSION_SOURCE_POLICY_SHA256_ENV,
@@ -40,6 +50,7 @@ import fusionChildExtension, {
   FUSION_TOOL_CALL_SEAL_SCHEMA_VERSION,
   FUSION_TOOL_CALL_SEAL_SUFFIX,
   buildFusionChildResultMetadata,
+  buildFusionChildSettlement,
 } from '../../src/fusion-child-extension.js';
 import {
   buildFusionSourcePolicy,
@@ -112,8 +123,20 @@ function resolvedModel(provider = 'openai-codex', model = 'gpt-5.5'): ResolvedFu
     qualifiedId: `${provider}/${model}`,
     thinkingLevel: 'high',
     contextWindow: 100000,
+    maxOutputTokens: 32_768,
   };
 }
+
+const fusionExtensionEventContext = {
+  isIdle: () => true,
+  abort: () => undefined,
+  model: {
+    provider: 'openai-codex',
+    id: 'gpt-5.5',
+    contextWindow: 100_000,
+    maxTokens: 32_768,
+  },
+};
 
 function makeSpawn(child = new FakeChild()): { records: SpawnRecord[]; spawn: FusionChildSpawn } {
   const records: SpawnRecord[] = [];
@@ -143,8 +166,14 @@ function compactFrame(input: {
   return `${FUSION_CHILD_RESULT_PREFIX}${JSON.stringify(record)}\n`;
 }
 
+function withSettlement(frames: string, runtimeGuardFailed = false): string {
+  const records = parseFusionChildStderr(Buffer.from(frames, 'utf8')).records;
+  const settlement = buildFusionChildSettlement(records, runtimeGuardFailed);
+  return `${frames}${FUSION_CHILD_SETTLEMENT_PREFIX}${JSON.stringify(settlement)}\n`;
+}
+
 function compactMetadata(provider = 'openai-codex', model = 'gpt-5.5'): string {
-  return (
+  return withSettlement(
     compactFrame({
       provider,
       model,
@@ -159,20 +188,20 @@ function compactMetadata(provider = 'openai-codex', model = 'gpt-5.5'): string {
         cost: { input: 0.01, output: 0.02, cacheRead: 0.03, cacheWrite: 0.04, total: 0.1 },
       },
     }) +
-    compactFrame({
-      provider,
-      model,
-      text: 'final héllo',
-      stopReason: 'stop',
-      usage: {
-        input: 5,
-        output: 6,
-        cacheRead: 0,
-        cacheWrite: 0,
-        totalTokens: 11,
-        cost: { input: 0.05, output: 0.06, cacheRead: 0.04, cacheWrite: 0.05, total: 0.2 },
-      },
-    })
+      compactFrame({
+        provider,
+        model,
+        text: 'final héllo',
+        stopReason: 'stop',
+        usage: {
+          input: 5,
+          output: 6,
+          cacheRead: 0,
+          cacheWrite: 0,
+          totalTokens: 11,
+          cost: { input: 0.05, output: 0.06, cacheRead: 0.04, cacheWrite: 0.05, total: 0.2 },
+        },
+      }),
   );
 }
 
@@ -230,6 +259,264 @@ void describe('fusion Pi child runner', () => {
   void it('pins the absolute and stale-output watchdog timeouts', () => {
     assert.equal(FUSION_CHILD_TIMEOUT_MS, 30 * 60 * 1000);
     assert.equal(FUSION_CHILD_IDLE_TIMEOUT_MS, 20 * 60 * 1000);
+  });
+
+  void it('blocks an oversized final provider payload before transport with route-aware output reservation', () => {
+    const originalPayload = { input: 'small request' };
+    const prepared = prepareFusionRuntimeRequest({
+      payload: originalPayload,
+      provider: 'openai-codex',
+      model: 'gpt-5.6-terra',
+      contextWindowTokens: 272_000,
+      maxOutputTokens: 128_000,
+      requestOrdinal: 1,
+      toolCallCount: 0,
+    });
+    assert.equal(prepared.guard, undefined);
+    assert.deepEqual(prepared.payload, originalPayload);
+    assert.notEqual(
+      prepared.payload,
+      originalPayload,
+      'transport receives the measured JSON clone',
+    );
+
+    let toJsonCalls = 0;
+    const stateful = prepareFusionRuntimeRequest({
+      payload: {
+        toJSON() {
+          toJsonCalls += 1;
+          return { input: toJsonCalls === 1 ? 'measured once' : 'changed later' };
+        },
+      },
+      provider: 'openai-codex',
+      model: 'gpt-5.6-terra',
+      contextWindowTokens: 272_000,
+      maxOutputTokens: 128_000,
+      requestOrdinal: 1,
+      toolCallCount: 0,
+    });
+    assert.equal(stateful.guard, undefined);
+    assert.deepEqual(stateful.payload, { input: 'measured once' });
+    assert.equal(toJsonCalls, 1);
+
+    const allowed = evaluateFusionRuntimeRequest({
+      payload: originalPayload,
+      provider: 'openai-codex',
+      model: 'gpt-5.6-terra',
+      contextWindowTokens: 272_000,
+      maxOutputTokens: 128_000,
+      requestOrdinal: 1,
+      toolCallCount: 0,
+    });
+    assert.equal(allowed, undefined);
+
+    const blocked = evaluateFusionRuntimeRequest({
+      payload: { input: 'x '.repeat(300_000) },
+      provider: 'openai-codex',
+      model: 'gpt-5.6-terra',
+      contextWindowTokens: 272_000,
+      maxOutputTokens: 128_000,
+      requestOrdinal: 23,
+      toolCallCount: 133,
+    });
+    assert.ok(blocked);
+    assert.equal(blocked.code, 'provider_request_budget');
+    assert.equal(blocked.allowed_input_tokens, 139_904);
+    assert.equal(blocked.reserved_output_tokens, 128_000);
+    assert.ok(blocked.estimated_input_tokens > blocked.allowed_input_tokens);
+    assert.match(blocked.message, /blocked provider request 23 before transport/);
+    assert.doesNotMatch(blocked.message, /x x x/);
+
+    const frame = Buffer.from(`${FUSION_RUNTIME_GUARD_PREFIX}${JSON.stringify(blocked)}\n`, 'utf8');
+    assert.deepEqual(parseFusionRuntimeGuard(frame), blocked);
+    const route = {
+      ...resolvedModel('openai-codex', 'gpt-5.6-terra'),
+      contextWindow: 272_000,
+      maxOutputTokens: 128_000,
+    };
+    assert.doesNotThrow(() => assertFusionRuntimeGuardMatchesModel(blocked, route));
+    assert.throws(
+      () => assertFusionRuntimeGuardMatchesModel({ ...blocked, model: 'substituted-model' }, route),
+      /route mismatch/,
+    );
+    assert.throws(
+      () => parseFusionRuntimeGuard(Buffer.concat([frame, frame])),
+      /multiple runtime guard frames/,
+    );
+    const malformed = (value: Record<string, unknown>): Buffer =>
+      Buffer.from(`${FUSION_RUNTIME_GUARD_PREFIX}${JSON.stringify(value)}\n`, 'utf8');
+    assert.throws(
+      () => parseFusionRuntimeGuard(malformed({ ...blocked, unknown: true })),
+      /unknown key|keys mismatch/,
+    );
+    assert.throws(
+      () => parseFusionRuntimeGuard(malformed({ ...blocked, code: 'unsupported' })),
+      /code is unsupported/,
+    );
+    assert.throws(
+      () => parseFusionRuntimeGuard(malformed({ ...blocked, request_ordinal: 0 })),
+      /request_ordinal must be a positive/,
+    );
+    assert.throws(
+      () =>
+        parseFusionRuntimeGuard(
+          malformed({ ...blocked, estimated_input_tokens: blocked.allowed_input_tokens }),
+        ),
+      /has no token overage/,
+    );
+  });
+
+  void it('fails closed for provider request loops and invalid payload capacity', () => {
+    const limited = evaluateFusionRuntimeRequest({
+      payload: { input: 'small' },
+      provider: 'openai-codex',
+      model: 'gpt-5.6-terra',
+      contextWindowTokens: 272_000,
+      maxOutputTokens: 128_000,
+      requestOrdinal: FUSION_CHILD_MAX_PROVIDER_REQUESTS + 1,
+      toolCallCount: 10,
+    });
+    assert.equal(limited?.code, 'provider_request_limit');
+
+    const invalid = evaluateFusionRuntimeRequest({
+      payload: { input: 'small' },
+      provider: 'openai-codex',
+      model: 'gpt-5.6-terra',
+      contextWindowTokens: 100_000,
+      maxOutputTokens: 128_000,
+      requestOrdinal: 1,
+      toolCallCount: 0,
+    });
+    assert.equal(invalid?.code, 'provider_payload_invalid');
+    assert.match(invalid?.message ?? '', /no safe provider input capacity/);
+    const nonObject = prepareFusionRuntimeRequest({
+      payload: 'not an object',
+      provider: 'openai-codex',
+      model: 'gpt-5.6-terra',
+      contextWindowTokens: 272_000,
+      maxOutputTokens: 128_000,
+      requestOrdinal: 1,
+      toolCallCount: 0,
+    });
+    assert.equal(nonObject.guard?.code, 'provider_payload_invalid');
+    assert.match(nonObject.guard?.message ?? '', /must serialize to a JSON object/);
+
+    assert.equal(
+      evaluateFusionRuntimeToolLimit({
+        provider: 'openai-codex',
+        model: 'gpt-5.6-terra',
+        contextWindowTokens: 272_000,
+        maxOutputTokens: 128_000,
+        requestOrdinal: 12,
+        toolCallCount: FUSION_CHILD_MAX_TOOL_CALLS,
+      }),
+      undefined,
+    );
+    const toolLimited = evaluateFusionRuntimeToolLimit({
+      provider: 'openai-codex',
+      model: 'gpt-5.6-terra',
+      contextWindowTokens: 272_000,
+      maxOutputTokens: 128_000,
+      requestOrdinal: 12,
+      toolCallCount: FUSION_CHILD_MAX_TOOL_CALLS + 1,
+    });
+    assert.equal(toolLimited?.code, 'tool_call_limit');
+    assert.equal(toolLimited?.tool_call_count, 193);
+    assert.match(toolLimited?.message ?? '', /exceeding the 192-call execution limit/);
+  });
+
+  void it('aborts and seals failed when the actual child hook sees tool call 193', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'pi-fusion-tool-limit-'));
+    const oldPath = process.env[FUSION_TOOL_CALL_LOG_PATH_ENV];
+    const oldExitCode = process.exitCode;
+    const originalWrite = process.stderr.write;
+    const stderrChunks: Buffer[] = [];
+    try {
+      const logPath = join(root, 'tool-calls.jsonl');
+      process.env[FUSION_TOOL_CALL_LOG_PATH_ENV] = logPath;
+      process.stderr.write = ((
+        chunk: Uint8Array | string,
+        encodingOrCallback?: BufferEncoding | ((error?: Error | null) => void),
+        callback?: (error?: Error | null) => void,
+      ): boolean => {
+        stderrChunks.push(
+          typeof chunk === 'string' ? Buffer.from(chunk, 'utf8') : Buffer.from(chunk),
+        );
+        const done = typeof encodingOrCallback === 'function' ? encodingOrCallback : callback;
+        done?.(null);
+        return true;
+      }) as typeof process.stderr.write;
+
+      type FusionChildPi = Parameters<typeof fusionChildExtension>[0];
+      type RecordedHandler = (
+        event: Record<string, unknown>,
+        context?: Record<string, unknown>,
+      ) => unknown;
+      const handlers = new Map<string, RecordedHandler[]>();
+      const recorder = {
+        on(event: string, handler: RecordedHandler) {
+          const existing = handlers.get(event) ?? [];
+          existing.push(handler);
+          handlers.set(event, existing);
+        },
+      };
+      fusionChildExtension(recorder as typeof recorder & FusionChildPi);
+      const beforeProvider = handlers.get('before_provider_request')?.[0];
+      const toolCall = handlers.get('tool_call')?.[0];
+      const agentSettled = handlers.get('agent_settled')?.[0];
+      assert.ok(beforeProvider);
+      assert.ok(toolCall);
+      assert.ok(agentSettled);
+      let aborts = 0;
+      const context = {
+        abort: () => {
+          aborts += 1;
+        },
+        model: {
+          provider: 'openai-codex',
+          id: 'gpt-5.6-terra',
+          contextWindow: 272_000,
+          maxTokens: 128_000,
+        },
+      };
+      assert.deepEqual(
+        await Promise.resolve(beforeProvider({ payload: { input: 'initial' } }, context)),
+        { input: 'initial' },
+      );
+      for (let ordinal = 1; ordinal <= FUSION_CHILD_MAX_TOOL_CALLS; ordinal += 1) {
+        const result: unknown = await Promise.resolve(
+          toolCall({ toolCallId: `call-${String(ordinal)}`, toolName: 'read', input: {} }, context),
+        );
+        assert.equal(result, undefined);
+      }
+      const refusal: unknown = await Promise.resolve(
+        toolCall({ toolCallId: 'call-193', toolName: 'read', input: {} }, context),
+      );
+      assert.deepEqual(refusal, {
+        block: true,
+        reason: 'fusion child reached tool call 193, exceeding the 192-call execution limit',
+      });
+      assert.equal(aborts, 1);
+      assert.equal(process.exitCode, 1);
+      const guard = parseFusionRuntimeGuard(Buffer.concat(stderrChunks));
+      assert.equal(guard?.code, 'tool_call_limit');
+      assert.equal(guard?.tool_call_count, 193);
+      assert.throws(
+        () => agentSettled({}, { isIdle: () => true }),
+        /finalized as failed.*192 unmatched tool start/,
+      );
+      const seal = JSON.parse(
+        await readFile(`${logPath}${FUSION_TOOL_CALL_SEAL_SUFFIX}`, 'utf8'),
+      ) as Record<string, unknown>;
+      assert.equal(seal['status'], 'failed');
+      assert.equal(seal['record_count'], 0);
+    } finally {
+      process.stderr.write = originalWrite;
+      process.exitCode = oldExitCode;
+      if (oldPath === undefined) delete process.env[FUSION_TOOL_CALL_LOG_PATH_ENV];
+      else process.env[FUSION_TOOL_CALL_LOG_PATH_ENV] = oldPath;
+      await rm(root, { recursive: true, force: true });
+    }
   });
 
   void it('BUG-182 preserves the complete Pi Usage cost contract in compact metadata', () => {
@@ -406,7 +693,7 @@ void describe('fusion Pi child runner', () => {
     ]);
   });
 
-  void it('appends the Anthropic sanitizer only for Claude routes', () => {
+  void it('loads the Anthropic sanitizer before the runtime governor for Claude routes', () => {
     // Pi's system prompt carries documentation lines Anthropic rejects. The parent gets
     // the sanitizer through extension discovery, but children run --no-extensions and
     // inherit nothing, so a Claude child without it fails at the provider.
@@ -422,9 +709,10 @@ void describe('fusion Pi child runner', () => {
       if (value === '--extension') acc.push(claude[index + 1] ?? '');
       return acc;
     }, []);
-    assert.deepEqual(extensionArgs, ['extension.js', '/pkg/anthropic-sps/index.ts']);
-    // The metadata extension must stay first so its message_end frame is never displaced.
-    assert.equal(extensionArgs[0], 'extension.js');
+    assert.deepEqual(extensionArgs, ['/pkg/anthropic-sps/index.ts', 'extension.js']);
+    // The private child extension must run its provider-request governor after the
+    // sanitizer so it measures the final payload that transport will receive.
+    assert.equal(extensionArgs.at(-1), 'extension.js');
   });
 
   void it('keeps non-Anthropic child argv byte-identical to the pre-sanitizer form', () => {
@@ -623,7 +911,10 @@ void describe('fusion Pi child runner', () => {
       assert.equal(handlers.get('agent_end'), undefined);
       assert.ok(agentSettled);
       const secret = 'SECRET_TOKEN_SHOULD_NOT_BE_IN_LOG';
-      toolCall({ toolCallId: 'call-1', toolName: 'read', input: { path: secret } });
+      toolCall(
+        { toolCallId: 'call-1', toolName: 'read', input: { path: secret } },
+        fusionExtensionEventContext,
+      );
       toolResult({
         toolCallId: 'call-1',
         toolName: 'read',
@@ -687,7 +978,10 @@ void describe('fusion Pi child runner', () => {
       const appendRange = (start: number, end: number): void => {
         for (let ordinal = start; ordinal < end; ordinal += 1) {
           const toolCallId = `call-${String(ordinal)}`;
-          toolCall({ toolCallId, toolName: 'read', input: { path: `file-${String(ordinal)}` } });
+          toolCall(
+            { toolCallId, toolName: 'read', input: { path: `file-${String(ordinal)}` } },
+            fusionExtensionEventContext,
+          );
           toolResult({
             toolCallId,
             toolName: 'read',
@@ -718,13 +1012,17 @@ void describe('fusion Pi child runner', () => {
       assert.equal(seal['record_count'], 46);
       assert.equal(seal['total_result_bytes'], trace.summary.total_result_bytes);
       assert.equal(seal['log_sha256'], createHash('sha256').update(bytes).digest('hex'));
-      assert.throws(
-        () =>
-          toolCall({
-            toolCallId: 'late-call',
-            toolName: 'read',
-            input: { path: 'late' },
-          }),
+      await assert.rejects(
+        Promise.resolve(
+          toolCall(
+            {
+              toolCallId: 'late-call',
+              toolName: 'read',
+              input: { path: 'late' },
+            },
+            fusionExtensionEventContext,
+          ),
+        ),
         /received tool_call while sealed-complete/,
       );
       assert.throws(
@@ -802,11 +1100,14 @@ void describe('fusion Pi child runner', () => {
         },
       };
       fusionChildExtension(recorder as typeof recorder & FusionChildPi);
-      handlers.get('tool_call')?.[0]?.({
-        toolCallId: 'unfinished',
-        toolName: 'read',
-        input: { path: 'unfinished' },
-      });
+      handlers.get('tool_call')?.[0]?.(
+        {
+          toolCallId: 'unfinished',
+          toolName: 'read',
+          input: { path: 'unfinished' },
+        },
+        fusionExtensionEventContext,
+      );
       assert.throws(
         () => handlers.get('agent_settled')?.[0]?.({}, { isIdle: () => true }),
         /1 unmatched tool start/,
@@ -884,7 +1185,10 @@ void describe('fusion Pi child runner', () => {
         .digest('hex');
 
       type FusionChildPi = Parameters<typeof fusionChildExtension>[0];
-      type RecordedHandler = (event: Record<string, unknown>) => unknown;
+      type RecordedHandler = (
+        event: Record<string, unknown>,
+        context?: Record<string, unknown>,
+      ) => unknown;
       interface RegisteredTool {
         name: string;
         prepareArguments(args: unknown): unknown;
@@ -917,11 +1221,14 @@ void describe('fusion Pi child runner', () => {
       );
 
       const attemptedUrl = 'https://example.com/undeclared?private=SHOULD_NOT_LEAK';
-      handlers.get('tool_call')?.[0]?.({
-        toolCallId: 'fetch-1',
-        toolName: FUSION_WEB_FETCH_TOOL_NAME,
-        input: { url: attemptedUrl },
-      });
+      handlers.get('tool_call')?.[0]?.(
+        {
+          toolCallId: 'fetch-1',
+          toolName: FUSION_WEB_FETCH_TOOL_NAME,
+          input: { url: attemptedUrl },
+        },
+        fusionExtensionEventContext,
+      );
       await assert.rejects(
         () => registered?.execute('fetch-1', { url: attemptedUrl }) ?? Promise.resolve(),
         /URL was not declared/,
@@ -1038,7 +1345,8 @@ void describe('fusion Pi child runner', () => {
       total: 0.30000000000000004,
     });
     assert.equal(result.stderr.toString('utf8'), 'diagnostic');
-    assert.equal(result.events.toString('utf8').split('\n').filter(Boolean).length, 2);
+    assert.equal(result.events.toString('utf8').split('\n').filter(Boolean).length, 3);
+    assert.match(result.events.toString('utf8'), /fusion-child-settlement\.v1/);
     assert.doesNotMatch(result.events.toString('utf8'), /final héllo/);
   });
 
@@ -1655,27 +1963,29 @@ void describe('fusion Pi child runner', () => {
 
   void it('accepts a multi-message tool loop and sums usage across all records', () => {
     const stderr = Buffer.from(
-      compactFrame({
-        provider: 'p',
-        model: 'm',
-        text: 'tool request 1',
-        stopReason: 'toolUse',
-        usage: piUsage(1, 2, 3),
-      }) +
+      withSettlement(
         compactFrame({
           provider: 'p',
           model: 'm',
-          text: 'tool request 2',
+          text: 'tool request 1',
           stopReason: 'toolUse',
-          usage: piUsage(4, 5, 9),
+          usage: piUsage(1, 2, 3),
         }) +
-        compactFrame({
-          provider: 'p',
-          model: 'm',
-          text: 'final answer',
-          stopReason: 'stop',
-          usage: piUsage(6, 7, 13),
-        }),
+          compactFrame({
+            provider: 'p',
+            model: 'm',
+            text: 'tool request 2',
+            stopReason: 'toolUse',
+            usage: piUsage(4, 5, 9),
+          }) +
+          compactFrame({
+            provider: 'p',
+            model: 'm',
+            text: 'final answer',
+            stopReason: 'stop',
+            usage: piUsage(6, 7, 13),
+          }),
+      ),
       'utf8',
     );
 
@@ -1690,15 +2000,174 @@ void describe('fusion Pi child runner', () => {
     assert.equal(parsed.usage.totalTokens, 25);
   });
 
+  void it('accepts a settled zero-usage provider retry marker bound to the terminal metadata stream', () => {
+    const retry = buildFusionChildResultMetadata({
+      provider: 'p',
+      model: 'm',
+      stopReason: 'error',
+      content: [],
+      usage: piUsage(0, 0, 0),
+    });
+    const final = buildFusionChildResultMetadata({
+      provider: 'p',
+      model: 'm',
+      stopReason: 'stop',
+      content: [{ type: 'text', text: 'recovered answer' }],
+      usage: piUsage(6, 7, 13),
+    });
+    const frames =
+      `${FUSION_CHILD_RESULT_PREFIX}${JSON.stringify(retry)}\n` +
+      `${FUSION_CHILD_RESULT_PREFIX}${JSON.stringify(final)}\n`;
+    const stderr = Buffer.from(withSettlement(frames), 'utf8');
+    const settlement = parseFusionChildSettlement(stderr);
+    assert.ok(settlement);
+    assert.equal(settlement.status, 'complete');
+    assert.deepEqual(settlement.recovered_error_ordinals, [0]);
+    const parsed = new FusionPiCompactResultParser('p', 'm').finish(
+      Buffer.from('recovered answer\n', 'utf8'),
+      stderr,
+    );
+    assert.equal(parsed.text, 'recovered answer');
+    assert.equal(parsed.usage.totalTokens, 13);
+
+    const tamperedSettlement = { ...settlement, recovered_error_ordinals: [] };
+    const tampered = Buffer.from(
+      `${frames}${FUSION_CHILD_SETTLEMENT_PREFIX}${JSON.stringify(tamperedSettlement)}\n`,
+      'utf8',
+    );
+    assert.throws(
+      () =>
+        new FusionPiCompactResultParser('p', 'm').finish(
+          Buffer.from('recovered answer\n', 'utf8'),
+          tampered,
+        ),
+      /settlement does not match the metadata stream/,
+    );
+    assert.throws(
+      () =>
+        parseFusionChildSettlement(
+          Buffer.from(
+            `${withSettlement(frames)}${FUSION_CHILD_SETTLEMENT_PREFIX}${JSON.stringify(settlement)}\n`,
+            'utf8',
+          ),
+        ),
+      /multiple settlement frames/,
+    );
+    assert.throws(
+      () =>
+        parseFusionChildStderr(
+          Buffer.from(
+            `${FUSION_CHILD_SETTLEMENT_PREFIX}${JSON.stringify(settlement)}\n${frames}`,
+            'utf8',
+          ),
+        ),
+      /result metadata after terminal settlement/,
+    );
+  });
+
+  void it('publishes exactly one terminal settlement from the actual agent_settled hook', async () => {
+    const oldPath = process.env[FUSION_TOOL_CALL_LOG_PATH_ENV];
+    const oldExitCode = process.exitCode;
+    const originalWrite = process.stderr.write;
+    const stderrChunks: Buffer[] = [];
+    try {
+      delete process.env[FUSION_TOOL_CALL_LOG_PATH_ENV];
+      process.stderr.write = ((
+        chunk: Uint8Array | string,
+        encodingOrCallback?: BufferEncoding | ((error?: Error | null) => void),
+        callback?: (error?: Error | null) => void,
+      ): boolean => {
+        stderrChunks.push(
+          typeof chunk === 'string' ? Buffer.from(chunk, 'utf8') : Buffer.from(chunk),
+        );
+        const done = typeof encodingOrCallback === 'function' ? encodingOrCallback : callback;
+        done?.(null);
+        return true;
+      }) as typeof process.stderr.write;
+
+      type FusionChildPi = Parameters<typeof fusionChildExtension>[0];
+      type RecordedHandler = (
+        event: Record<string, unknown>,
+        context?: Record<string, unknown>,
+      ) => unknown;
+      const handlers = new Map<string, RecordedHandler[]>();
+      const recorder = {
+        on(event: string, handler: RecordedHandler) {
+          const existing = handlers.get(event) ?? [];
+          existing.push(handler);
+          handlers.set(event, existing);
+        },
+      };
+      fusionChildExtension(recorder as typeof recorder & FusionChildPi);
+      const messageEnd = handlers.get('message_end')?.[0];
+      const agentSettled = handlers.get('agent_settled')?.[0];
+      assert.ok(messageEnd);
+      assert.ok(agentSettled);
+      await Promise.resolve(
+        messageEnd({
+          message: {
+            role: 'assistant',
+            provider: 'p',
+            model: 'm',
+            stopReason: 'error',
+            content: [],
+            usage: piUsage(0, 0, 0),
+          },
+        }),
+      );
+      await Promise.resolve(
+        messageEnd({
+          message: {
+            role: 'assistant',
+            provider: 'p',
+            model: 'm',
+            stopReason: 'stop',
+            content: [{ type: 'text', text: 'recovered answer' }],
+            usage: piUsage(6, 7, 13),
+          },
+        }),
+      );
+      await Promise.resolve(agentSettled({}, { isIdle: () => true }));
+
+      const stderr = Buffer.concat(stderrChunks);
+      const settlement = parseFusionChildSettlement(stderr);
+      assert.ok(settlement);
+      assert.equal(settlement.status, 'complete');
+      assert.deepEqual(settlement.recovered_error_ordinals, [0]);
+      const parsed = new FusionPiCompactResultParser('p', 'm').finish(
+        Buffer.from('recovered answer\n', 'utf8'),
+        stderr,
+      );
+      assert.equal(parsed.text, 'recovered answer');
+      await assert.rejects(
+        Promise.resolve(agentSettled({}, { isIdle: () => true })),
+        /duplicate agent_settled/,
+      );
+      assert.equal(process.exitCode, 1);
+      assert.equal(
+        Buffer.concat(stderrChunks).toString('utf8').split(FUSION_CHILD_SETTLEMENT_PREFIX).length -
+          1,
+        1,
+      );
+    } finally {
+      process.stderr.write = originalWrite;
+      process.exitCode = oldExitCode;
+      if (oldPath === undefined) delete process.env[FUSION_TOOL_CALL_LOG_PATH_ENV];
+      else process.env[FUSION_TOOL_CALL_LOG_PATH_ENV] = oldPath;
+    }
+  });
+
   void it('rejects child extension diagnostics even when compact metadata and final text are valid', () => {
     const stderr = Buffer.from(
-      `Extension error (/tmp/fusion-child.ts): audit failed\n${compactFrame({
-        provider: 'p',
-        model: 'm',
-        text: 'final answer',
-        stopReason: 'stop',
-        usage: piUsage(1, 1, 2),
-      })}`,
+      withSettlement(
+        `Extension error (/tmp/fusion-child.ts): audit failed\n${compactFrame({
+          provider: 'p',
+          model: 'm',
+          text: 'final answer',
+          stopReason: 'stop',
+          usage: piUsage(1, 1, 2),
+        })}`,
+      ),
       'utf8',
     );
     assert.throws(
@@ -1722,16 +2191,16 @@ void describe('fusion Pi child runner', () => {
         usage: piUsage(1, 1, 2),
       });
     const finish = (frames: string): void => {
-      parser.finish(Buffer.from('final\n', 'utf8'), Buffer.from(frames, 'utf8'));
+      parser.finish(Buffer.from('final\n', 'utf8'), Buffer.from(withSettlement(frames), 'utf8'));
     };
 
     assert.throws(
       () => finish(frame('stop', 'early') + frame('stop', 'final')),
-      /non-final record 0 stop reason is not toolUse: stop/,
+      /non-final record 0 stop reason.*: stop/,
     );
     assert.throws(
       () => finish(frame('length', 'early') + frame('stop', 'final')),
-      /non-final record 0 stop reason is not toolUse: length .*truncated/,
+      /non-final record 0 stop reason.*: length .*truncated/,
     );
     assert.throws(
       () => finish(frame('toolUse', 'early') + frame('toolUse', 'final')),
@@ -1739,7 +2208,7 @@ void describe('fusion Pi child runner', () => {
     );
     assert.throws(
       () => finish(frame('error', 'early') + frame('stop', 'final')),
-      /non-final record 0 stop reason is not toolUse: error .*error stop/,
+      /non-final record 0 stop reason.*: error .*error stop/,
     );
     assert.throws(
       () => finish(frame('toolUse', 'early') + frame('error', 'final')),
@@ -1747,7 +2216,7 @@ void describe('fusion Pi child runner', () => {
     );
     assert.throws(
       () => finish(frame('aborted', 'early') + frame('stop', 'final')),
-      /non-final record 0 stop reason is not toolUse: aborted .*aborted stop/,
+      /non-final record 0 stop reason.*: aborted .*aborted stop/,
     );
     assert.throws(
       () => finish(frame('toolUse', 'early') + frame('aborted', 'final')),
@@ -1755,7 +2224,7 @@ void describe('fusion Pi child runner', () => {
     );
     assert.throws(
       () => finish(frame('pending', 'early') + frame('stop', 'final')),
-      /non-final record 0 stop reason is not toolUse: pending .*pending stop/,
+      /non-final record 0 stop reason.*: pending .*pending stop/,
     );
   });
 
@@ -1777,7 +2246,10 @@ void describe('fusion Pi child runner', () => {
         cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
       },
     });
-    const stderr = Buffer.from(`${FUSION_CHILD_RESULT_PREFIX}${JSON.stringify(record)}\n`, 'utf8');
+    const stderr = Buffer.from(
+      withSettlement(`${FUSION_CHILD_RESULT_PREFIX}${JSON.stringify(record)}\n`),
+      'utf8',
+    );
     const response = Buffer.from('first line\n\n世界\n', 'utf8');
     const parsed = new FusionPiCompactResultParser('p', 'm').finish(response, stderr);
     assert.equal(parsed.text, 'first line\n世界');
@@ -1800,7 +2272,10 @@ void describe('fusion Pi child runner', () => {
       stopReason: 'length',
       usage,
     });
-    assert.throws(() => parser.finish(Buffer.from('x\n'), Buffer.from(nonStop)), /not stop/);
+    assert.throws(
+      () => parser.finish(Buffer.from('x\n'), Buffer.from(withSettlement(nonStop))),
+      /not stop/,
+    );
 
     const mismatch = compactFrame({
       provider: 'p',
@@ -1809,7 +2284,10 @@ void describe('fusion Pi child runner', () => {
       stopReason: 'stop',
       usage,
     });
-    assert.throws(() => parser.finish(Buffer.from('x\n'), Buffer.from(mismatch)), /model mismatch/);
+    assert.throws(
+      () => parser.finish(Buffer.from('x\n'), Buffer.from(withSettlement(mismatch))),
+      /model mismatch/,
+    );
 
     const valid = compactFrame({
       provider: 'p',
@@ -1819,10 +2297,17 @@ void describe('fusion Pi child runner', () => {
       usage,
     });
     assert.throws(
-      () => parser.finish(Buffer.from('tampered\n'), Buffer.from(valid)),
+      () => parser.finish(Buffer.from('tampered\n'), Buffer.from(withSettlement(valid))),
       /hash mismatch/,
     );
-    assert.throws(() => parser.finish(Buffer.from('x\n'), Buffer.alloc(0)), /no compact result/);
+    assert.throws(
+      () => parser.finish(Buffer.from('x\n'), Buffer.alloc(0)),
+      /no terminal result settlement/,
+    );
+    assert.throws(
+      () => parser.finish(Buffer.from('expected\n'), Buffer.from(valid)),
+      /no terminal result settlement/,
+    );
     assert.throws(
       () => parseFusionChildStderr(Buffer.from(`${FUSION_CHILD_RESULT_PREFIX}{}`)),
       /newline-terminated/,
@@ -1912,6 +2397,46 @@ void describe('fusion Pi child runner', () => {
       return true;
     });
     assert.deepEqual(child.killCalls, ['SIGTERM', 'SIGKILL']);
+  });
+
+  void it('surfaces a typed runtime-budget refusal instead of a generic exit code', async () => {
+    const child = new FakeChild(110);
+    const harness = makeSpawn(child);
+    const run = runPiChild({
+      stage: 'candidate',
+      slot: 2,
+      attempt: 1,
+      cwd: '/tmp/project',
+      model: resolvedModel(),
+      systemPrompt: 'system',
+      userPrompt: 'prompt',
+      spawn: harness.spawn,
+      platform: 'win32',
+      killGraceMs: 20,
+      sigkillWaitMs: 20,
+    });
+    await tick();
+    const guard = evaluateFusionRuntimeRequest({
+      payload: { input: 'x '.repeat(300_000) },
+      provider: 'openai-codex',
+      model: 'gpt-5.5',
+      contextWindowTokens: 100_000,
+      maxOutputTokens: 32_768,
+      requestOrdinal: 8,
+      toolCallCount: 20,
+    });
+    assert.ok(guard);
+    child.stderr.emitData(
+      `${FUSION_RUNTIME_GUARD_PREFIX}${JSON.stringify(guard)}\n${compactMetadata()}`,
+    );
+    child.close(1, null);
+    await assert.rejects(run, (error: unknown) => {
+      assert.ok(error instanceof FusionChildRunError);
+      assert.equal(error.code, 'child_runtime_budget_exceeded');
+      assert.match(error.message, /blocked provider request 8 before transport/);
+      assert.equal(error.usage.totalTokens, 21);
+      return true;
+    });
   });
 
   void it('carries observed usage on child exit failures', async () => {

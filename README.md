@@ -26,7 +26,7 @@
 | Fact | Value |
 | --- | --- |
 | Package | `pi-background-tasks` |
-| Version | `1.0.4` |
+| Version | `1.0.5` |
 | Node engine | `>=22.19.0` |
 | Pi entrypoint | `./extensions/background-tasks.ts` |
 | Package image | [logo.png](https://raw.githubusercontent.com/ismailsaleekh/pi-background-tasks/main/logo.png) |

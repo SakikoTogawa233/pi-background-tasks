@@ -47,6 +47,7 @@ function resolved(qualifiedId: string, contextWindow = 200_000): ResolvedFusionM
     qualifiedId,
     thinkingLevel: 'high',
     contextWindow,
+    maxOutputTokens: 32_768,
   };
 }
 

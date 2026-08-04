@@ -45,6 +45,7 @@ function model(id: string): ResolvedFusionModel {
     qualifiedId: `openai-codex/${id}`,
     thinkingLevel: 'high',
     contextWindow: 200000,
+    maxOutputTokens: 32_768,
   };
 }
 

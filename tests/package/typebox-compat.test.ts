@@ -77,7 +77,7 @@ void describe('TypeBox compatibility', () => {
     assert.equal(Array.isArray(bundled) && bundled.includes('typebox'), false);
   });
 
-  void it('requires Pi lines with the terminal agent_settled lifecycle event', async () => {
+  void it('requires Pi lines that expose the Fusion settlement and provider-request hooks', async () => {
     const manifest = parseJsonText(await readFile(join(packageRoot, 'package.json'), 'utf8'));
     assert.ok(isRecord(manifest));
     const peers = manifest['peerDependencies'];

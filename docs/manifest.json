@@ -89,7 +89,7 @@
       "state": "pass"
     },
     {
-      "authored_body_sha256": "sha256:6b1afc2083d3f21c704d5af62c6b2259217169002daedb5aa604b8631d4d2fd8",
+      "authored_body_sha256": "sha256:dd86701ab63ec8c0ed059e6327cd57286eedde55043de40295fc88e7fe73223c",
       "covers_sources": [
         "extensions/fusion-child.ts",
         "src/core/fusion/artifacts.ts",
@@ -111,11 +111,10 @@
         "src/ui/fusion-model-selector.ts"
       ],
       "doc_id": "subsystems/fusion",
-      "notes": "Fusion investigate established agent_settled as the terminal audit boundary and required strict parser behavior; final implementation uses exclusive durable journal/seal I/O, rejects extension diagnostics, and focused lifecycle/incident/compatibility tests pass.",
       "rel": "docs/subsystems/fusion.md",
       "required": true,
       "reviewer": "fusion-investigate-agent-settled-panel-plus-regression-evidence",
-      "state": "pass"
+      "state": "stale-authored-prose"
     },
     {
       "authored_body_sha256": "sha256:185e4ec320770ededfce51e1e8a5a166be8b4b11275b7515737f0305820555fe",
@@ -787,7 +786,7 @@
     "image": "https://raw.githubusercontent.com/ismailsaleekh/pi-background-tasks/main/logo.png",
     "name": "pi-background-tasks",
     "type": "module",
-    "version": "1.0.4"
+    "version": "1.0.5"
   },
   "public_surface_ids": [
     "command:bg",

@@ -78,7 +78,7 @@ function ceilDiv(numerator: number, denominator: number): number {
   return Math.floor((numerator - 1) / denominator) + 1;
 }
 
-function resolved(qualifiedId: string, contextWindow: number): ResolvedFusionModel {
+function resolved(qualifiedId: string, contextWindow: number, maxOutputTokens = 32_768): ResolvedFusionModel {
   const slash = qualifiedId.indexOf('/');
   return {
     selection: '$current',
@@ -88,6 +88,7 @@ function resolved(qualifiedId: string, contextWindow: number): ResolvedFusionMod
     qualifiedId,
     thinkingLevel: 'high',
     contextWindow,
+    maxOutputTokens,
   };
 }
 
@@ -559,6 +560,22 @@ void describe('fusion stage budgets', () => {
     );
   });
 
+  void it('reserves each route configured maximum output instead of assuming the smaller Fusion response contract', () => {
+    const routeModels: ResolvedFusionModels = {
+      candidates: [
+        resolved('openai-codex/gpt-5.6-sol', 272_000, 128_000),
+        resolved('openai-codex/gpt-5.6-terra', 272_000, 128_000),
+        resolved('openai-codex/gpt-5.5', 272_000, 128_000),
+      ],
+      evaluator: resolved('openai-codex/gpt-5.6-sol', 272_000, 128_000),
+      merger: resolved('openai-codex/gpt-5.6-sol', 272_000, 128_000),
+    };
+    for (const route of fusionRouteCapacities(routeModels)) {
+      assert.equal(route.reserved_output_tokens, 128_000);
+      assert.equal(route.allowed_input_tokens, 139_904);
+    }
+  });
+
   void it('selects the byte-capacity limiting route when token ordering flips', () => {
     const mixed: ResolvedFusionModels = {
       candidates: [
@@ -605,8 +622,9 @@ void describe('fusion stage budgets', () => {
     const budget = new FusionBudget(models(), FUSION_COMMAND_CONTEXT_POLICY_ID);
     const input = canonicalInput('small');
     const plan = budget.plan(input);
-    assert.equal(plan.schema_version, 'pi-background-tasks.fusion-budget-plan.v3');
-    assert.equal(plan.policy.id, 'fusion-budget-policy-v3');
+    assert.equal(plan.schema_version, 'pi-background-tasks.fusion-budget-plan.v4');
+    assert.equal(plan.policy.id, 'fusion-budget-policy-v4');
+    assert.equal(plan.policy.route_output_reserve_strategy, 'max_fusion_contract_or_model_max');
     assert.equal(plan.stages.length, 6);
     assert.equal(planEntry(plan.stages, 'candidate', 1).route.role, 'candidate-1');
     assert.equal(planEntry(plan.stages, 'candidate', 2).route.role, 'candidate-2');
@@ -1060,7 +1078,7 @@ void describe('fusion stage budgets', () => {
       });
       assert.equal(result.mergedText, 'merged');
       assert.equal(calls.length, 5);
-      assert.equal(result.details.budget.policy_id, 'fusion-budget-policy-v3');
+      assert.equal(result.details.budget.policy_id, 'fusion-budget-policy-v4');
       assert.equal(result.details.budget.calibration_warnings.length, 0);
 
       const planText = await readFile(
@@ -1076,7 +1094,7 @@ void describe('fusion stage budgets', () => {
         routes.some((route) => Reflect.get(route, 'qualified_id') === 'openai-codex/gpt-5.4-mini'),
         true,
       );
-      assert.equal(Reflect.get(plan, 'schema_version'), 'pi-background-tasks.fusion-budget-plan.v3');
+      assert.equal(Reflect.get(plan, 'schema_version'), 'pi-background-tasks.fusion-budget-plan.v4');
       const stages = Reflect.get(plan, 'stages');
       assert.ok(Array.isArray(stages));
       assert.equal(stages.length, 6);

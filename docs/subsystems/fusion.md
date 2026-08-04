@@ -7,6 +7,7 @@ stability: stable
 covers_surfaces: [renderer:fusion-result, workflow:investigate, workflow:reason, workflow:research, workflow:validate]
 covers_sources: [extensions/fusion-child.ts, src/core/fusion/artifacts.ts, src/core/fusion/budget.ts, src/core/fusion/child-protocol.ts, src/core/fusion/clean-context.ts, src/core/fusion/config.ts, src/core/fusion/context.ts, src/core/fusion/evaluation.ts, src/core/fusion/orchestrator.ts, src/core/fusion/pi-child.ts, src/core/fusion/prompts.ts, src/core/fusion/source-policy.ts, src/core/fusion/types.ts, src/core/fusion/web-fetch.ts, src/core/fusion/workflows.ts, src/fusion-child-extension.ts, src/fusion-extension.ts, src/ui/fusion-model-selector.ts]
 ---
+
 # Fusion subsystem
 
 <!-- pi-docs:begin name="fusion-workflows" generator="scripts/docs/generate.mjs" -->
@@ -60,12 +61,12 @@ Do not describe Fusion as unconditionally exactly five model calls. A completed 
 
 Candidate tool policies are fixed by workflow:
 
-| Workflow | Candidate capability | Candidate tools |
-|---|---:|---|
-| reason | `reason` | none (`--no-tools`) |
-| investigate | `inspect` | `read`, `grep`, `find`, `ls` |
-| research | `research` | `read`, `grep`, `find`, `ls`, `fusion_web_fetch` |
-| validate | `inspect` | `read`, `grep`, `find`, `ls` |
+| Workflow    | Candidate capability | Candidate tools                                  |
+| ----------- | -------------------: | ------------------------------------------------ |
+| reason      |             `reason` | none (`--no-tools`)                              |
+| investigate |            `inspect` | `read`, `grep`, `find`, `ls`                     |
+| research    |           `research` | `read`, `grep`, `find`, `ls`, `fusion_web_fetch` |
+| validate    |            `inspect` | `read`, `grep`, `find`, `ls`                     |
 
 Evaluator, evaluator-repair, and merger always use capability `reason` and empty tool lists. Tool-enabled children run with built-in tools disabled and an explicit allowlist plus a denylist that includes shell/write/edit, Fusion recursion, and background/delegate tools.
 
@@ -81,13 +82,13 @@ Research is targeted fetch, not search. The public caller declares exact non-dup
 
 Research intentionally combines read-only file tools and network fetch in one child. This supports source-backed synthesis but is security-sensitive: operators must not supply secret-bearing URLs or ask children to put private data in URL strings. The package blocks common SSRF targets and credential URLs, but its deny rules are not an exhaustive network sandbox; fetched content remains untrusted and caller-declared public URLs can still disclose access through remote logs/timing.
 
-Inspect/research candidates write sealed tool-call audit logs. The log contains schema version, ordinal, tool name, argument/result byte counts and SHA-256 digests, status, duration, and fetch provenance. Raw arguments, raw results, page content, and rejected raw URLs are not persisted. The parent requires the log and seal, verifies hashes/counts/ordinals/status, enforces the 8 MiB aggregate result-byte cap, and rejects non-allowlisted tools.
+Inspect/research candidates write sealed tool-call audit logs. The log contains schema version, ordinal, tool name, argument/result byte counts and SHA-256 digests, status, duration, and fetch provenance. Raw arguments, raw results, page content, and rejected raw URLs are not persisted. The parent requires the log and seal, verifies hashes/counts/ordinals/status, enforces the 8 MiB aggregate result-byte cap, and rejects non-allowlisted tools. A child may attempt at most 192 tool calls; crossing that limit aborts the run, emits structured refusal evidence, and prevents a complete audit seal.
 
 ## Child process isolation
 
 Fusion never calls direct completion APIs. It launches direct child `pi --mode text` processes and writes the prompt over stdin. Child argv includes `--no-session`, `--no-extensions`, `--no-skills`, `--no-prompt-templates`, `--no-themes`, and `--no-context-files`; explicit extensions still load, so the package-owned compact metadata extension is always supplied. Anthropic children additionally receive the `@ravshansbox/pi-anthropic-sps` sanitizer extension because discovery is disabled and Claude routes need Pi system-prompt sanitization.
 
-Child text mode writes the final full answer to stdout. The private child extension emits compact reasoning-free metadata frames to stderr for finalized assistant messages: provider/model, stop reason, text block byte counts and hashes, aggregate text hash, and the complete Pi `Usage` object. The parent reconstructs and validates stdout against the final metadata, requires final stop reason `stop` and non-final stop reason `toolUse`, verifies model identity, and preserves usage/cost exactly.
+Child text mode writes the final full answer to stdout. The private child extension emits compact reasoning-free metadata frames to stderr for finalized assistant messages: provider/model, stop reason, text block byte counts and hashes, aggregate text hash, and the complete Pi `Usage` object. It also governs every final `before_provider_request` payload after earlier extensions have transformed it. Claude's sanitizer therefore loads before the package governor. The governor serializes and hashes the exact payload, applies the shared conservative estimator, reserves the model's declared maximum output plus 4,096 safety tokens, and aborts before transport if the payload cannot fit or if the child exceeds 128 provider requests. Pi's provider-hook behavior is characterized through the same `openai-codex-responses` transport adapter used by subscription Codex routes in a real local HTTP agent loop: transforms chain in extension load order and `ctx.abort()` prevents network transport. At terminal `agent_settled`, the extension emits exactly one `pi-background-tasks.fusion-child-settlement.v1` frame binding the complete ordered metadata stream by count and SHA-256, the final record/hash, and any recovered retry-marker ordinals. The parent reconstructs and validates stdout against the final metadata, requires final stop reason `stop`, verifies model identity, and preserves usage/cost exactly. Non-final `toolUse` records remain normal. A non-final `error` is accepted only when it is a zero-content, empty-hash, zero-usage retry marker, a later final `stop` exists, and the terminal settlement hash/accounts for that exact ordinal. `length`, `aborted`, `pending`, final `error`, error records carrying text or usage, missing/duplicate/tampered settlement, and settlement before terminal idleness all fail loudly.
 
 Fusion child environments strip session/model/provider variables plus metered credential/base-url variables for OpenRouter, OpenAI, Anthropic, Azure OpenAI, and generic Pi API credentials before launch. Frontier model routes are admitted only when the registry reports subscription OAuth for trusted `anthropic` or `openai-codex` endpoints. There is no fallback, model substitution, endpoint override, or metered API-key route.
 
@@ -95,7 +96,7 @@ Fusion child environments strip session/model/provider variables plus metered cr
 
 Budget planning is per route and per stage. Every configured candidate, evaluator, and merger route must have a usable context window. The affine estimator from the shared token-budget layer accounts for byte classes plus a 512-token intercept; backed model-family calibrations are used only where applicable, unknown/unbacked providers are reported in artifacts/result details, and multibyte/dense ASCII diagnostics are preserved.
 
-`budget-plan.json` records route capacities, stage forecasts for candidate/evaluation/evaluation-repair/merge, conditional repair reservation, warnings, blockers, empty-request counterfactuals, and remediation. Fatal preflight blockers launch zero children. High utilization or worst-case reservation pressure is a warning when input still fits. Exact rendered prompt checks happen again immediately before candidate, evaluation, repair, and merge launches.
+`budget-plan.json` uses `pi-background-tasks.fusion-budget-plan.v4` and records route capacities, stage forecasts for candidate/evaluation/evaluation-repair/merge, conditional repair reservation, warnings, blockers, empty-request counterfactuals, and remediation. Each route reserves the larger of Fusion's 32,768-token output contract reserve and the resolved model's declared maximum output; a model advertising a 128,000-token maximum therefore receives the full 128,000-token reserve. Fatal preflight blockers launch zero children. High utilization or worst-case reservation pressure is a warning when input still fits. Exact rendered prompt checks happen again immediately before candidate, evaluation, repair, and merge launches.
 
 Output contracts are checked after durable attempt recording: candidate responses up to 48 KiB JSON-rendered bytes, evaluator up to 64 KiB, merger/final report up to 64 KiB, diagnostics contract 8 KiB, child stdout cap 32 MiB, child stderr cap 4 MiB. Oversized child output fails loudly and preserves evidence; Fusion never clips or silently forwards truncated content.
 
@@ -105,7 +106,7 @@ Run artifacts are private local evidence under `.pi/fusion/<session-id>-<pid>/<r
 
 Artifact writes use durable private temp-file/fsync/rename. Manifests enforce legal state transitions and record config, resolved models, fixed capabilities, context policy, tool policy, anonymous map, attempts, artifact refs, cumulative usage, and errors. Successful, failed, and cancelled observed attempts preserve complete Pi usage/cost components; public tool results clone the same `Usage` shape.
 
-For tool-enabled children, the private audit journal remains open across every low-level `agent_end`, because Pi may still retry, compact and retry, or process a queued continuation. Only terminal `agent_settled` can exclusively publish the complete hash/count/byte seal. Tool activity after finalization, duplicate settlement, pre-settlement shutdown, extension diagnostics, and missing/failed/stale seals are fatal. This lifecycle requires Pi 0.81.1 or newer; older Pi lines do not expose the required terminal event and are not claimed as compatible.
+For tool-enabled children, the private audit journal remains open across every low-level `agent_end`, because Pi may still retry, compact and retry, or process a queued continuation. Only terminal `agent_settled` can exclusively publish the complete hash/count/byte seal. Runtime-guard refusal latches process failure, makes that seal incomplete, and forces the result settlement to failed. The child emits one closed `pi-background-tasks.fusion-runtime-guard.v1` stderr frame containing the refusal code, route capacities, request/tool ordinals, exact payload byte count and SHA-256, conservative token estimate, and a bounded message; it never emits the payload itself. The parent validates this frame and reports typed `child_runtime_budget_exceeded` instead of accepting a later clean-looking result or reducing it to an unexplained exit code. Tool activity after finalization, duplicate settlement, pre-settlement shutdown, extension diagnostics, malformed/duplicate runtime-guard frames, and missing/failed/stale seals are fatal. This lifecycle requires Pi 0.81.1 or newer; older Pi lines do not expose the required terminal event and are not claimed as compatible.
 
 Cancellation and shutdown are loud and durable when a run store exists. The extension tracks active runs, links external abort signals, aborts on session shutdown/reload, and waits for settlement. Child processes have a 30 minute wall timeout, 20 minute idle watchdog, SIGTERM grace, SIGKILL wait, process-group kill on POSIX, bounded stdout/stderr, and cleanup-error propagation.
 
@@ -116,6 +117,7 @@ Cancellation and shutdown are loud and durable when a run store exists. The exte
 - Frontier/API route rejected: use Pi Anthropic or Codex subscription OAuth, not OpenAI/OpenRouter/Azure/API-key routes.
 - `prompt_budget_exceeded_forecast`: inspect `budget-plan.json`; the error says whether shortening the request can help or whether session history/scope/model context window is the blocker.
 - `prompt_budget_exceeded_measured`: an exact rendered prompt exceeded capacity after upstream output was known; split the workflow or choose a larger-context subscription route.
+- `child_runtime_budget_exceeded`: a later provider payload, provider-request loop, or tool-call loop crossed a child runtime guard after launch. Inspect the attempt stderr guard frame and failed tool seal; narrow the task or select a subscription route with more safe input headroom. Do not ignore intermediate provider errors or weaken the guard.
 - `evaluation schema repair failed`: both evaluator attempts failed the closed JSON contract; inspect `evaluation.attempt-*.response.txt` and errors.
 - `tool-call log invalid`: inspect the candidate `*.tool-calls.jsonl` and `*.seal.json`; missing/partial/unsealed logs, non-allowlisted tools, hash/count mismatches, and over-budget tool output fail by design.
 - Research fetch failures are typed and do not retry via other URLs or extraction modes; verify the declared URL is public, reachable, supported content, and within caps.

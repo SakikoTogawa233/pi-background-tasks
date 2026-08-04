@@ -347,6 +347,7 @@ function model(
     qualifiedId: `${provider}/${id}`,
     thinkingLevel: 'medium',
     contextWindow,
+    maxOutputTokens: 32_768,
   };
 }
 

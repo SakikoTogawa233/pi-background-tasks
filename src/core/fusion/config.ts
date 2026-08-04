@@ -158,6 +158,17 @@ function requireContextWindow(model: Model<Api>, label: string): number {
   return Math.floor(value);
 }
 
+function requireMaxOutputTokens(model: Model<Api>, label: string): number {
+  const value = model.maxTokens;
+  if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) {
+    throw new FusionError(`${label} has no positive maximum output token capacity`, {
+      code: 'model_unavailable',
+      childCreated: false,
+    });
+  }
+  return Math.floor(value);
+}
+
 function modelIndex(models: readonly Model<Api>[]): Map<string, Model<Api>> {
   const out = new Map<string, Model<Api>>();
   for (const model of models) out.set(qualifiedModelKey(model), model);
@@ -305,6 +316,7 @@ function resolveSelection(
       qualifiedId,
       thinkingLevel,
       contextWindow: requireContextWindow(available, slotLabel),
+      maxOutputTokens: requireMaxOutputTokens(available, slotLabel),
     };
   }
   const model = availableByKey.get(selection);
@@ -323,6 +335,7 @@ function resolveSelection(
     qualifiedId: selection,
     thinkingLevel,
     contextWindow: requireContextWindow(model, slotLabel),
+    maxOutputTokens: requireMaxOutputTokens(model, slotLabel),
   };
 }
 

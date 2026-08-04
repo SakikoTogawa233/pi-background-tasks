@@ -26,7 +26,7 @@ import type { RunPiChildOptions } from '../../src/core/fusion/pi-child.js';
 
 function resolved(qualifiedId: string): ResolvedFusionModel {
   const slash = qualifiedId.indexOf('/');
-  return { selection: '$current', source: 'current', provider: qualifiedId.slice(0, slash), model: qualifiedId.slice(slash + 1), qualifiedId, thinkingLevel: 'high', contextWindow: 200_000 };
+  return { selection: '$current', source: 'current', provider: qualifiedId.slice(0, slash), model: qualifiedId.slice(slash + 1), qualifiedId, thinkingLevel: 'high', contextWindow: 200_000, maxOutputTokens: 32_768 };
 }
 
 function models(): ResolvedFusionModels {

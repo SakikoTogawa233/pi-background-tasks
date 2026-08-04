@@ -88,7 +88,8 @@ export const FUSION_MIN_CONTEXT_WINDOW_TOKENS =
   FUSION_SAFETY_RESERVE_TOKENS;
 
 export const FUSION_BUDGET_POLICY: FusionBudgetPolicyDescriptor = {
-  id: 'fusion-budget-policy-v3',
+  id: 'fusion-budget-policy-v4',
+  route_output_reserve_strategy: 'max_fusion_contract_or_model_max',
   calibration_version: TOKEN_BUDGET_CALIBRATION_VERSION,
   calibration_table: FUSION_CALIBRATED_BYTES_PER_TOKEN,
   reserved_output_tokens: FUSION_RESERVED_OUTPUT_TOKENS,
@@ -288,14 +289,20 @@ function routeCapacity(
   role: FusionRouteCapacity['role'],
 ): FusionRouteCapacity {
   const contextWindow = requirePositiveContextWindow(model, role);
+  const reservedOutputTokens = Math.max(FUSION_RESERVED_OUTPUT_TOKENS, model.maxOutputTokens);
   const allowed = allowedInputTokens(contextWindow, {
-    reservedOutputTokens: FUSION_RESERVED_OUTPUT_TOKENS,
+    reservedOutputTokens,
     framingReserveTokens: FUSION_FRAMING_RESERVE_TOKENS,
     safetyReserveTokens: FUSION_SAFETY_RESERVE_TOKENS,
   });
   if (allowed < FUSION_MIN_CANONICAL_INPUT_TOKENS) {
+    const minimumContextWindow =
+      reservedOutputTokens +
+      FUSION_FRAMING_RESERVE_TOKENS +
+      FUSION_SAFETY_RESERVE_TOKENS +
+      FUSION_MIN_CANONICAL_INPUT_TOKENS;
     throw new FusionError(
-      `fusion ${role} route ${model.qualifiedId} has a ${String(contextWindow)}-token context window, but Fusion requires at least ${String(FUSION_MIN_CONTEXT_WINDOW_TOKENS)} tokens per configured route: ${String(FUSION_RESERVED_OUTPUT_TOKENS)} output + ${String(FUSION_FRAMING_RESERVE_TOKENS)} framing + ${String(FUSION_SAFETY_RESERVE_TOKENS)} safety + ${String(FUSION_MIN_CANONICAL_INPUT_TOKENS)} usable input. Choose a larger-context model for this slot with /fusion-models.`,
+      `fusion ${role} route ${model.qualifiedId} has a ${String(contextWindow)}-token context window, but Fusion requires at least ${String(minimumContextWindow)} tokens: ${String(reservedOutputTokens)} reserved for the route's configured maximum output + ${String(FUSION_FRAMING_RESERVE_TOKENS)} framing + ${String(FUSION_SAFETY_RESERVE_TOKENS)} safety + ${String(FUSION_MIN_CANONICAL_INPUT_TOKENS)} usable input. Choose a larger-context or lower-max-output subscription model for this slot with /fusion-models.`,
       { code: 'model_capacity_unknown', childCreated: false },
     );
   }
@@ -322,7 +329,7 @@ function routeCapacity(
     model: model.model,
     qualified_id: model.qualifiedId,
     context_window_tokens: contextWindow,
-    reserved_output_tokens: FUSION_RESERVED_OUTPUT_TOKENS,
+    reserved_output_tokens: reservedOutputTokens,
     framing_reserve_tokens: FUSION_FRAMING_RESERVE_TOKENS,
     safety_reserve_tokens: FUSION_SAFETY_RESERVE_TOKENS,
     allowed_input_tokens: allowed,

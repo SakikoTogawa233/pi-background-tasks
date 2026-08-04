@@ -9,8 +9,14 @@ import {
   writeSync,
 } from 'node:fs';
 import { dirname } from 'node:path';
+import { parseJsonText } from './core/common.js';
 import type { ExtensionAPI } from '@earendil-works/pi-coding-agent';
 import { Type, type Static } from 'typebox';
+import {
+  estimateInputTokens,
+  knownJsonSegment,
+  resolveTokenBudgetFamily,
+} from './core/context/token-budget.js';
 import {
   FUSION_TOOL_CALL_LOG_SCHEMA_VERSION,
   FUSION_WEB_FETCH_TOOL_NAME,
@@ -26,32 +32,56 @@ import {
   parseFusionSourcePolicy,
 } from './core/fusion/source-policy.js';
 import {
+  FUSION_CHILD_MAX_PROVIDER_REQUESTS,
+  FUSION_CHILD_MAX_TOOL_CALLS,
   FUSION_CHILD_MAX_TOTAL_TOOL_RESULT_BYTES,
+  FUSION_CHILD_MIN_OUTPUT_RESERVE_TOKENS,
   FUSION_CHILD_RESULT_PREFIX,
+  FUSION_CHILD_SAFETY_RESERVE_TOKENS,
+  FUSION_CHILD_SETTLEMENT_PREFIX,
   FUSION_RESEARCH_ENABLED_ENV,
+  FUSION_RUNTIME_GUARD_PREFIX,
+  FUSION_RUNTIME_GUARD_SCHEMA_VERSION,
   FUSION_SOURCE_POLICY_PATH_ENV,
   FUSION_SOURCE_POLICY_SHA256_ENV,
   FUSION_TOOL_CALL_LOG_PATH_ENV,
   FUSION_TOOL_CALL_SEAL_SCHEMA_VERSION,
   FUSION_TOOL_CALL_SEAL_SUFFIX,
   buildFusionChildResultMetadata,
+  buildFusionChildSettlement,
   type FusionChildResultMetadata,
+  type FusionChildSettlementRecord,
+  type FusionRuntimeGuardCode,
+  type FusionRuntimeGuardRecord,
 } from './core/fusion/child-protocol.js';
 
 export {
+  FUSION_CHILD_MAX_PROVIDER_REQUESTS,
+  FUSION_CHILD_MAX_TOOL_CALLS,
   FUSION_CHILD_MAX_TOTAL_TOOL_RESULT_BYTES,
+  FUSION_CHILD_MIN_OUTPUT_RESERVE_TOKENS,
   FUSION_CHILD_RESULT_PREFIX,
   FUSION_CHILD_RESULT_SCHEMA_VERSION,
+  FUSION_CHILD_SAFETY_RESERVE_TOKENS,
+  FUSION_CHILD_SETTLEMENT_PREFIX,
+  FUSION_CHILD_SETTLEMENT_SCHEMA_VERSION,
   FUSION_RESEARCH_ENABLED_ENV,
+  FUSION_RUNTIME_GUARD_PREFIX,
+  FUSION_RUNTIME_GUARD_SCHEMA_VERSION,
   FUSION_SOURCE_POLICY_PATH_ENV,
   FUSION_SOURCE_POLICY_SHA256_ENV,
   FUSION_TOOL_CALL_LOG_PATH_ENV,
   FUSION_TOOL_CALL_SEAL_SCHEMA_VERSION,
   FUSION_TOOL_CALL_SEAL_SUFFIX,
   buildFusionChildResultMetadata,
+  buildFusionChildSettlement,
   type FusionChildResultMetadata,
   type FusionChildResultUsageMetadata,
+  type FusionChildSettlementFailureReason,
+  type FusionChildSettlementRecord,
   type FusionChildTextBlockMetadata,
+  type FusionRuntimeGuardCode,
+  type FusionRuntimeGuardRecord,
 } from './core/fusion/child-protocol.js';
 
 const FUSION_CHILD_O_NOFOLLOW = typeof constants.O_NOFOLLOW === 'number' ? constants.O_NOFOLLOW : 0;
@@ -263,6 +293,233 @@ async function writeMetadata(record: FusionChildResultMetadata): Promise<void> {
   });
 }
 
+async function writeSettlement(record: FusionChildSettlementRecord): Promise<void> {
+  const line = `${FUSION_CHILD_SETTLEMENT_PREFIX}${JSON.stringify(record)}\n`;
+  await new Promise<void>((resolve, reject) => {
+    process.stderr.write(line, (error) => {
+      if (error) reject(error);
+      else resolve();
+    });
+  });
+}
+
+async function writeRuntimeGuard(record: FusionRuntimeGuardRecord): Promise<void> {
+  const line = `${FUSION_RUNTIME_GUARD_PREFIX}${JSON.stringify(record)}\n`;
+  await new Promise<void>((resolve, reject) => {
+    process.stderr.write(line, (error) => {
+      if (error) reject(error);
+      else resolve();
+    });
+  });
+}
+
+export interface FusionRuntimeRequestEvaluationInput {
+  payload: unknown;
+  provider: string | undefined;
+  model: string | undefined;
+  contextWindowTokens: number | undefined;
+  maxOutputTokens: number | undefined;
+  requestOrdinal: number;
+  toolCallCount: number;
+}
+
+function invalidFusionRuntimeRequest(
+  input: FusionRuntimeRequestEvaluationInput,
+  detail: string,
+): FusionRuntimeGuardRecord {
+  const contextWindowTokens =
+    input.contextWindowTokens !== undefined &&
+    Number.isSafeInteger(input.contextWindowTokens) &&
+    input.contextWindowTokens > 0
+      ? input.contextWindowTokens
+      : 0;
+  const modelOutputTokens =
+    input.maxOutputTokens !== undefined &&
+    Number.isSafeInteger(input.maxOutputTokens) &&
+    input.maxOutputTokens > 0
+      ? input.maxOutputTokens
+      : 0;
+  const reservedOutputTokens = Math.max(FUSION_CHILD_MIN_OUTPUT_RESERVE_TOKENS, modelOutputTokens);
+  const allowedInputTokens = Math.max(
+    0,
+    contextWindowTokens - reservedOutputTokens - FUSION_CHILD_SAFETY_RESERVE_TOKENS,
+  );
+  const emptyPayload = Buffer.alloc(0);
+  return {
+    schema_version: FUSION_RUNTIME_GUARD_SCHEMA_VERSION,
+    code: 'provider_payload_invalid',
+    provider: input.provider ?? 'unknown',
+    model: input.model ?? 'unknown',
+    request_ordinal: input.requestOrdinal,
+    tool_call_count: input.toolCallCount,
+    payload_bytes: 0,
+    payload_sha256: sha256(emptyPayload),
+    estimated_input_tokens: 0,
+    context_window_tokens: contextWindowTokens,
+    reserved_output_tokens: reservedOutputTokens,
+    safety_reserve_tokens: FUSION_CHILD_SAFETY_RESERVE_TOKENS,
+    allowed_input_tokens: allowedInputTokens,
+    message: `fusion child could not validate provider request ${String(input.requestOrdinal)}: ${detail}`,
+  };
+}
+
+export interface PreparedFusionRuntimeRequest {
+  payload: unknown;
+  guard: FusionRuntimeGuardRecord | undefined;
+}
+
+export function prepareFusionRuntimeRequest(
+  input: FusionRuntimeRequestEvaluationInput,
+): PreparedFusionRuntimeRequest {
+  try {
+    const serialized: unknown = JSON.stringify(input.payload);
+    if (typeof serialized !== 'string') {
+      throw new Error('provider payload serialized to a non-string value');
+    }
+    const payload = parseJsonText(serialized);
+    if (typeof payload !== 'object' || payload === null || Array.isArray(payload)) {
+      throw new Error('provider payload must serialize to a JSON object');
+    }
+    if (JSON.stringify(payload) !== serialized) {
+      throw new Error('provider payload does not have a stable JSON serialization');
+    }
+    return { payload, guard: evaluateFusionRuntimeRequest({ ...input, payload }) };
+  } catch (error) {
+    return {
+      payload: input.payload,
+      guard: invalidFusionRuntimeRequest(
+        input,
+        error instanceof Error ? error.message : String(error),
+      ),
+    };
+  }
+}
+
+export function evaluateFusionRuntimeRequest(
+  input: FusionRuntimeRequestEvaluationInput,
+): FusionRuntimeGuardRecord | undefined {
+  let code: FusionRuntimeGuardCode | undefined;
+  let message = '';
+  let payloadBytes = Buffer.alloc(0);
+  let estimatedInputTokens = 0;
+  let allowedInputTokens = 0;
+  const provider = input.provider ?? 'unknown';
+  const model = input.model ?? 'unknown';
+  const contextWindowTokens = input.contextWindowTokens ?? 0;
+  const reservedOutputTokens = Math.max(
+    FUSION_CHILD_MIN_OUTPUT_RESERVE_TOKENS,
+    input.maxOutputTokens ?? 0,
+  );
+  try {
+    if (input.provider === undefined || input.model === undefined) {
+      throw new Error('active model is unavailable');
+    }
+    if (!Number.isSafeInteger(contextWindowTokens) || contextWindowTokens <= 0) {
+      throw new Error('active model context window is unavailable');
+    }
+    if (
+      input.maxOutputTokens === undefined ||
+      !Number.isSafeInteger(input.maxOutputTokens) ||
+      input.maxOutputTokens <= 0
+    ) {
+      throw new Error('active model maximum output tokens are unavailable');
+    }
+    allowedInputTokens =
+      contextWindowTokens - reservedOutputTokens - FUSION_CHILD_SAFETY_RESERVE_TOKENS;
+    if (allowedInputTokens <= 0) {
+      throw new Error('active model has no safe provider input capacity');
+    }
+    const payloadText = JSON.stringify(input.payload);
+    if (payloadText === undefined) throw new Error('provider payload serialized to undefined');
+    payloadBytes = Buffer.from(payloadText, 'utf8');
+    const family = resolveTokenBudgetFamily({ provider, model });
+    estimatedInputTokens = estimateInputTokens({
+      family: family.family,
+      calibrationBacked: family.backed,
+      familyResolution: family.resolution,
+      allowedInputTokens,
+      scope: 'fusion',
+      segments: [knownJsonSegment(payloadText)],
+    }).tokens;
+    if (input.requestOrdinal > FUSION_CHILD_MAX_PROVIDER_REQUESTS) {
+      code = 'provider_request_limit';
+      message = `fusion child reached provider request ${String(input.requestOrdinal)}, exceeding the ${String(FUSION_CHILD_MAX_PROVIDER_REQUESTS)}-request execution limit`;
+    } else if (estimatedInputTokens > allowedInputTokens) {
+      code = 'provider_request_budget';
+      message = `fusion child blocked provider request ${String(input.requestOrdinal)} before transport: exact final payload is ${String(payloadBytes.length)} UTF-8 bytes (estimated <= ${String(estimatedInputTokens)} input tokens), exceeding ${String(allowedInputTokens)} allowed input tokens after reserving ${String(reservedOutputTokens)} model output + ${String(FUSION_CHILD_SAFETY_RESERVE_TOKENS)} safety from the ${String(contextWindowTokens)}-token context window`;
+    }
+  } catch (error) {
+    code = 'provider_payload_invalid';
+    message = `fusion child could not validate provider request ${String(input.requestOrdinal)}: ${error instanceof Error ? error.message : String(error)}`;
+  }
+  if (code === undefined) return undefined;
+  return {
+    schema_version: FUSION_RUNTIME_GUARD_SCHEMA_VERSION,
+    code,
+    provider,
+    model,
+    request_ordinal: input.requestOrdinal,
+    tool_call_count: input.toolCallCount,
+    payload_bytes: payloadBytes.length,
+    payload_sha256: sha256(payloadBytes),
+    estimated_input_tokens: estimatedInputTokens,
+    context_window_tokens: contextWindowTokens,
+    reserved_output_tokens: reservedOutputTokens,
+    safety_reserve_tokens: FUSION_CHILD_SAFETY_RESERVE_TOKENS,
+    allowed_input_tokens: allowedInputTokens,
+    message,
+  };
+}
+
+export interface FusionRuntimeToolLimitEvaluationInput {
+  provider: string | undefined;
+  model: string | undefined;
+  contextWindowTokens: number | undefined;
+  maxOutputTokens: number | undefined;
+  requestOrdinal: number;
+  toolCallCount: number;
+}
+
+export function evaluateFusionRuntimeToolLimit(
+  input: FusionRuntimeToolLimitEvaluationInput,
+): FusionRuntimeGuardRecord | undefined {
+  if (input.toolCallCount <= FUSION_CHILD_MAX_TOOL_CALLS) return undefined;
+  const contextWindowTokens =
+    input.contextWindowTokens !== undefined &&
+    Number.isSafeInteger(input.contextWindowTokens) &&
+    input.contextWindowTokens > 0
+      ? input.contextWindowTokens
+      : 0;
+  const modelOutputTokens =
+    input.maxOutputTokens !== undefined &&
+    Number.isSafeInteger(input.maxOutputTokens) &&
+    input.maxOutputTokens > 0
+      ? input.maxOutputTokens
+      : 0;
+  const reservedOutputTokens = Math.max(FUSION_CHILD_MIN_OUTPUT_RESERVE_TOKENS, modelOutputTokens);
+  const allowedInputTokens = Math.max(
+    0,
+    contextWindowTokens - reservedOutputTokens - FUSION_CHILD_SAFETY_RESERVE_TOKENS,
+  );
+  const emptyPayload = Buffer.alloc(0);
+  return {
+    schema_version: FUSION_RUNTIME_GUARD_SCHEMA_VERSION,
+    code: 'tool_call_limit',
+    provider: input.provider ?? 'unknown',
+    model: input.model ?? 'unknown',
+    request_ordinal: input.requestOrdinal,
+    tool_call_count: input.toolCallCount,
+    payload_bytes: 0,
+    payload_sha256: sha256(emptyPayload),
+    estimated_input_tokens: 0,
+    context_window_tokens: contextWindowTokens,
+    reserved_output_tokens: reservedOutputTokens,
+    safety_reserve_tokens: FUSION_CHILD_SAFETY_RESERVE_TOKENS,
+    allowed_input_tokens: allowedInputTokens,
+    message: `fusion child reached tool call ${String(input.toolCallCount)}, exceeding the ${String(FUSION_CHILD_MAX_TOOL_CALLS)}-call execution limit`,
+  };
+}
+
 function strictFusionWebFetchArgs(args: unknown): FusionWebFetchParamsValue {
   if (typeof args !== 'object' || args === null || Array.isArray(args)) {
     throw new Error(`${FUSION_WEB_FETCH_TOOL_NAME} arguments must be an object`);
@@ -401,6 +658,38 @@ export default function fusionChildExtension(pi: ExtensionAPI): void {
   }
   const declaredResearchUrls = researchEnabled === '1' ? loadDeclaredResearchUrls() : undefined;
   const fetchAuditMetadata = new Map<string, FusionWebFetchAuditMetadata>();
+  let providerRequestCount = 0;
+  let toolCallCount = 0;
+  let runtimeGuardFailed = false;
+  let settlementPublished = false;
+  const childResultRecords: FusionChildResultMetadata[] = [];
+
+  pi.on('before_provider_request', async (event, ctx) => {
+    providerRequestCount += 1;
+    if (runtimeGuardFailed) {
+      ctx.abort();
+      return event.payload;
+    }
+
+    const model = ctx.model;
+    const prepared = prepareFusionRuntimeRequest({
+      payload: event.payload,
+      provider: model?.provider,
+      model: model?.id,
+      contextWindowTokens: model?.contextWindow,
+      maxOutputTokens: model?.maxTokens,
+      requestOrdinal: providerRequestCount,
+      toolCallCount,
+    });
+    const guard = prepared.guard;
+    if (guard === undefined) return prepared.payload;
+    runtimeGuardFailed = true;
+    latchAuditProcessFailure();
+    ctx.abort();
+    await writeRuntimeGuard(guard);
+    return prepared.payload;
+  });
+
   if (toolCallLogPath !== undefined) {
     // Establish the audit file before tools can run. Exclusive creation makes a reused
     // attempt path or redirected file loud instead of appending to untrusted history.
@@ -441,7 +730,8 @@ export default function fusionChildExtension(pi: ExtensionAPI): void {
       }
       phase = 'finalizing';
       const unmatchedStarts = starts.size;
-      const complete = normalSettlement && !auditFailed && unmatchedStarts === 0;
+      const complete =
+        normalSettlement && !auditFailed && !runtimeGuardFailed && unmatchedStarts === 0;
       if (!complete) {
         auditFailed = true;
         latchAuditProcessFailure();
@@ -460,9 +750,30 @@ export default function fusionChildExtension(pi: ExtensionAPI): void {
       }
     };
 
-    pi.on('tool_call', (event) => {
+    pi.on('tool_call', async (event, ctx) => {
       try {
         requireOpen('tool_call');
+        if (runtimeGuardFailed) {
+          ctx.abort();
+          return { block: true, reason: 'fusion child runtime guard already refused the run' };
+        }
+        toolCallCount += 1;
+        const model = ctx.model;
+        const guard = evaluateFusionRuntimeToolLimit({
+          provider: model?.provider,
+          model: model?.id,
+          contextWindowTokens: model?.contextWindow,
+          maxOutputTokens: model?.maxTokens,
+          requestOrdinal: providerRequestCount,
+          toolCallCount,
+        });
+        if (guard !== undefined) {
+          runtimeGuardFailed = true;
+          latchAuditProcessFailure();
+          ctx.abort();
+          await writeRuntimeGuard(guard);
+          return { block: true, reason: guard.message };
+        }
         if (starts.has(event.toolCallId)) {
           throw new Error(`fusion tool-call log duplicate start for ${event.toolCallId}`);
         }
@@ -470,8 +781,9 @@ export default function fusionChildExtension(pi: ExtensionAPI): void {
           startedAt: Date.now(),
           toolName: event.toolName,
         });
+        return undefined;
       } catch (error) {
-        failAudit(error);
+        return failAudit(error);
       }
     });
     pi.on('tool_result', (event) => {
@@ -597,6 +909,25 @@ export default function fusionChildExtension(pi: ExtensionAPI): void {
 
   pi.on('message_end', async (event) => {
     if (event.message.role !== 'assistant') return;
-    await writeMetadata(buildFusionChildResultMetadata(event.message));
+    const record = buildFusionChildResultMetadata(event.message);
+    await writeMetadata(record);
+    childResultRecords.push(record);
+  });
+  pi.on('agent_settled', async (_event, ctx) => {
+    if (settlementPublished) {
+      latchAuditProcessFailure();
+      throw new Error('fusion child received duplicate agent_settled for result settlement');
+    }
+    if (!ctx.isIdle()) {
+      latchAuditProcessFailure();
+      throw new Error('fusion child result settlement observed agent_settled while not idle');
+    }
+    settlementPublished = true;
+    const settlement = buildFusionChildSettlement(childResultRecords, runtimeGuardFailed);
+    if (settlement.status !== 'complete') latchAuditProcessFailure();
+    await writeSettlement(settlement);
+  });
+  pi.on('session_shutdown', () => {
+    if (!settlementPublished) latchAuditProcessFailure();
   });
 }
