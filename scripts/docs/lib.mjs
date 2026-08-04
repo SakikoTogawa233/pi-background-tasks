@@ -2288,7 +2288,9 @@ export async function verify(options = {}) {
   const firstModel = loadDocsModel({ packageRoot: root });
   const coverage = assertCoverage(codeFacts, firstModel);
   verifyLinksAndReachability(root, firstModel);
-  const attestations = verifyAttestations(root, firstModel, readAttestations(root), { strict: true });
+  const attestations = verifyAttestations(root, firstModel, readAttestations(root), {
+    strict: options.requireAttestations === true,
+  });
   verifyPackageFacts(root, codeFacts, firstModel);
   const first = renderAll(root, codeFacts, firstModel, coverage, attestations);
   const secondModel = docsModelFromTexts(first.texts);

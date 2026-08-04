@@ -47,7 +47,8 @@ From current `package.json`:
 | Compatibility | `npm run test:compat` | Release-only exact Pi version install/compat plus current-host witness. |
 | Pack | `npm run pack:dry-run` | Release payload preview. |
 | Docs generate | `npm run docs:generate` | Regenerates generated docs regions/index/manifest. |
-| Docs verify | `npm run docs:verify` | Offline, read-only deterministic docs freshness verification; renders generated files twice in memory and compares committed bytes. |
+| Docs verify | `npm run docs:verify` | Offline, read-only deterministic docs freshness verification; renders generated files twice in memory and reports semantic receipt freshness without requiring it. |
+| Strict docs attestation verify | `npm run docs:verify:attestations` | Optional strict mode that additionally requires every behavioral receipt to match current prose and sources. |
 | Docs attestation | `npm run docs:attest/record -- <doc_id> --reviewer <identity-after-semantic-review> --verdict PASS --notes <review-notes>` | Computes hashes and records an explicit semantic PASS receipt after review; `npm run docs:attest` is an alias and still needs args. |
 | Docs unit/package gate | `npm run test:docs` | Docs-gate unit/package tests. |
 | Payload check | `npm run payload:check` | Package payload policy check. |

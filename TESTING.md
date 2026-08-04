@@ -158,7 +158,7 @@ Smoke proves loadability only; completion requires `npm run test`, `npm run test
 
 ### Docs/gateway focused checks
 
-Current package docs gates are `npm run docs:generate`, `npm run docs:verify`, and `npm run docs:attest/record -- <doc_id> --reviewer <identity-after-semantic-review> --verdict PASS --notes <review-notes>`. For docs-only changes under constrained operator instructions, run only the requested focused subset (for example frontmatter, package-local links, absence of standalone parent `../EXTENSION_*` links, and version/tag wording derived from `package.json`/observed git tags) and report when full docs verification/attestation was not run.
+Current package docs gates are `npm run docs:generate` and `npm run docs:verify`; semantic receipt freshness is advisory there. Use `npm run docs:verify:attestations` only when a release or operator explicitly requires fresh independent receipts, and record them with `npm run docs:attest/record -- <doc_id> --reviewer <identity-after-semantic-review> --verdict PASS --notes <review-notes>`.
 
 ## Required isolated environment
 

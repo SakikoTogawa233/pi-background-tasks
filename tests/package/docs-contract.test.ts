@@ -24,6 +24,10 @@ void describe('docs package integration contract', () => {
     );
     assert.equal(pkg.scripts['docs:generate'], 'node scripts/docs/generate.mjs');
     assert.equal(pkg.scripts['docs:verify'], 'node scripts/docs/verify.mjs');
+    assert.equal(
+      pkg.scripts['docs:verify:attestations'],
+      'node scripts/docs/verify.mjs --require-attestations',
+    );
     assert.equal(pkg.scripts['docs:attest/record'], 'node scripts/docs/attest.mjs');
     assert.equal(
       pkg.scripts['test:docs'],

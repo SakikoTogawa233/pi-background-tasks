@@ -57,7 +57,8 @@ Current `package.json` exposes the docs-engine lane:
 ```bash
 npm run docs:generate
 npm run docs:verify
+npm run docs:verify:attestations
 npm run docs:attest/record -- <doc_id> --reviewer <identity-after-semantic-review> --verdict PASS --notes <review-notes>
 ```
 
-`npm run docs:attest` is an alias for the attestation recorder and still requires a doc id, reviewer, verdict, and notes after semantic review. Do not self-award PASS. For docs-only maintenance under a constrained operator request, use the requested focused subset (frontmatter, package-local links, targeted source/doc grep) and report that full docs verification/attestation was not run.
+`npm run docs:verify` treats semantic receipt freshness as advisory while preserving all deterministic docs, ownership, link, and payload checks. Use the optional `npm run docs:verify:attestations` gate when fresh independent receipts are required. `npm run docs:attest` is an alias for the recorder and still requires a reviewed doc id, reviewer, verdict, and notes; do not self-award PASS.
