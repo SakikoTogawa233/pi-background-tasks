@@ -182,6 +182,10 @@ export function buildFusionChildResultMetadata(
     output: message.usage.output,
     cacheRead: message.usage.cacheRead,
     cacheWrite: message.usage.cacheWrite,
+    ...(message.usage.cacheWrite1h === undefined
+      ? {}
+      : { cacheWrite1h: message.usage.cacheWrite1h }),
+    ...(message.usage.reasoning === undefined ? {} : { reasoning: message.usage.reasoning }),
     totalTokens: message.usage.totalTokens,
     cost: {
       input: message.usage.cost.input,

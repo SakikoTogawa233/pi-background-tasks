@@ -8,6 +8,8 @@ import {
   FUSION_CLAUDE_CACHE_BREAKPOINT_LIMIT,
   FUSION_CLAUDE_CACHE_OBSERVATION_SCHEMA_VERSION,
   FUSION_CLAUDE_CACHE_RETENTION_ENV,
+  FUSION_CLAUDE_PROMPT_CACHING_SCOPE_BETA,
+  applyFusionClaudePromptCachingScopeHeader,
   nonAnthropicFusionCacheObservation,
   normalizeFusionClaudeCachePayload,
   resolveFusionClaudeCachePolicy,
@@ -130,6 +132,63 @@ void describe('Fusion Claude cache policy', () => {
     assert.deepEqual(controls(incoming), [SHORT, SHORT, SHORT, SHORT]);
     assert.ok(normalized);
     assert.deepEqual(controls(normalized.payload), [LONG, LONG, LONG, LONG]);
+  });
+
+  void it('has Pi create one-hour breakpoints when Fusion sets the child policy env', async () => {
+    const model: Model<'anthropic-messages'> = {
+      id: 'claude-opus-4-8',
+      name: 'Claude Opus 4.8',
+      api: 'anthropic-messages',
+      provider: 'anthropic',
+      baseUrl: 'http://127.0.0.1:1',
+      reasoning: false,
+      input: ['text'],
+      cost: { input: 1, output: 1, cacheRead: 1, cacheWrite: 1 },
+      contextWindow: 200_000,
+      maxTokens: 64_000,
+    };
+    const context: Context = {
+      systemPrompt: 'Fusion system',
+      messages: [{ role: 'user', content: 'request', timestamp: 1 }],
+      tools: [
+        {
+          name: 'read',
+          description: 'Read a file',
+          parameters: Type.Object({ path: Type.String() }),
+        },
+      ],
+    };
+    let payload: unknown;
+    const stream = streamSimpleAnthropic(model, context, {
+      apiKey: 'sk-ant-oat-test-token',
+      env: { [FUSION_CLAUDE_CACHE_RETENTION_ENV]: 'long' },
+      onPayload(value) {
+        payload = value;
+        throw new Error('native long cache payload captured before transport');
+      },
+    });
+    const result = await stream.result();
+
+    assert.equal(result.stopReason, 'error');
+    assert.match(result.errorMessage ?? '', /captured before transport/);
+    assert.ok(isJsonObject(payload));
+    assert.deepEqual(controls(payload), [LONG, LONG, LONG, LONG]);
+  });
+
+  void it('adds the subscription prompt-caching scope beta exactly once', () => {
+    const headers: Record<string, string | null> = {
+      'Anthropic-Beta': 'claude-code-20250219,oauth-2025-04-20',
+    };
+    assert.equal(applyFusionClaudePromptCachingScopeHeader(headers), true);
+    assert.equal(applyFusionClaudePromptCachingScopeHeader(headers), true);
+    assert.equal(
+      headers['Anthropic-Beta'],
+      `claude-code-20250219,oauth-2025-04-20,${FUSION_CLAUDE_PROMPT_CACHING_SCOPE_BETA}`,
+    );
+
+    const empty: Record<string, string | null> = {};
+    applyFusionClaudePromptCachingScopeHeader(empty);
+    assert.equal(empty['anthropic-beta'], FUSION_CLAUDE_PROMPT_CACHING_SCOPE_BETA);
   });
 
   void it('supports explicit short and none without adding new breakpoints', () => {

@@ -571,12 +571,19 @@ void describe('fusion Pi child runner', () => {
         },
       };
       fusionChildExtension(recorder as typeof recorder & FusionChildPi);
+      const beforeHeaders = handlers.get('before_provider_headers')?.[0];
       const beforeProvider = handlers.get('before_provider_request')?.[0];
       const messageEnd = handlers.get('message_end')?.[0];
       const agentSettled = handlers.get('agent_settled')?.[0];
+      assert.ok(beforeHeaders);
       assert.ok(beforeProvider);
       assert.ok(messageEnd);
       assert.ok(agentSettled);
+      const headers = { 'anthropic-beta': 'claude-code-20250219,oauth-2025-04-20' };
+      await Promise.resolve(
+        beforeHeaders({ headers }, { model: { provider: 'anthropic', id: 'claude-opus-4-8' } }),
+      );
+      assert.match(headers['anthropic-beta'], /prompt-caching-scope-2026-01-05/);
       const short = { type: 'ephemeral' };
       const payload = {
         model: 'claude-opus-4-8',
@@ -706,6 +713,8 @@ void describe('fusion Pi child runner', () => {
       output: 7,
       cacheRead: 2,
       cacheWrite: 3,
+      cacheWrite1h: 3,
+      reasoning: 5,
       totalTokens: 23,
       cost: {
         input: 0.001,
@@ -808,6 +817,23 @@ void describe('fusion Pi child runner', () => {
     assert.equal(env['UNRELATED_ENV'], 'preserved');
     assert.equal(env[FUSION_TOOL_CALL_LOG_PATH_ENV], undefined);
     assert.equal(env['PI_SKIP_VERSION_CHECK'], '1');
+  });
+
+  void it('sets native Anthropic cache retention to long before child provider serialization', () => {
+    const defaultLong = fusionPiChildEnv({ UNRELATED_ENV: 'kept' }, 'anthropic');
+    assert.equal(defaultLong[FUSION_CLAUDE_CACHE_RETENTION_ENV], 'long');
+    assert.equal(defaultLong['UNRELATED_ENV'], 'kept');
+
+    for (const retention of ['none', 'short', 'long', 'invalid-for-loud-child-refusal']) {
+      const explicit = fusionPiChildEnv(
+        { [FUSION_CLAUDE_CACHE_RETENTION_ENV]: retention },
+        'anthropic',
+      );
+      assert.equal(explicit[FUSION_CLAUDE_CACHE_RETENTION_ENV], retention);
+    }
+
+    const nonAnthropic = fusionPiChildEnv({}, 'openai-codex');
+    assert.equal(nonAnthropic[FUSION_CLAUDE_CACHE_RETENTION_ENV], undefined);
   });
 
   void it('scrubs inherited fusion tool-call log env var before launch-specific wiring', () => {

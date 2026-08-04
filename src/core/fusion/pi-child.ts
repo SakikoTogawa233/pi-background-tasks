@@ -247,14 +247,35 @@ export class FusionChildRunError extends FusionError {
   }
 }
 
-export function fusionPiChildEnv(env: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
+export function fusionPiChildEnv(
+  env: NodeJS.ProcessEnv = process.env,
+  provider?: string | undefined,
+): NodeJS.ProcessEnv {
   const out: NodeJS.ProcessEnv = { ...env };
   const removed = new Set<string>(FUSION_CHILD_REMOVED_ENV_KEYS);
   for (const inheritedKey of Object.keys(out)) {
     if (removed.has(inheritedKey.toUpperCase())) Reflect.deleteProperty(out, inheritedKey);
   }
   out['PI_SKIP_VERSION_CHECK'] = '1';
+  if (provider === 'anthropic' && out[FUSION_CLAUDE_CACHE_RETENTION_ENV] === undefined) {
+    out[FUSION_CLAUDE_CACHE_RETENTION_ENV] = 'long';
+  }
   return out;
+}
+
+export function resolveFusionAnthropicAttributionExtensionPath(
+  moduleUrl = import.meta.url,
+  pathExists: (path: string) => boolean = existsSync,
+): string {
+  const modulePath = fileURLToPath(moduleUrl);
+  const extension = modulePath.endsWith('.ts')
+    ? 'anthropic-attribution.ts'
+    : 'anthropic-attribution.js';
+  const candidate = resolve(dirname(modulePath), extension);
+  if (!pathExists(candidate)) {
+    throw new Error(`Fusion Anthropic attribution extension is missing: ${candidate}`);
+  }
+  return candidate;
 }
 
 export function resolveFusionChildExtensionPath(
@@ -428,16 +449,19 @@ function fusionToolArgv(capability: FusionCapability): string[] {
  * `--no-extensions` disables discovery but still honours explicit `--extension`
  * paths, so this list is the complete set a child receives. The metadata
  * extension is always present. For Claude routes the sanitizer loads first so
- * the private runtime governor observes the final post-sanitizer payload; non-
- * Anthropic child argv remains unchanged.
+ * the package-owned attribution provider establishes the Claude Code OAuth
+ * request shape first, the sanitizer preserves that shape while removing only
+ * rejected prompt lines, and the private runtime governor observes the final
+ * payload. Non-Anthropic child argv remains unchanged.
  */
 export function fusionChildExtensionPaths(
   model: ResolvedFusionModel,
   childExtensionPath: string,
   resolveSanitizer: () => string = resolveAnthropicSanitizerExtensionPath,
+  resolveAttribution: () => string = resolveFusionAnthropicAttributionExtensionPath,
 ): readonly string[] {
   if (model.provider !== FUSION_SANITIZED_PROVIDER) return [childExtensionPath];
-  return [resolveSanitizer(), childExtensionPath];
+  return [resolveAttribution(), resolveSanitizer(), childExtensionPath];
 }
 
 export function buildFusionPiChildArgv(
@@ -446,11 +470,13 @@ export function buildFusionPiChildArgv(
   childExtensionPath = resolveFusionChildExtensionPath(),
   capability: FusionCapability = FUSION_NO_TOOLS_CAPABILITY,
   resolveSanitizer: () => string = resolveAnthropicSanitizerExtensionPath,
+  resolveAttribution: () => string = resolveFusionAnthropicAttributionExtensionPath,
 ): string[] {
   const extensionArgs = fusionChildExtensionPaths(
     model,
     childExtensionPath,
     resolveSanitizer,
+    resolveAttribution,
   ).flatMap((path) => ['--extension', path]);
   return [
     '--mode',
@@ -574,9 +600,10 @@ function requireCostNumber(
 }
 
 function parseCompactUsage(value: unknown): FusionUsage {
-  const record = assertClosedRecord(
+  const record = assertClosedRecordWithOptional(
     value,
     ['input', 'output', 'cacheRead', 'cacheWrite', 'totalTokens', 'cost'],
+    ['cacheWrite1h', 'reasoning'],
     'fusion child usage',
   );
   const cost = assertClosedRecord(
@@ -584,11 +611,29 @@ function parseCompactUsage(value: unknown): FusionUsage {
     ['input', 'output', 'cacheRead', 'cacheWrite', 'total'],
     'fusion child usage.cost',
   );
+  const output = requireUsageInteger(record, 'output', 'fusion child usage');
+  const cacheWrite = requireUsageInteger(record, 'cacheWrite', 'fusion child usage');
+  const cacheWrite1h =
+    record['cacheWrite1h'] === undefined
+      ? undefined
+      : requireUsageInteger(record, 'cacheWrite1h', 'fusion child usage');
+  const reasoning =
+    record['reasoning'] === undefined
+      ? undefined
+      : requireUsageInteger(record, 'reasoning', 'fusion child usage');
+  if (cacheWrite1h !== undefined && cacheWrite1h > cacheWrite) {
+    throw new Error('fusion child usage.cacheWrite1h must not exceed cacheWrite');
+  }
+  if (reasoning !== undefined && reasoning > output) {
+    throw new Error('fusion child usage.reasoning must not exceed output');
+  }
   return {
     input: requireUsageInteger(record, 'input', 'fusion child usage'),
-    output: requireUsageInteger(record, 'output', 'fusion child usage'),
+    output,
     cacheRead: requireUsageInteger(record, 'cacheRead', 'fusion child usage'),
-    cacheWrite: requireUsageInteger(record, 'cacheWrite', 'fusion child usage'),
+    cacheWrite,
+    ...(cacheWrite1h === undefined ? {} : { cacheWrite1h }),
+    ...(reasoning === undefined ? {} : { reasoning }),
     totalTokens: requireUsageInteger(record, 'totalTokens', 'fusion child usage'),
     cost: {
       input: requireCostNumber(cost, 'input', 'fusion child usage.cost'),
@@ -1786,7 +1831,7 @@ export async function runPiChild(options: RunPiChildOptions): Promise<FusionChil
   const killProcess = options.killProcess ?? process.kill.bind(process);
   const platform = options.platform ?? process.platform;
   const capability = options.capability ?? FUSION_NO_TOOLS_CAPABILITY;
-  const env = fusionPiChildEnv(options.env ?? process.env);
+  const env = fusionPiChildEnv(options.env ?? process.env, options.model.provider);
   if (capability !== 'reason') {
     if (options.toolCallLogPath === undefined) {
       throw childError(

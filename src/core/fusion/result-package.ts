@@ -61,7 +61,16 @@ function usage(value: unknown, artifactDir: string): FusionUsage {
   if (!isRecord(value)) fail('details.usage must be an object', artifactDir);
   assertOnlyKeys(
     value,
-    ['input', 'output', 'cacheRead', 'cacheWrite', 'totalTokens', 'cost'],
+    [
+      'input',
+      'output',
+      'cacheRead',
+      'cacheWrite',
+      'cacheWrite1h',
+      'reasoning',
+      'totalTokens',
+      'cost',
+    ],
     'details.usage',
     artifactDir,
   );
@@ -78,11 +87,29 @@ function usage(value: unknown, artifactDir: string): FusionUsage {
       fail(`${label} is invalid`, artifactDir);
     return entry;
   };
+  const output = finiteNonnegative(value['output'], 'details.usage.output');
+  const cacheWrite = finiteNonnegative(value['cacheWrite'], 'details.usage.cacheWrite');
+  const cacheWrite1h =
+    value['cacheWrite1h'] === undefined
+      ? undefined
+      : finiteNonnegative(value['cacheWrite1h'], 'details.usage.cacheWrite1h');
+  const reasoning =
+    value['reasoning'] === undefined
+      ? undefined
+      : finiteNonnegative(value['reasoning'], 'details.usage.reasoning');
+  if (cacheWrite1h !== undefined && cacheWrite1h > cacheWrite) {
+    fail('details.usage.cacheWrite1h must not exceed cacheWrite', artifactDir);
+  }
+  if (reasoning !== undefined && reasoning > output) {
+    fail('details.usage.reasoning must not exceed output', artifactDir);
+  }
   return {
     input: finiteNonnegative(value['input'], 'details.usage.input'),
-    output: finiteNonnegative(value['output'], 'details.usage.output'),
+    output,
     cacheRead: finiteNonnegative(value['cacheRead'], 'details.usage.cacheRead'),
-    cacheWrite: finiteNonnegative(value['cacheWrite'], 'details.usage.cacheWrite'),
+    cacheWrite,
+    ...(cacheWrite1h === undefined ? {} : { cacheWrite1h }),
+    ...(reasoning === undefined ? {} : { reasoning }),
     totalTokens: finiteNonnegative(value['totalTokens'], 'details.usage.totalTokens'),
     cost: {
       input: finiteNonnegative(cost['input'], 'details.usage.cost.input'),

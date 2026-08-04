@@ -522,6 +522,8 @@ export function cloneFusionUsage(usage: FusionUsage): FusionUsage {
     output: usage.output,
     cacheRead: usage.cacheRead,
     cacheWrite: usage.cacheWrite,
+    ...(usage.cacheWrite1h === undefined ? {} : { cacheWrite1h: usage.cacheWrite1h }),
+    ...(usage.reasoning === undefined ? {} : { reasoning: usage.reasoning }),
     totalTokens: usage.totalTokens,
     cost: {
       input: usage.cost.input,
@@ -538,6 +540,12 @@ export function addFusionUsage(target: FusionUsage, delta: FusionUsage): void {
   target.output += delta.output;
   target.cacheRead += delta.cacheRead;
   target.cacheWrite += delta.cacheWrite;
+  if (delta.cacheWrite1h !== undefined) {
+    target.cacheWrite1h = (target.cacheWrite1h ?? 0) + delta.cacheWrite1h;
+  }
+  if (delta.reasoning !== undefined) {
+    target.reasoning = (target.reasoning ?? 0) + delta.reasoning;
+  }
   target.totalTokens += delta.totalTokens;
   target.cost.input += delta.cost.input;
   target.cost.output += delta.cost.output;

@@ -11,6 +11,9 @@ import { readFusionCommittedResult } from '../../src/core/fusion/result-package.
 import {
   FUSION_RESULT_SCHEMA_VERSION,
   FUSION_TOOL_CALL_LOG_SCHEMA_VERSION,
+  addFusionUsage,
+  cloneFusionUsage,
+  createEmptyFusionUsage,
   type FusionChildRunResult,
   type FusionResultDetails,
   type ResolvedFusionModel,
@@ -80,6 +83,37 @@ function field(record: object, key: string): unknown {
 }
 
 void describe('fusion artifacts', () => {
+  void it('preserves and aggregates one-hour cache writes and reasoning subsets', () => {
+    const usage = {
+      input: 10,
+      output: 8,
+      cacheRead: 6,
+      cacheWrite: 4,
+      cacheWrite1h: 3,
+      reasoning: 5,
+      totalTokens: 28,
+      cost: { input: 0.1, output: 0.2, cacheRead: 0.03, cacheWrite: 0.04, total: 0.37 },
+    };
+    assert.deepEqual(cloneFusionUsage(usage), usage);
+
+    const total = createEmptyFusionUsage();
+    addFusionUsage(total, usage);
+    addFusionUsage(total, {
+      input: 2,
+      output: 3,
+      cacheRead: 5,
+      cacheWrite: 7,
+      cacheWrite1h: 6,
+      reasoning: 2,
+      totalTokens: 17,
+      cost: { input: 0.02, output: 0.03, cacheRead: 0.05, cacheWrite: 0.07, total: 0.17 },
+    });
+    assert.equal(total.cacheWrite1h, 9);
+    assert.equal(total.reasoning, 7);
+    assert.equal(total.cacheWrite, 11);
+    assert.equal(total.output, 11);
+  });
+
   void it('creates private run files and records child attempt artifacts', async () => {
     const root = await mkdtemp(join(tmpdir(), 'pi-fusion-artifacts-'));
     try {
@@ -261,12 +295,14 @@ void describe('fusion artifacts', () => {
         models: store.snapshot().models,
         evaluator_attempts: 1,
         usage: {
-          input: 0,
-          output: 0,
-          cacheRead: 0,
-          cacheWrite: 0,
-          totalTokens: 0,
-          cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+          input: 2,
+          output: 13,
+          cacheRead: 3,
+          cacheWrite: 11,
+          cacheWrite1h: 7,
+          reasoning: 5,
+          totalTokens: 29,
+          cost: { input: 0.02, output: 0.13, cacheRead: 0.003, cacheWrite: 0.066, total: 0.219 },
         },
         budget: {
           policy_id: 'test-policy',
@@ -291,6 +327,8 @@ void describe('fusion artifacts', () => {
         workflow: 'reason',
       });
       assert.equal(verified.mergedText, 'final');
+      assert.equal(verified.details.usage.cacheWrite1h, 7);
+      assert.equal(verified.details.usage.reasoning, 5);
       await writeFile(join(store.artifactDirAbs, 'merged.md'), 'tampered', 'utf8');
       await assert.rejects(
         readFusionCommittedResult({

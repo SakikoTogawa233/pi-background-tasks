@@ -32,6 +32,7 @@ import {
   parseFusionSourcePolicy,
 } from './core/fusion/source-policy.js';
 import {
+  applyFusionClaudePromptCachingScopeHeader,
   nonAnthropicFusionCacheObservation,
   normalizeFusionClaudeCachePayload,
   type FusionClaudeCacheObservation,
@@ -65,6 +66,8 @@ export {
   FUSION_CLAUDE_CACHE_DEFAULT_RETENTION,
   FUSION_CLAUDE_CACHE_OBSERVATION_SCHEMA_VERSION,
   FUSION_CLAUDE_CACHE_RETENTION_ENV,
+  FUSION_CLAUDE_PROMPT_CACHING_SCOPE_BETA,
+  applyFusionClaudePromptCachingScopeHeader,
   nonAnthropicFusionCacheObservation,
   normalizeFusionClaudeCachePayload,
   resolveFusionClaudeCachePolicy,
@@ -687,6 +690,11 @@ export default function fusionChildExtension(pi: ExtensionAPI): void {
   let settlementPublished = false;
   const childResultRecords: FusionChildResultMetadata[] = [];
   let pendingCacheObservation: FusionClaudeCacheObservation | undefined;
+
+  pi.on('before_provider_headers', (event, ctx) => {
+    if (ctx.model?.provider !== 'anthropic') return;
+    applyFusionClaudePromptCachingScopeHeader(event.headers);
+  });
 
   pi.on('before_provider_request', async (event, ctx) => {
     providerRequestCount += 1;
