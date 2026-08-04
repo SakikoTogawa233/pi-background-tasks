@@ -391,6 +391,40 @@ function assertFusionLifecycleHookSupport(temp: string, version: string): void {
   }
 }
 
+/** Every supported Pi line must expose native Anthropic breakpoints for Fusion to normalize. */
+function assertAnthropicCacheAdapterSupport(temp: string, version: string): void {
+  const candidates = [
+    join(temp, 'node_modules', '@earendil-works', 'pi-ai', 'dist', 'api', 'anthropic-messages.js'),
+    join(
+      temp,
+      'node_modules',
+      '@earendil-works',
+      'pi-coding-agent',
+      'node_modules',
+      '@earendil-works',
+      'pi-ai',
+      'dist',
+      'api',
+      'anthropic-messages.js',
+    ),
+  ];
+  const adapterPath = candidates.find((path) => existsSync(path));
+  if (adapterPath === undefined) {
+    throw new Error(`Pi ${version}: installed Anthropic adapter source is missing`);
+  }
+  const source = readFileSync(adapterPath, 'utf8');
+  for (const required of [
+    'cache_control',
+    'supportsLongCacheRetention',
+    'supportsCacheControlOnTools',
+    'PI_CACHE_RETENTION',
+  ]) {
+    if (!source.includes(required)) {
+      throw new Error(`Pi ${version}: Anthropic adapter lacks required cache contract ${required}`);
+    }
+  }
+}
+
 /** Pi 0.83.0 bundles TypeBox 1.3.7; older supported Pi lines bundle the 1.1.x line. */
 function expectedTypeBoxLine(version: string): { spec: string; prefix: string } {
   return version.startsWith('0.83')
@@ -419,6 +453,7 @@ async function smokeVersion(version: string, tarballPath: string): Promise<void>
     );
     assertBundledTypeBox(temp, version, typebox.prefix);
     assertFusionLifecycleHookSupport(temp, version);
+    assertAnthropicCacheAdapterSupport(temp, version);
     await assertNoRemovedTypeBoxApis(
       join(temp, 'node_modules', 'pi-background-tasks'),
       `Pi ${version}`,

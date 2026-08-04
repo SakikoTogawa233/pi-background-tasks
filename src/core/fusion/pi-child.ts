@@ -33,6 +33,13 @@ import {
   type FusionRuntimeGuardRecord,
 } from './child-protocol.js';
 import {
+  FUSION_CLAUDE_CACHE_BREAKPOINT_LIMIT,
+  FUSION_CLAUDE_CACHE_OBSERVATION_SCHEMA_VERSION,
+  FUSION_CLAUDE_CACHE_RETENTION_ENV,
+  type FusionClaudeCacheObservation,
+  type FusionClaudeCacheRetention,
+} from './claude-cache.js';
+import {
   FUSION_FORBIDDEN_TOOLS,
   FUSION_NO_TOOLS_CAPABILITY,
   FUSION_INSPECT_TOOLS,
@@ -593,10 +600,124 @@ function parseCompactUsage(value: unknown): FusionUsage {
   };
 }
 
+const FUSION_CLAUDE_CACHE_RETENTIONS = new Set<FusionClaudeCacheRetention>([
+  'none',
+  'short',
+  'long',
+]);
+
+function parseFusionClaudeCacheObservation(
+  value: unknown,
+  provider: string,
+): FusionClaudeCacheObservation {
+  const record = assertClosedRecord(
+    value,
+    [
+      'schema_version',
+      'applicability',
+      'source',
+      'requested_retention',
+      'effective_retention',
+      'breakpoint_count',
+      'request_ordinal',
+    ],
+    'fusion child cache observation',
+  );
+  if (record['schema_version'] !== FUSION_CLAUDE_CACHE_OBSERVATION_SCHEMA_VERSION) {
+    throw new Error('fusion child cache observation schema_version mismatch');
+  }
+  const applicability = record['applicability'];
+  const source = record['source'];
+  const requested = record['requested_retention'];
+  const effective = record['effective_retention'];
+  const breakpointCount = requireUsageInteger(
+    record,
+    'breakpoint_count',
+    'fusion child cache observation',
+  );
+  const requestOrdinal = requirePositiveSafeInteger(
+    record,
+    'request_ordinal',
+    'fusion child cache observation',
+  );
+  if (requestOrdinal > FUSION_CHILD_MAX_PROVIDER_REQUESTS) {
+    throw new Error('fusion child cache observation exceeds the provider request limit');
+  }
+  if (breakpointCount > FUSION_CLAUDE_CACHE_BREAKPOINT_LIMIT) {
+    throw new Error('fusion child cache observation exceeds the Anthropic breakpoint limit');
+  }
+  if (provider !== 'anthropic') {
+    if (
+      applicability !== 'not_applicable' ||
+      source !== 'not_applicable' ||
+      requested !== null ||
+      effective !== null ||
+      breakpointCount !== 0
+    ) {
+      throw new Error('non-Anthropic fusion child has contradictory cache observation');
+    }
+    return {
+      schema_version: FUSION_CLAUDE_CACHE_OBSERVATION_SCHEMA_VERSION,
+      applicability: 'not_applicable',
+      source: 'not_applicable',
+      requested_retention: null,
+      effective_retention: null,
+      breakpoint_count: 0,
+      request_ordinal: requestOrdinal,
+    };
+  }
+  if (applicability !== 'anthropic') {
+    throw new Error('Anthropic fusion child cache observation is not applicable');
+  }
+  if (source !== 'default' && source !== FUSION_CLAUDE_CACHE_RETENTION_ENV) {
+    throw new Error('Anthropic fusion child cache observation source is invalid');
+  }
+  if (
+    typeof requested !== 'string' ||
+    !FUSION_CLAUDE_CACHE_RETENTIONS.has(requested as FusionClaudeCacheRetention) ||
+    typeof effective !== 'string' ||
+    !FUSION_CLAUDE_CACHE_RETENTIONS.has(effective as FusionClaudeCacheRetention)
+  ) {
+    throw new Error('Anthropic fusion child cache retention is invalid');
+  }
+  const requestedRetention = requested as FusionClaudeCacheRetention;
+  const effectiveRetention = effective as FusionClaudeCacheRetention;
+  if (source === 'default' && requestedRetention !== 'long') {
+    throw new Error('default Anthropic cache policy did not request long retention');
+  }
+  if ((effectiveRetention === 'none') !== (breakpointCount === 0)) {
+    throw new Error('Anthropic fusion child cache retention/breakpoint evidence mismatch');
+  }
+  if (requestedRetention === 'none' && effectiveRetention !== 'none') {
+    throw new Error('disabled Anthropic cache policy reported active breakpoints');
+  }
+  if (effectiveRetention === 'long' && requestedRetention !== 'long') {
+    throw new Error('Anthropic long cache retention was not requested');
+  }
+  return {
+    schema_version: FUSION_CLAUDE_CACHE_OBSERVATION_SCHEMA_VERSION,
+    applicability: 'anthropic',
+    source,
+    requested_retention: requestedRetention,
+    effective_retention: effectiveRetention,
+    breakpoint_count: breakpointCount,
+    request_ordinal: requestOrdinal,
+  };
+}
+
 function parseChildResultMetadata(value: unknown): FusionChildResultMetadata {
   const record = assertClosedRecord(
     value,
-    ['schema_version', 'provider', 'model', 'stop_reason', 'text_blocks', 'text_sha256', 'usage'],
+    [
+      'schema_version',
+      'provider',
+      'model',
+      'stop_reason',
+      'text_blocks',
+      'text_sha256',
+      'usage',
+      'cache_observation',
+    ],
     'fusion child result',
   );
   if (record['schema_version'] !== FUSION_CHILD_RESULT_SCHEMA_VERSION)
@@ -613,14 +734,16 @@ function parseChildResultMetadata(value: unknown): FusionChildResultMetadata {
     };
   });
   const usage = parseCompactUsage(record['usage']);
+  const provider = requireNonBlankString(record, 'provider', 'fusion child result');
   return {
     schema_version: FUSION_CHILD_RESULT_SCHEMA_VERSION,
-    provider: requireNonBlankString(record, 'provider', 'fusion child result'),
+    provider,
     model: requireNonBlankString(record, 'model', 'fusion child result'),
     stop_reason: requireNonBlankString(record, 'stop_reason', 'fusion child result'),
     text_blocks: textBlocks,
     text_sha256: requireSha256(record, 'text_sha256', 'fusion child result'),
     usage,
+    cache_observation: parseFusionClaudeCacheObservation(record['cache_observation'], provider),
   };
 }
 
@@ -628,6 +751,7 @@ const FUSION_RUNTIME_GUARD_CODES = new Set<FusionRuntimeGuardCode>([
   'provider_request_limit',
   'provider_request_budget',
   'provider_payload_invalid',
+  'claude_cache_policy',
   'tool_call_limit',
 ]);
 
@@ -722,6 +846,15 @@ export function parseFusionRuntimeGuard(stderr: Buffer): FusionRuntimeGuardRecor
         throw new Error('fusion runtime guard allowed-input arithmetic mismatch');
       }
     }
+    if (frame.code === 'claude_cache_policy') {
+      if (
+        frame.payload_bytes !== 0 ||
+        frame.payload_sha256 !== createHash('sha256').update(Buffer.alloc(0)).digest('hex') ||
+        frame.estimated_input_tokens !== 0
+      ) {
+        throw new Error('fusion runtime guard Claude cache policy payload evidence mismatch');
+      }
+    }
     if (
       frame.code === 'provider_request_budget' &&
       frame.estimated_input_tokens <= frame.allowed_input_tokens
@@ -758,6 +891,7 @@ const FUSION_CHILD_SETTLEMENT_FAILURE_REASONS = new Set<FusionChildSettlementFai
   'final_not_stop',
   'invalid_non_final',
   'runtime_guard',
+  'cache_observation',
 ]);
 
 export function parseFusionChildSettlement(
@@ -1329,6 +1463,7 @@ export class FusionPiCompactResultParser {
     const final = parsed.records.at(-1);
     if (final === undefined) throw new Error('Pi child emitted no compact result metadata');
     for (const record of parsed.records) this.assertModel(record);
+    this.assertCacheObservationOrdinals(parsed.records);
     this.assertTranscriptStopReasons(parsed.records);
     if (settlement.status !== 'complete') {
       throw new Error(
@@ -1352,6 +1487,19 @@ export class FusionPiCompactResultParser {
       throw new Error(
         `Pi assistant model mismatch: expected ${this.expectedProvider}/${this.expectedModel}, observed ${record.provider}/${record.model}`,
       );
+    }
+  }
+
+  private assertCacheObservationOrdinals(records: readonly FusionChildResultMetadata[]): void {
+    let priorOrdinal = 0;
+    for (const [index, record] of records.entries()) {
+      const ordinal = record.cache_observation.request_ordinal;
+      if (ordinal <= priorOrdinal) {
+        throw new Error(
+          `Pi child cache observation ordinal is not increasing at result ${String(index)}: previous ${String(priorOrdinal)}, observed ${String(ordinal)}`,
+        );
+      }
+      priorOrdinal = ordinal;
     }
   }
 
@@ -1891,7 +2039,11 @@ export async function runPiChild(options: RunPiChildOptions): Promise<FusionChil
           childError(
             runtimeGuard?.message ??
               `Pi child exited with code ${close.code === null ? 'null' : String(close.code)}${close.signal === null ? '' : ` (${close.signal})`}`,
-            runtimeGuard === undefined ? 'child_exit_failed' : 'child_runtime_budget_exceeded',
+            runtimeGuard === undefined
+              ? 'child_exit_failed'
+              : runtimeGuard.code === 'claude_cache_policy'
+                ? 'child_cache_policy_invalid'
+                : 'child_runtime_budget_exceeded',
             options,
           ),
           state.cleanupErrors,

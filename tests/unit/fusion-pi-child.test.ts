@@ -26,6 +26,7 @@ import {
   type FusionChildSpawn,
 } from '../../src/core/fusion/pi-child.js';
 import type { Usage } from '@earendil-works/pi-ai';
+import { isJsonObject } from '../../src/core/common.js';
 import {
   FUSION_FORBIDDEN_TOOLS,
   FUSION_INSPECT_TOOLS,
@@ -36,10 +37,13 @@ import {
 import fusionChildExtension, {
   FUSION_CHILD_MAX_PROVIDER_REQUESTS,
   FUSION_CHILD_MAX_TOOL_CALLS,
+  FUSION_CLAUDE_CACHE_OBSERVATION_SCHEMA_VERSION,
+  FUSION_CLAUDE_CACHE_RETENTION_ENV,
   FUSION_CHILD_RESULT_PREFIX,
   FUSION_CHILD_SETTLEMENT_PREFIX,
   FUSION_CHILD_MAX_TOTAL_TOOL_RESULT_BYTES,
   FUSION_RUNTIME_GUARD_PREFIX,
+  FUSION_RUNTIME_GUARD_SCHEMA_VERSION,
   evaluateFusionRuntimeRequest,
   evaluateFusionRuntimeToolLimit,
   prepareFusionRuntimeRequest,
@@ -51,6 +55,8 @@ import fusionChildExtension, {
   FUSION_TOOL_CALL_SEAL_SUFFIX,
   buildFusionChildResultMetadata,
   buildFusionChildSettlement,
+  nonAnthropicFusionCacheObservation,
+  type FusionClaudeCacheObservation,
 } from '../../src/fusion-child-extension.js';
 import {
   buildFusionSourcePolicy,
@@ -149,20 +155,38 @@ function makeSpawn(child = new FakeChild()): { records: SpawnRecord[]; spawn: Fu
   };
 }
 
+function cacheObservation(provider: string, requestOrdinal = 1): FusionClaudeCacheObservation {
+  if (provider !== 'anthropic') return nonAnthropicFusionCacheObservation(requestOrdinal);
+  return {
+    schema_version: FUSION_CLAUDE_CACHE_OBSERVATION_SCHEMA_VERSION,
+    applicability: 'anthropic',
+    source: 'default',
+    requested_retention: 'long',
+    effective_retention: 'long',
+    breakpoint_count: 3,
+    request_ordinal: requestOrdinal,
+  };
+}
+
 function compactFrame(input: {
   provider?: string;
   model?: string;
   text: string;
   stopReason: string;
   usage: Usage;
+  requestOrdinal?: number;
 }): string {
-  const record = buildFusionChildResultMetadata({
-    provider: input.provider ?? 'openai-codex',
-    model: input.model ?? 'gpt-5.5',
-    stopReason: input.stopReason,
-    content: [{ type: 'text', text: input.text }],
-    usage: input.usage,
-  });
+  const provider = input.provider ?? 'openai-codex';
+  const record = buildFusionChildResultMetadata(
+    {
+      provider,
+      model: input.model ?? 'gpt-5.5',
+      stopReason: input.stopReason,
+      content: [{ type: 'text', text: input.text }],
+      usage: input.usage,
+    },
+    cacheObservation(provider, input.requestOrdinal),
+  );
   return `${FUSION_CHILD_RESULT_PREFIX}${JSON.stringify(record)}\n`;
 }
 
@@ -179,6 +203,7 @@ function compactMetadata(provider = 'openai-codex', model = 'gpt-5.5'): string {
       model,
       text: 'draft',
       stopReason: 'toolUse',
+      requestOrdinal: 1,
       usage: {
         input: 1,
         output: 2,
@@ -193,6 +218,7 @@ function compactMetadata(provider = 'openai-codex', model = 'gpt-5.5'): string {
         model,
         text: 'final héllo',
         stopReason: 'stop',
+        requestOrdinal: 2,
         usage: {
           input: 5,
           output: 6,
@@ -519,6 +545,161 @@ void describe('fusion Pi child runner', () => {
     }
   });
 
+  void it('applies and records the default one-hour Claude cache policy before runtime governance', async () => {
+    const priorRetention = process.env['PI_CACHE_RETENTION'];
+    const oldExitCode = process.exitCode;
+    const originalWrite = process.stderr.write.bind(process.stderr);
+    const stderrChunks: Buffer[] = [];
+    try {
+      delete process.env['PI_CACHE_RETENTION'];
+      process.stderr.write = ((
+        chunk: Uint8Array | string,
+        callback?: (error?: Error | null) => void,
+      ): boolean => {
+        stderrChunks.push(
+          typeof chunk === 'string' ? Buffer.from(chunk, 'utf8') : Buffer.from(chunk),
+        );
+        callback?.(null);
+        return true;
+      }) as typeof process.stderr.write;
+      type FusionChildPi = Parameters<typeof fusionChildExtension>[0];
+      type RecordedHandler = (event: object, context?: object) => unknown;
+      const handlers = new Map<string, RecordedHandler[]>();
+      const recorder = {
+        on(event: string, handler: RecordedHandler) {
+          handlers.set(event, [...(handlers.get(event) ?? []), handler]);
+        },
+      };
+      fusionChildExtension(recorder as typeof recorder & FusionChildPi);
+      const beforeProvider = handlers.get('before_provider_request')?.[0];
+      const messageEnd = handlers.get('message_end')?.[0];
+      const agentSettled = handlers.get('agent_settled')?.[0];
+      assert.ok(beforeProvider);
+      assert.ok(messageEnd);
+      assert.ok(agentSettled);
+      const short = { type: 'ephemeral' };
+      const payload = {
+        model: 'claude-opus-4-8',
+        system: [
+          { type: 'text', text: 'identity', cache_control: short },
+          { type: 'text', text: 'system', cache_control: short },
+        ],
+        tools: [{ name: 'read', input_schema: {}, cache_control: short }],
+        messages: [
+          { role: 'user', content: [{ type: 'text', text: 'request', cache_control: short }] },
+        ],
+      };
+      const context = {
+        abort: () => assert.fail('valid Claude cache policy must not abort'),
+        model: {
+          provider: 'anthropic',
+          id: 'claude-opus-4-8',
+          contextWindow: 200_000,
+          maxTokens: 64_000,
+          compat: { supportsLongCacheRetention: true },
+        },
+      };
+      const transformed: unknown = await Promise.resolve(beforeProvider({ payload }, context));
+      assert.ok(isJsonObject(transformed));
+      assert.equal(JSON.stringify(transformed).match(/"ttl":"1h"/gu)?.length, 4);
+      assert.equal(JSON.stringify(payload).includes('"ttl"'), false);
+
+      await Promise.resolve(
+        messageEnd({
+          message: {
+            role: 'assistant',
+            provider: 'anthropic',
+            model: 'claude-opus-4-8',
+            stopReason: 'stop',
+            content: [{ type: 'text', text: 'answer' }],
+            usage: piUsage(2, 1, 3),
+          },
+        }),
+      );
+      await Promise.resolve(agentSettled({}, { isIdle: () => true }));
+      const parsed = parseFusionChildStderr(Buffer.concat(stderrChunks));
+      assert.equal(parsed.records.length, 1);
+      assert.deepEqual(parsed.records[0]?.cache_observation, {
+        schema_version: FUSION_CLAUDE_CACHE_OBSERVATION_SCHEMA_VERSION,
+        applicability: 'anthropic',
+        source: 'default',
+        requested_retention: 'long',
+        effective_retention: 'long',
+        breakpoint_count: 4,
+        request_ordinal: 1,
+      });
+    } finally {
+      process.stderr.write = originalWrite;
+      process.exitCode = oldExitCode;
+      if (priorRetention === undefined) delete process.env['PI_CACHE_RETENTION'];
+      else process.env['PI_CACHE_RETENTION'] = priorRetention;
+    }
+  });
+
+  void it('aborts an invalid Claude cache policy before provider transport', async () => {
+    const priorRetention = process.env['PI_CACHE_RETENTION'];
+    const oldExitCode = process.exitCode;
+    const originalWrite = process.stderr.write.bind(process.stderr);
+    const stderrChunks: Buffer[] = [];
+    try {
+      process.env['PI_CACHE_RETENTION'] = 'forever';
+      process.stderr.write = ((
+        chunk: Uint8Array | string,
+        callback?: (error?: Error | null) => void,
+      ): boolean => {
+        stderrChunks.push(
+          typeof chunk === 'string' ? Buffer.from(chunk, 'utf8') : Buffer.from(chunk),
+        );
+        callback?.(null);
+        return true;
+      }) as typeof process.stderr.write;
+      type FusionChildPi = Parameters<typeof fusionChildExtension>[0];
+      type RecordedHandler = (event: object, context?: object) => unknown;
+      const handlers = new Map<string, RecordedHandler[]>();
+      const recorder = {
+        on(event: string, handler: RecordedHandler) {
+          handlers.set(event, [...(handlers.get(event) ?? []), handler]);
+        },
+      };
+      fusionChildExtension(recorder as typeof recorder & FusionChildPi);
+      const beforeProvider = handlers.get('before_provider_request')?.[0];
+      assert.ok(beforeProvider);
+      let aborts = 0;
+      const payload = {
+        model: 'claude-opus-4-8',
+        system: [{ type: 'text', text: 'system', cache_control: { type: 'ephemeral' } }],
+      };
+      const returned = await Promise.resolve(
+        beforeProvider(
+          { payload },
+          {
+            abort: () => {
+              aborts += 1;
+            },
+            model: {
+              provider: 'anthropic',
+              id: 'claude-opus-4-8',
+              contextWindow: 200_000,
+              maxTokens: 64_000,
+            },
+          },
+        ),
+      );
+      assert.equal(returned, payload);
+      assert.equal(aborts, 1);
+      assert.equal(process.exitCode, 1);
+      const guard = parseFusionRuntimeGuard(Buffer.concat(stderrChunks));
+      assert.ok(guard);
+      assert.equal(guard.code, 'claude_cache_policy');
+      assert.match(guard.message, /PI_CACHE_RETENTION.*none, short, or long/);
+    } finally {
+      process.stderr.write = originalWrite;
+      process.exitCode = oldExitCode;
+      if (priorRetention === undefined) delete process.env['PI_CACHE_RETENTION'];
+      else process.env['PI_CACHE_RETENTION'] = priorRetention;
+    }
+  });
+
   void it('BUG-182 preserves the complete Pi Usage cost contract in compact metadata', () => {
     const piUsage: Usage = {
       input: 11,
@@ -534,13 +715,16 @@ void describe('fusion Pi child runner', () => {
         total: 0.01,
       },
     };
-    const record = buildFusionChildResultMetadata({
-      provider: 'anthropic',
-      model: 'claude-opus-5',
-      stopReason: 'stop',
-      content: [{ type: 'text', text: 'answer' }],
-      usage: piUsage,
-    });
+    const record = buildFusionChildResultMetadata(
+      {
+        provider: 'anthropic',
+        model: 'claude-opus-5',
+        stopReason: 'stop',
+        content: [{ type: 'text', text: 'answer' }],
+        usage: piUsage,
+      },
+      cacheObservation('anthropic'),
+    );
     const usage: unknown = record.usage;
     assert.deepEqual(usage, piUsage);
     assert.equal(Reflect.get(record.usage, 'costTotal'), undefined);
@@ -562,6 +746,18 @@ void describe('fusion Pi child runner', () => {
           Buffer.from(`${FUSION_CHILD_RESULT_PREFIX}${JSON.stringify(legacyRecord)}\n`),
         ),
       /cost|keys mismatch|unknown key/,
+    );
+
+    const contradictoryCache = {
+      ...record,
+      cache_observation: nonAnthropicFusionCacheObservation(1),
+    };
+    assert.throws(
+      () =>
+        parseFusionChildStderr(
+          Buffer.from(`${FUSION_CHILD_RESULT_PREFIX}${JSON.stringify(contradictoryCache)}\n`),
+        ),
+      /cache observation is not applicable/,
     );
   });
 
@@ -596,6 +792,7 @@ void describe('fusion Pi child runner', () => {
       Azure_OpenAI_Resource_Name: 'mixed-case-resource',
       Anthropic_Api_Key: 'mixed-case-key',
       ANTHROPIC_OAUTH_TOKEN: 'subscription-oauth',
+      [FUSION_CLAUDE_CACHE_RETENTION_ENV]: 'long',
       UNRELATED_ENV: 'preserved',
     });
     assert.equal(env['PI_SESSION_ID'], undefined);
@@ -607,6 +804,7 @@ void describe('fusion Pi child runner', () => {
     assert.equal(env['Azure_OpenAI_Resource_Name'], undefined);
     assert.equal(env['Anthropic_Api_Key'], undefined);
     assert.equal(env['ANTHROPIC_OAUTH_TOKEN'], 'subscription-oauth');
+    assert.equal(env[FUSION_CLAUDE_CACHE_RETENTION_ENV], 'long');
     assert.equal(env['UNRELATED_ENV'], 'preserved');
     assert.equal(env[FUSION_TOOL_CALL_LOG_PATH_ENV], undefined);
     assert.equal(env['PI_SKIP_VERSION_CHECK'], '1');
@@ -1268,23 +1466,26 @@ void describe('fusion Pi child runner', () => {
   });
 
   void it('keeps reasoning and full response text out of compact child metadata', () => {
-    const record = buildFusionChildResultMetadata({
-      provider: 'openai-codex',
-      model: 'gpt-5.5',
-      stopReason: 'stop',
-      content: [
-        { type: 'thinking', text: 'private reasoning must not cross the child boundary' },
-        { type: 'text', text: 'complete final answer' },
-      ],
-      usage: {
-        input: 1,
-        output: 2,
-        cacheRead: 0,
-        cacheWrite: 0,
-        totalTokens: 3,
-        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+    const record = buildFusionChildResultMetadata(
+      {
+        provider: 'openai-codex',
+        model: 'gpt-5.5',
+        stopReason: 'stop',
+        content: [
+          { type: 'thinking', text: 'private reasoning must not cross the child boundary' },
+          { type: 'text', text: 'complete final answer' },
+        ],
+        usage: {
+          input: 1,
+          output: 2,
+          cacheRead: 0,
+          cacheWrite: 0,
+          totalTokens: 3,
+          cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+        },
       },
-    });
+      cacheObservation('openai-codex'),
+    );
     const serialized = JSON.stringify(record);
     assert.doesNotMatch(serialized, /private reasoning/);
     assert.doesNotMatch(serialized, /complete final answer/);
@@ -1346,7 +1547,7 @@ void describe('fusion Pi child runner', () => {
     });
     assert.equal(result.stderr.toString('utf8'), 'diagnostic');
     assert.equal(result.events.toString('utf8').split('\n').filter(Boolean).length, 3);
-    assert.match(result.events.toString('utf8'), /fusion-child-settlement\.v1/);
+    assert.match(result.events.toString('utf8'), /fusion-child-settlement\.v2/);
     assert.doesNotMatch(result.events.toString('utf8'), /final héllo/);
   });
 
@@ -1969,6 +2170,7 @@ void describe('fusion Pi child runner', () => {
           model: 'm',
           text: 'tool request 1',
           stopReason: 'toolUse',
+          requestOrdinal: 1,
           usage: piUsage(1, 2, 3),
         }) +
           compactFrame({
@@ -1976,6 +2178,7 @@ void describe('fusion Pi child runner', () => {
             model: 'm',
             text: 'tool request 2',
             stopReason: 'toolUse',
+            requestOrdinal: 2,
             usage: piUsage(4, 5, 9),
           }) +
           compactFrame({
@@ -1983,6 +2186,7 @@ void describe('fusion Pi child runner', () => {
             model: 'm',
             text: 'final answer',
             stopReason: 'stop',
+            requestOrdinal: 3,
             usage: piUsage(6, 7, 13),
           }),
       ),
@@ -2001,20 +2205,26 @@ void describe('fusion Pi child runner', () => {
   });
 
   void it('accepts a settled zero-usage provider retry marker bound to the terminal metadata stream', () => {
-    const retry = buildFusionChildResultMetadata({
-      provider: 'p',
-      model: 'm',
-      stopReason: 'error',
-      content: [],
-      usage: piUsage(0, 0, 0),
-    });
-    const final = buildFusionChildResultMetadata({
-      provider: 'p',
-      model: 'm',
-      stopReason: 'stop',
-      content: [{ type: 'text', text: 'recovered answer' }],
-      usage: piUsage(6, 7, 13),
-    });
+    const retry = buildFusionChildResultMetadata(
+      {
+        provider: 'p',
+        model: 'm',
+        stopReason: 'error',
+        content: [],
+        usage: piUsage(0, 0, 0),
+      },
+      cacheObservation('p', 1),
+    );
+    const final = buildFusionChildResultMetadata(
+      {
+        provider: 'p',
+        model: 'm',
+        stopReason: 'stop',
+        content: [{ type: 'text', text: 'recovered answer' }],
+        usage: piUsage(6, 7, 13),
+      },
+      cacheObservation('p', 2),
+    );
     const frames =
       `${FUSION_CHILD_RESULT_PREFIX}${JSON.stringify(retry)}\n` +
       `${FUSION_CHILD_RESULT_PREFIX}${JSON.stringify(final)}\n`;
@@ -2099,10 +2309,22 @@ void describe('fusion Pi child runner', () => {
         },
       };
       fusionChildExtension(recorder as typeof recorder & FusionChildPi);
+      const beforeProvider = handlers.get('before_provider_request')?.[0];
       const messageEnd = handlers.get('message_end')?.[0];
       const agentSettled = handlers.get('agent_settled')?.[0];
+      assert.ok(beforeProvider);
       assert.ok(messageEnd);
       assert.ok(agentSettled);
+      const providerContext = {
+        abort: () => undefined,
+        model: {
+          provider: 'p',
+          id: 'm',
+          contextWindow: 100_000,
+          maxTokens: 32_768,
+        },
+      };
+      await Promise.resolve(beforeProvider({ payload: { input: 'retry' } }, providerContext));
       await Promise.resolve(
         messageEnd({
           message: {
@@ -2115,6 +2337,7 @@ void describe('fusion Pi child runner', () => {
           },
         }),
       );
+      await Promise.resolve(beforeProvider({ payload: { input: 'final' } }, providerContext));
       await Promise.resolve(
         messageEnd({
           message: {
@@ -2182,12 +2405,14 @@ void describe('fusion Pi child runner', () => {
 
   void it('rejects invalid transcript stop reasons loudly', () => {
     const parser = new FusionPiCompactResultParser('p', 'm');
+    let requestOrdinal = 0;
     const frame = (stopReason: string, text = stopReason): string =>
       compactFrame({
         provider: 'p',
         model: 'm',
         text,
         stopReason,
+        requestOrdinal: (requestOrdinal += 1),
         usage: piUsage(1, 1, 2),
       });
     const finish = (frames: string): void => {
@@ -2229,23 +2454,26 @@ void describe('fusion Pi child runner', () => {
   });
 
   void it('reconstructs multiple print-mode text blocks without compacting the final answer', () => {
-    const record = buildFusionChildResultMetadata({
-      provider: 'p',
-      model: 'm',
-      stopReason: 'stop',
-      content: [
-        { type: 'text', text: 'first line\n' },
-        { type: 'text', text: '世界' },
-      ],
-      usage: {
-        input: 1,
-        output: 2,
-        cacheRead: 0,
-        cacheWrite: 0,
-        totalTokens: 3,
-        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+    const record = buildFusionChildResultMetadata(
+      {
+        provider: 'p',
+        model: 'm',
+        stopReason: 'stop',
+        content: [
+          { type: 'text', text: 'first line\n' },
+          { type: 'text', text: '世界' },
+        ],
+        usage: {
+          input: 1,
+          output: 2,
+          cacheRead: 0,
+          cacheWrite: 0,
+          totalTokens: 3,
+          cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+        },
       },
-    });
+      cacheObservation('p'),
+    );
     const stderr = Buffer.from(
       withSettlement(`${FUSION_CHILD_RESULT_PREFIX}${JSON.stringify(record)}\n`),
       'utf8',
@@ -2435,6 +2663,53 @@ void describe('fusion Pi child runner', () => {
       assert.equal(error.code, 'child_runtime_budget_exceeded');
       assert.match(error.message, /blocked provider request 8 before transport/);
       assert.equal(error.usage.totalTokens, 21);
+      return true;
+    });
+  });
+
+  void it('surfaces an invalid Claude cache policy distinctly from a budget refusal', async () => {
+    const child = new FakeChild(112);
+    const harness = makeSpawn(child);
+    const model = resolvedModel('anthropic', 'claude-opus-4-8');
+    const run = runPiChild({
+      stage: 'candidate',
+      slot: 1,
+      attempt: 1,
+      cwd: '/tmp/project',
+      model,
+      systemPrompt: 'system',
+      userPrompt: 'prompt',
+      spawn: harness.spawn,
+      platform: 'win32',
+      killGraceMs: 20,
+      sigkillWaitMs: 20,
+    });
+    await tick();
+    const emptyHash = createHash('sha256').update(Buffer.alloc(0)).digest('hex');
+    const guard = {
+      schema_version: FUSION_RUNTIME_GUARD_SCHEMA_VERSION,
+      code: 'claude_cache_policy',
+      provider: model.provider,
+      model: model.model,
+      request_ordinal: 1,
+      tool_call_count: 0,
+      payload_bytes: 0,
+      payload_sha256: emptyHash,
+      estimated_input_tokens: 0,
+      context_window_tokens: model.contextWindow,
+      reserved_output_tokens: model.maxOutputTokens,
+      safety_reserve_tokens: 4_096,
+      allowed_input_tokens: model.contextWindow - model.maxOutputTokens - 4_096,
+      message: 'fusion child could not apply Claude cache policy',
+    };
+    child.stderr.emitData(
+      `${FUSION_RUNTIME_GUARD_PREFIX}${JSON.stringify(guard)}\n${compactMetadata(model.provider, model.model)}`,
+    );
+    child.close(1, null);
+    await assert.rejects(run, (error: unknown) => {
+      assert.ok(error instanceof FusionChildRunError);
+      assert.equal(error.code, 'child_cache_policy_invalid');
+      assert.match(error.message, /could not apply Claude cache policy/);
       return true;
     });
   });

@@ -26,7 +26,7 @@
 | Fact | Value |
 | --- | --- |
 | Package | `pi-background-tasks` |
-| Version | `1.0.5` |
+| Version | `1.0.6` |
 | Node engine | `>=22.19.0` |
 | Pi entrypoint | `./extensions/background-tasks.ts` |
 | Package image | [logo.png](https://raw.githubusercontent.com/ismailsaleekh/pi-background-tasks/main/logo.png) |
@@ -291,6 +291,7 @@ Agent tasks launched through `pi -p ...` or `pi --mode json ...` and marked `isA
 - Shell jobs are tracked by the package, but they are not sandboxed. Treat commands as local processes with your permissions and credentials.
 - Delegate and Fusion child Pi processes are route-pinned where applicable; delegate/Fusion paths do not silently substitute routes.
 - Fusion uses direct child `pi --mode text` processes, not direct completion APIs. Frontier Fusion routes are admitted only through Pi Anthropic or Codex subscription OAuth; metered frontier API credentials are rejected before child creation.
+- Claude Fusion children default Pi-selected prompt-cache breakpoints to one-hour retention. Set `PI_CACHE_RETENTION=short|none|long` to choose explicitly; malformed policy or cache evidence fails before transport.
 - Fusion research fetches only caller-supplied public `http(s)` URLs with bounded retrieval. It is not web search and not a secret-exfiltration boundary.
 - Attestation sidecars are local, unsigned, same-user-writable evidence. They are useful for downstream local gates, but not cryptographic proof against local compromise, a compromised Pi binary, or a compromised provider.
 - Metadata, attestations, delegate/Fusion artifacts, and configuration replacements use write/fsync/rename durability patterns. Ordinary task output is closed and drained before terminal publication but is not explicitly fsynced. POSIX directory entries are fsynced after atomic replacement; Windows lacks the same portable directory-entry crash-durability guarantee.

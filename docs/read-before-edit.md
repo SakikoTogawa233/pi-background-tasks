@@ -37,6 +37,7 @@ Every production file under `src/**` and `extensions/**` has exactly one primary
 | `src/core/fusion/artifacts.ts` | [subsystems/fusion](./subsystems/fusion.md) |
 | `src/core/fusion/budget.ts` | [subsystems/fusion](./subsystems/fusion.md) |
 | `src/core/fusion/child-protocol.ts` | [subsystems/fusion](./subsystems/fusion.md) |
+| `src/core/fusion/claude-cache.ts` | [subsystems/fusion](./subsystems/fusion.md) |
 | `src/core/fusion/clean-context.ts` | [subsystems/fusion](./subsystems/fusion.md) |
 | `src/core/fusion/config.ts` | [subsystems/fusion](./subsystems/fusion.md) |
 | `src/core/fusion/context.ts` | [subsystems/fusion](./subsystems/fusion.md) |

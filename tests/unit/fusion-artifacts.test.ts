@@ -57,7 +57,7 @@ function childResult(
       totalTokens: 3,
       cost: { input: 0.01, output: 0.02, cacheRead: 0, cacheWrite: 0, total: 0.03 },
     },
-    events: Buffer.from('{"schema_version":"pi-background-tasks.fusion-child-result.v2"}\n'),
+    events: Buffer.from('{"schema_version":"pi-background-tasks.fusion-child-result.v3"}\n'),
     stderr: Buffer.from('stderr'),
     exitCode: 0,
     signal: null,

@@ -42,7 +42,7 @@ function childResult(options: RunPiChildOptions, text: string): FusionChildRunRe
     qualifiedId: options.model.qualifiedId,
     text,
     usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2, cost: { input: 0.01, output: 0.02, cacheRead: 0, cacheWrite: 0, total: 0.03 } },
-    events: Buffer.from('{"schema_version":"pi-background-tasks.fusion-child-result.v2"}\n'),
+    events: Buffer.from('{"schema_version":"pi-background-tasks.fusion-child-result.v3"}\n'),
     stderr: Buffer.alloc(0),
     exitCode: 0,
     signal: null,

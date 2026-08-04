@@ -79,6 +79,16 @@ Missing config means all five slots are `$current`. Config entries are qualified
 
 Fusion accepts frontier-model routes only through Pi Anthropic or Codex subscription OAuth where `ModelRegistry.isUsingOAuth` confirms the route. Metered frontier API-key/base-URL paths are rejected before child creation, and relevant metered environment variables are stripped from Fusion children.
 
+## Fusion Claude prompt caching
+
+| Variable | Effect |
+|---|---|
+| `PI_CACHE_RETENTION=long` | Use one-hour retention on Pi-selected Anthropic cache breakpoints. This is Fusion's default when the variable is unset. |
+| `PI_CACHE_RETENTION=short` | Use normal ephemeral retention without a `ttl` field (approximately five minutes). |
+| `PI_CACHE_RETENTION=none` | Remove Anthropic cache breakpoints from normal Fusion provider payloads. Pi compaction payloads that already contain no breakpoints remain unmarked under every policy. |
+
+Fusion children are isolated with `--no-session --no-extensions`, so a parent session's `/claude-cache` override from `spawn-anthropic-attribution` is not inherited; use `PI_CACHE_RETENTION` for Fusion. Invalid values fail before provider transport. Fusion never adds breakpoints where Pi selected none, preserves at most Anthropic's four supported breakpoints, and records requested/effective policy in each child result event. Models that explicitly reject long retention use short retention instead. One-hour cache creation has a higher provider write price than short retention; cache reads/writes and their calculated costs remain visible in Fusion usage evidence.
+
 ## Fusion runtime limits
 
 These are source constants, not documented operator env knobs:

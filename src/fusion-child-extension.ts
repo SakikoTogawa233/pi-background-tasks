@@ -32,6 +32,11 @@ import {
   parseFusionSourcePolicy,
 } from './core/fusion/source-policy.js';
 import {
+  nonAnthropicFusionCacheObservation,
+  normalizeFusionClaudeCachePayload,
+  type FusionClaudeCacheObservation,
+} from './core/fusion/claude-cache.js';
+import {
   FUSION_CHILD_MAX_PROVIDER_REQUESTS,
   FUSION_CHILD_MAX_TOOL_CALLS,
   FUSION_CHILD_MAX_TOTAL_TOOL_RESULT_BYTES,
@@ -54,6 +59,20 @@ import {
   type FusionRuntimeGuardCode,
   type FusionRuntimeGuardRecord,
 } from './core/fusion/child-protocol.js';
+
+export {
+  FUSION_CLAUDE_CACHE_BREAKPOINT_LIMIT,
+  FUSION_CLAUDE_CACHE_DEFAULT_RETENTION,
+  FUSION_CLAUDE_CACHE_OBSERVATION_SCHEMA_VERSION,
+  FUSION_CLAUDE_CACHE_RETENTION_ENV,
+  nonAnthropicFusionCacheObservation,
+  normalizeFusionClaudeCachePayload,
+  resolveFusionClaudeCachePolicy,
+  type FusionClaudeCacheNormalization,
+  type FusionClaudeCacheObservation,
+  type FusionClaudeCachePolicySource,
+  type FusionClaudeCacheRetention,
+} from './core/fusion/claude-cache.js';
 
 export {
   FUSION_CHILD_MAX_PROVIDER_REQUESTS,
@@ -326,6 +345,10 @@ export interface FusionRuntimeRequestEvaluationInput {
 function invalidFusionRuntimeRequest(
   input: FusionRuntimeRequestEvaluationInput,
   detail: string,
+  code: Extract<
+    FusionRuntimeGuardCode,
+    'provider_payload_invalid' | 'claude_cache_policy'
+  > = 'provider_payload_invalid',
 ): FusionRuntimeGuardRecord {
   const contextWindowTokens =
     input.contextWindowTokens !== undefined &&
@@ -347,7 +370,7 @@ function invalidFusionRuntimeRequest(
   const emptyPayload = Buffer.alloc(0);
   return {
     schema_version: FUSION_RUNTIME_GUARD_SCHEMA_VERSION,
-    code: 'provider_payload_invalid',
+    code,
     provider: input.provider ?? 'unknown',
     model: input.model ?? 'unknown',
     request_ordinal: input.requestOrdinal,
@@ -663,6 +686,7 @@ export default function fusionChildExtension(pi: ExtensionAPI): void {
   let runtimeGuardFailed = false;
   let settlementPublished = false;
   const childResultRecords: FusionChildResultMetadata[] = [];
+  let pendingCacheObservation: FusionClaudeCacheObservation | undefined;
 
   pi.on('before_provider_request', async (event, ctx) => {
     providerRequestCount += 1;
@@ -672,8 +696,51 @@ export default function fusionChildExtension(pi: ExtensionAPI): void {
     }
 
     const model = ctx.model;
+    let cacheNormalizedPayload = event.payload;
+    let cacheObservation: FusionClaudeCacheObservation;
+    try {
+      if (model?.provider === 'anthropic') {
+        const supportsLongCacheRetention =
+          model.compat !== undefined && 'supportsLongCacheRetention' in model.compat
+            ? model.compat.supportsLongCacheRetention
+            : undefined;
+        const normalized = normalizeFusionClaudeCachePayload({
+          payload: event.payload,
+          requestOrdinal: providerRequestCount,
+          supportsLongCacheRetention:
+            typeof supportsLongCacheRetention === 'boolean'
+              ? supportsLongCacheRetention
+              : undefined,
+        });
+        cacheNormalizedPayload = normalized.payload;
+        cacheObservation = normalized.observation;
+      } else {
+        cacheObservation = nonAnthropicFusionCacheObservation(providerRequestCount);
+      }
+    } catch (error) {
+      const guard = invalidFusionRuntimeRequest(
+        {
+          payload: event.payload,
+          provider: model?.provider,
+          model: model?.id,
+          contextWindowTokens: model?.contextWindow,
+          maxOutputTokens: model?.maxTokens,
+          requestOrdinal: providerRequestCount,
+          toolCallCount,
+        },
+        `Claude cache policy rejected the final payload: ${error instanceof Error ? error.message : String(error)}`,
+        'claude_cache_policy',
+      );
+      runtimeGuardFailed = true;
+      latchAuditProcessFailure();
+      ctx.abort();
+      await writeRuntimeGuard(guard);
+      return event.payload;
+    }
+    pendingCacheObservation = cacheObservation;
+
     const prepared = prepareFusionRuntimeRequest({
-      payload: event.payload,
+      payload: cacheNormalizedPayload,
       provider: model?.provider,
       model: model?.id,
       contextWindowTokens: model?.contextWindow,
@@ -909,7 +976,13 @@ export default function fusionChildExtension(pi: ExtensionAPI): void {
 
   pi.on('message_end', async (event) => {
     if (event.message.role !== 'assistant') return;
-    const record = buildFusionChildResultMetadata(event.message);
+    const cacheObservation = pendingCacheObservation;
+    if (cacheObservation === undefined) {
+      latchAuditProcessFailure();
+      throw new Error('fusion child assistant result has no matching cache-policy observation');
+    }
+    pendingCacheObservation = undefined;
+    const record = buildFusionChildResultMetadata(event.message, cacheObservation);
     await writeMetadata(record);
     childResultRecords.push(record);
   });
@@ -923,7 +996,12 @@ export default function fusionChildExtension(pi: ExtensionAPI): void {
       throw new Error('fusion child result settlement observed agent_settled while not idle');
     }
     settlementPublished = true;
-    const settlement = buildFusionChildSettlement(childResultRecords, runtimeGuardFailed);
+    const cacheObservationFailed = pendingCacheObservation !== undefined;
+    const settlement = buildFusionChildSettlement(
+      childResultRecords,
+      runtimeGuardFailed,
+      cacheObservationFailed,
+    );
     if (settlement.status !== 'complete') latchAuditProcessFailure();
     await writeSettlement(settlement);
   });

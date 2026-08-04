@@ -12,13 +12,13 @@ covers_sources: []
 This authored section defines the boundary: documentation facts are extracted from package metadata and TypeScript ASTs, then generated into docs and the manifest. Unsupported syntax fails the gate rather than falling back to regex or stale hand-maintained inventories. Public registrations must remain unconditional top-level direct calls or use the one validated local tool-wrapper shape; host/method aliases, computed access, nested or conditional registration, wrapper chaining/passing, constructor helpers, ambiguous public metadata, destructured Pi parameters, and repeated imported registrars are rejected.
 
 <!-- pi-docs:begin name="docs-freshness-gate" generator="scripts/docs/generate.mjs" -->
-- Canonical package version: `1.0.5`
+- Canonical package version: `1.0.6`
 - Governed markdown docs: 40
 - Public surfaces extracted: 30
-- Governed production sources: 44
+- Governed production sources: 45
 - Tool contracts extracted: 11
-- Schema IDs extracted: 39
-- Environment variable references extracted: 46
+- Schema IDs extracted: 40
+- Environment variable references extracted: 47
 - Behavioral attestation receipts not passing: 1
 - Receipt store: `docs/attestations.json`
 

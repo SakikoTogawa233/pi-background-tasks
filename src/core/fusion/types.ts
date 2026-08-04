@@ -14,7 +14,8 @@ export const FUSION_MODEL_CONFIG_SCHEMA_VERSION = 'pi-background-tasks.fusion-mo
 export const FUSION_LEGACY_INPUT_SCHEMA_VERSION = 'pi-background-tasks.fusion-input.v4';
 export const FUSION_INPUT_SCHEMA_VERSION = 'pi-background-tasks.fusion-input.v5';
 export const FUSION_EVALUATION_SCHEMA_VERSION = 'pi-background-tasks.fusion-evaluation.v1';
-export const FUSION_VALIDATE_CANDIDATE_SCHEMA_VERSION = 'pi-background-tasks.fusion-validation-candidate.v1';
+export const FUSION_VALIDATE_CANDIDATE_SCHEMA_VERSION =
+  'pi-background-tasks.fusion-validation-candidate.v1';
 export const FUSION_LEGACY_RESULT_SCHEMA_VERSION = 'pi-background-tasks.fusion-result.v4';
 export const FUSION_RESULT_SCHEMA_VERSION = 'pi-background-tasks.fusion-result.v5';
 export const FUSION_LEGACY_MANIFEST_SCHEMA_VERSION = 'pi-background-tasks.fusion-manifest.v3';
@@ -557,7 +558,11 @@ export interface FusionResultDetails {
   source: FusionSource;
   status: 'completed';
   context: { kind: FusionContextKind; policy_id: string };
-  tool_policy: { candidate_tools: readonly string[]; evaluation_tools: readonly []; merge_tools: readonly [] };
+  tool_policy: {
+    candidate_tools: readonly string[];
+    evaluation_tools: readonly [];
+    merge_tools: readonly [];
+  };
   artifact_dir: string;
   models: {
     candidates: readonly [string, string, string];
@@ -597,6 +602,7 @@ export type FusionErrorCode =
   | 'child_event_invalid'
   | 'child_exit_failed'
   | 'child_runtime_budget_exceeded'
+  | 'child_cache_policy_invalid'
   | 'child_timeout'
   | 'child_output_cap'
   | 'child_cancelled'
@@ -817,8 +823,17 @@ export interface FusionArtifactManifest {
     evaluation: FusionCapability;
     merge: FusionCapability;
   };
-  context: { kind: FusionContextKind; policy_id: string; ledger_artifact?: string; source_policy_artifact?: string };
-  tool_policy: { candidate_tools: readonly string[]; evaluation_tools: readonly []; merge_tools: readonly [] };
+  context: {
+    kind: FusionContextKind;
+    policy_id: string;
+    ledger_artifact?: string;
+    source_policy_artifact?: string;
+  };
+  tool_policy: {
+    candidate_tools: readonly string[];
+    evaluation_tools: readonly [];
+    merge_tools: readonly [];
+  };
   usage: FusionUsage;
   attempts: readonly FusionAttemptArtifactRecord[];
   artifacts: Readonly<Record<string, FusionArtifactRef>>;
@@ -902,7 +917,11 @@ export interface FusionBudgetPlanV1 {
   workflow: FusionWorkflowId;
   context: { kind: FusionContextKind; policy_id: string };
   fixed_candidate_policy: { capability: FusionCapability; tools: readonly string[] };
-  tool_policy: { candidate_tools: readonly string[]; evaluation_tools: readonly []; merge_tools: readonly [] };
+  tool_policy: {
+    candidate_tools: readonly string[];
+    evaluation_tools: readonly [];
+    merge_tools: readonly [];
+  };
   policy: FusionBudgetPolicyDescriptor;
   routes: readonly FusionRouteCapacity[];
   stages: readonly FusionStageBudgetPlanEntry[];

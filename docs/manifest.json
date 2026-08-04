@@ -89,12 +89,13 @@
       "state": "pass"
     },
     {
-      "authored_body_sha256": "sha256:dd86701ab63ec8c0ed059e6327cd57286eedde55043de40295fc88e7fe73223c",
+      "authored_body_sha256": "sha256:77a2a9bfeb73a4cda9c65b2559a06e141096ff496d732e1e3d9c4eb1a0ba8616",
       "covers_sources": [
         "extensions/fusion-child.ts",
         "src/core/fusion/artifacts.ts",
         "src/core/fusion/budget.ts",
         "src/core/fusion/child-protocol.ts",
+        "src/core/fusion/claude-cache.ts",
         "src/core/fusion/clean-context.ts",
         "src/core/fusion/config.ts",
         "src/core/fusion/context.ts",
@@ -437,6 +438,7 @@
         "src/core/fusion/artifacts.ts",
         "src/core/fusion/budget.ts",
         "src/core/fusion/child-protocol.ts",
+        "src/core/fusion/claude-cache.ts",
         "src/core/fusion/clean-context.ts",
         "src/core/fusion/config.ts",
         "src/core/fusion/context.ts",
@@ -786,7 +788,7 @@
     "image": "https://raw.githubusercontent.com/ismailsaleekh/pi-background-tasks/main/logo.png",
     "name": "pi-background-tasks",
     "type": "module",
-    "version": "1.0.5"
+    "version": "1.0.6"
   },
   "public_surface_ids": [
     "command:bg",
@@ -1660,6 +1662,9 @@
       "subsystems/fusion"
     ],
     "src/core/fusion/child-protocol.ts": [
+      "subsystems/fusion"
+    ],
+    "src/core/fusion/claude-cache.ts": [
       "subsystems/fusion"
     ],
     "src/core/fusion/clean-context.ts": [

@@ -808,6 +808,22 @@ void describe('package', () => {
     );
   });
 
+  void it('keeps Fusion Claude cache normalization before final-payload governance', async () => {
+    const cache = await text('src/core/fusion/claude-cache.ts');
+    assert.match(cache, /FUSION_CLAUDE_CACHE_DEFAULT_RETENTION\s*=\s*'long'/);
+    assert.match(cache, /PI_CACHE_RETENTION/);
+    assert.match(cache, /FUSION_CLAUDE_CACHE_BREAKPOINT_LIMIT\s*=\s*4/);
+    assert.match(cache, /upstream call-level opt-out/);
+
+    const childExtension = await text('src/fusion-child-extension.ts');
+    const normalizeAt = childExtension.indexOf('normalizeFusionClaudeCachePayload({');
+    const governAt = childExtension.indexOf('prepareFusionRuntimeRequest({', normalizeAt);
+    assert.ok(normalizeAt >= 0, 'Claude cache policy must normalize final provider payloads');
+    assert.ok(governAt > normalizeAt, 'runtime governor must measure the cache-normalized payload');
+    assert.match(childExtension, /model\?\.provider === 'anthropic'/);
+    assert.match(await text('src/core/fusion/child-protocol.ts'), /cache_observation/);
+  });
+
   void it('ships the markdown extractor as a real dependency without startup import', async () => {
     const p = await pkg();
     assert.equal(
@@ -920,7 +936,7 @@ void describe('package', () => {
       assert.doesNotMatch(source, /costTotal/, `${file} must not carry the retired cost shape`);
     }
     const childProtocol = await text('src/core/fusion/child-protocol.ts');
-    assert.match(childProtocol, /fusion-child-result\.v2/);
+    assert.match(childProtocol, /fusion-child-result\.v3/);
     for (const key of ['input', 'output', 'cacheRead', 'cacheWrite', 'total']) {
       assert.match(childProtocol, new RegExp(`cost\\.${key}`));
     }

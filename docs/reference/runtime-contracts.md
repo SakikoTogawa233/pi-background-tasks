@@ -16,27 +16,27 @@ This generated registry lists production environment-variable references, runtim
 
 | Name | Access | Provenance |
 | --- | --- | --- |
-| `ANTHROPIC_API_KEY` | remove | `src/core/attested-pi-run.ts:135`<br>`src/core/fusion/pi-child.ts:85` |
-| `ANTHROPIC_AUTH_TOKEN` | remove | `src/core/fusion/pi-child.ts:85` |
-| `ANTHROPIC_BASE_URL` | remove | `src/core/attested-pi-run.ts:135`<br>`src/core/fusion/pi-child.ts:85` |
-| `AZURE_OPENAI_AD_TOKEN` | remove | `src/core/fusion/pi-child.ts:85` |
-| `AZURE_OPENAI_API_KEY` | remove | `src/core/fusion/pi-child.ts:85` |
-| `AZURE_OPENAI_API_VERSION` | remove | `src/core/fusion/pi-child.ts:85` |
-| `AZURE_OPENAI_BASE_URL` | remove | `src/core/fusion/pi-child.ts:85` |
-| `AZURE_OPENAI_DEPLOYMENT_NAME_MAP` | remove | `src/core/fusion/pi-child.ts:85` |
-| `AZURE_OPENAI_ENDPOINT` | remove | `src/core/fusion/pi-child.ts:85` |
-| `AZURE_OPENAI_RESOURCE_NAME` | remove | `src/core/fusion/pi-child.ts:85` |
+| `ANTHROPIC_API_KEY` | remove | `src/core/attested-pi-run.ts:135`<br>`src/core/fusion/pi-child.ts:92` |
+| `ANTHROPIC_AUTH_TOKEN` | remove | `src/core/fusion/pi-child.ts:92` |
+| `ANTHROPIC_BASE_URL` | remove | `src/core/attested-pi-run.ts:135`<br>`src/core/fusion/pi-child.ts:92` |
+| `AZURE_OPENAI_AD_TOKEN` | remove | `src/core/fusion/pi-child.ts:92` |
+| `AZURE_OPENAI_API_KEY` | remove | `src/core/fusion/pi-child.ts:92` |
+| `AZURE_OPENAI_API_VERSION` | remove | `src/core/fusion/pi-child.ts:92` |
+| `AZURE_OPENAI_BASE_URL` | remove | `src/core/fusion/pi-child.ts:92` |
+| `AZURE_OPENAI_DEPLOYMENT_NAME_MAP` | remove | `src/core/fusion/pi-child.ts:92` |
+| `AZURE_OPENAI_ENDPOINT` | remove | `src/core/fusion/pi-child.ts:92` |
+| `AZURE_OPENAI_RESOURCE_NAME` | remove | `src/core/fusion/pi-child.ts:92` |
 | `ComSpec` | read | `src/core/common.ts:683`<br>`src/core/common.ts:692` |
-| `OPENAI_API_KEY` | remove | `src/core/attested-pi-run.ts:135`<br>`src/core/fusion/pi-child.ts:85` |
-| `OPENAI_BASE_URL` | remove | `src/core/attested-pi-run.ts:135`<br>`src/core/fusion/pi-child.ts:85` |
-| `OPENROUTER_API_KEY` | remove | `src/core/attested-pi-run.ts:135`<br>`src/core/fusion/pi-child.ts:85` |
-| `OPENROUTER_BASE_URL` | remove | `src/core/attested-pi-run.ts:135`<br>`src/core/fusion/pi-child.ts:85` |
+| `OPENAI_API_KEY` | remove | `src/core/attested-pi-run.ts:135`<br>`src/core/fusion/pi-child.ts:92` |
+| `OPENAI_BASE_URL` | remove | `src/core/attested-pi-run.ts:135`<br>`src/core/fusion/pi-child.ts:92` |
+| `OPENROUTER_API_KEY` | remove | `src/core/attested-pi-run.ts:135`<br>`src/core/fusion/pi-child.ts:92` |
+| `OPENROUTER_BASE_URL` | remove | `src/core/attested-pi-run.ts:135`<br>`src/core/fusion/pi-child.ts:92` |
 | `path` | read | `src/core/common.ts:638` |
 | `Path` | read | `src/core/common.ts:638` |
 | `PATH` | read | `src/core/common.ts:638` |
-| `PI_API_BASE_URL` | remove | `src/core/attested-pi-run.ts:135`<br>`src/core/fusion/pi-child.ts:85` |
-| `PI_API_KEY` | remove | `src/core/attested-pi-run.ts:135`<br>`src/core/fusion/pi-child.ts:85` |
-| `PI_AUTH_FILE` | remove | `src/core/attested-pi-run.ts:135`<br>`src/core/fusion/pi-child.ts:85` |
+| `PI_API_BASE_URL` | remove | `src/core/attested-pi-run.ts:135`<br>`src/core/fusion/pi-child.ts:92` |
+| `PI_API_KEY` | remove | `src/core/attested-pi-run.ts:135`<br>`src/core/fusion/pi-child.ts:92` |
+| `PI_AUTH_FILE` | remove | `src/core/attested-pi-run.ts:135`<br>`src/core/fusion/pi-child.ts:92` |
 | `PI_BG_DELEGATE_ARTIFACT_DIR` | read, write | `src/core/delegate/launch.ts:324`<br>`src/delegate-child-extension.ts:277` |
 | `PI_BG_DELEGATE_LAUNCH_NONCE` | read, write | `src/core/delegate/launch.ts:328`<br>`src/delegate-child-extension.ts:281` |
 | `PI_BG_DELEGATE_SEED_PATH` | read, write | `src/core/delegate/launch.ts:325`<br>`src/delegate-child-extension.ts:278` |
@@ -48,17 +48,18 @@ This generated registry lists production environment-variable references, runtim
 | `PI_BG_REGISTRY_URL` | read | `src/extension.ts:453` |
 | `PI_BG_SHELL` | read | `src/core/common.ts:679` |
 | `PI_BG_SHELL_PATH` | read | `src/core/common.ts:680` |
-| `PI_FUSION_RESEARCH_ENABLED` | read, remove, write | `src/core/fusion/pi-child.ts:1659`<br>`src/core/fusion/pi-child.ts:85`<br>`src/fusion-child-extension.ts:650` |
-| `PI_FUSION_SOURCE_POLICY_PATH` | read, remove, write | `src/core/fusion/pi-child.ts:1660`<br>`src/core/fusion/pi-child.ts:85`<br>`src/fusion-child-extension.ts:606` |
-| `PI_FUSION_SOURCE_POLICY_SHA256` | read, remove, write | `src/core/fusion/pi-child.ts:1661`<br>`src/core/fusion/pi-child.ts:85`<br>`src/fusion-child-extension.ts:607` |
-| `PI_FUSION_TOOL_CALL_LOG_PATH` | read, remove, write | `src/core/fusion/pi-child.ts:1648`<br>`src/core/fusion/pi-child.ts:85`<br>`src/fusion-child-extension.ts:649` |
-| `PI_MODEL` | remove | `src/core/delegate/launch.ts:301`<br>`src/core/fusion/pi-child.ts:85` |
+| `PI_CACHE_RETENTION` | read | `src/core/fusion/claude-cache.ts:56` |
+| `PI_FUSION_RESEARCH_ENABLED` | read, remove, write | `src/core/fusion/pi-child.ts:1807`<br>`src/core/fusion/pi-child.ts:92`<br>`src/fusion-child-extension.ts:673` |
+| `PI_FUSION_SOURCE_POLICY_PATH` | read, remove, write | `src/core/fusion/pi-child.ts:1808`<br>`src/core/fusion/pi-child.ts:92`<br>`src/fusion-child-extension.ts:629` |
+| `PI_FUSION_SOURCE_POLICY_SHA256` | read, remove, write | `src/core/fusion/pi-child.ts:1809`<br>`src/core/fusion/pi-child.ts:92`<br>`src/fusion-child-extension.ts:630` |
+| `PI_FUSION_TOOL_CALL_LOG_PATH` | read, remove, write | `src/core/fusion/pi-child.ts:1796`<br>`src/core/fusion/pi-child.ts:92`<br>`src/fusion-child-extension.ts:672` |
+| `PI_MODEL` | remove | `src/core/delegate/launch.ts:301`<br>`src/core/fusion/pi-child.ts:92` |
 | `PI_OFFLINE` | read | `src/extension.ts:445` |
-| `PI_PROVIDER` | remove | `src/core/delegate/launch.ts:301`<br>`src/core/fusion/pi-child.ts:85` |
-| `PI_REASONING_LEVEL` | remove | `src/core/delegate/launch.ts:301`<br>`src/core/fusion/pi-child.ts:85` |
-| `PI_SESSION_FILE` | remove | `src/core/delegate/launch.ts:301`<br>`src/core/fusion/pi-child.ts:85` |
-| `PI_SESSION_ID` | remove | `src/core/delegate/launch.ts:301`<br>`src/core/fusion/pi-child.ts:85` |
-| `PI_SKIP_VERSION_CHECK` | write | `src/core/delegate/launch.ts:323`<br>`src/core/fusion/pi-child.ts:249` |
+| `PI_PROVIDER` | remove | `src/core/delegate/launch.ts:301`<br>`src/core/fusion/pi-child.ts:92` |
+| `PI_REASONING_LEVEL` | remove | `src/core/delegate/launch.ts:301`<br>`src/core/fusion/pi-child.ts:92` |
+| `PI_SESSION_FILE` | remove | `src/core/delegate/launch.ts:301`<br>`src/core/fusion/pi-child.ts:92` |
+| `PI_SESSION_ID` | remove | `src/core/delegate/launch.ts:301`<br>`src/core/fusion/pi-child.ts:92` |
+| `PI_SKIP_VERSION_CHECK` | write | `src/core/delegate/launch.ts:323`<br>`src/core/fusion/pi-child.ts:256` |
 | `SHELL` | read | `src/core/common.ts:675` |
 | `SystemRoot` | read | `src/core/windows-taskkill.ts:96` |
 | `WINDIR` | read | `src/core/windows-taskkill.ts:101` |
@@ -91,7 +92,7 @@ This generated registry lists production environment-variable references, runtim
 | fusion-artifact | `budget-plan.json` | `src/core/fusion/artifacts.ts:369` |
 | fusion-artifact | `candidate-<slot>.attempt-<n>.response.md \| candidate-<slot>.attempt-<n>.response.partial.md` | `src/core/fusion/artifacts.ts:203` |
 | fusion-artifact | `candidate-<slot>.attempt-<n>.tool-calls.jsonl` | `src/core/fusion/artifacts.ts:301` |
-| fusion-artifact | `candidate-<slot>.attempt-<n>.tool-calls.jsonl.seal.json` | `src/core/fusion/child-protocol.ts:16` |
+| fusion-artifact | `candidate-<slot>.attempt-<n>.tool-calls.jsonl.seal.json` | `src/core/fusion/child-protocol.ts:17` |
 | fusion-artifact | `canonical-input.json` | `src/core/fusion/artifacts.ts:339` |
 | fusion-artifact | `context-omission-ledger.json` | `src/core/fusion/artifacts.ts:348` |
 | fusion-artifact | `error.json` | `src/core/fusion/artifacts.ts:385` |
@@ -127,28 +128,29 @@ This generated registry lists production environment-variable references, runtim
 | `pi-background-tasks.extension-response.v1` | `src/core/extension-api.ts:16` |
 | `pi-background-tasks.extension-terminal.v1` | `src/core/extension-api.ts:17` |
 | `pi-background-tasks.fusion-blind-candidates.v1` | `src/core/fusion/prompts.ts:299` |
-| `pi-background-tasks.fusion-budget-plan.v4` | `src/core/fusion/types.ts:24` |
-| `pi-background-tasks.fusion-calibration-violation.v1` | `src/core/fusion/types.ts:26` |
-| `pi-background-tasks.fusion-child-result.v2` | `src/core/fusion/child-protocol.ts:5` |
-| `pi-background-tasks.fusion-child-settlement.v1` | `src/core/fusion/child-protocol.ts:8` |
-| `pi-background-tasks.fusion-context-ledger.v2` | `src/core/fusion/types.ts:22` |
+| `pi-background-tasks.fusion-budget-plan.v4` | `src/core/fusion/types.ts:25` |
+| `pi-background-tasks.fusion-calibration-violation.v1` | `src/core/fusion/types.ts:27` |
+| `pi-background-tasks.fusion-child-result.v3` | `src/core/fusion/child-protocol.ts:6` |
+| `pi-background-tasks.fusion-child-settlement.v2` | `src/core/fusion/child-protocol.ts:9` |
+| `pi-background-tasks.fusion-claude-cache-observation.v1` | `src/core/fusion/claude-cache.ts:4` |
+| `pi-background-tasks.fusion-context-ledger.v2` | `src/core/fusion/types.ts:23` |
 | `pi-background-tasks.fusion-evaluation-repair-input.v1` | `src/core/fusion/prompts.ts:279` |
 | `pi-background-tasks.fusion-evaluation.v1` | `src/core/fusion/types.ts:16` |
 | `pi-background-tasks.fusion-input.v4` | `src/core/fusion/types.ts:14` |
 | `pi-background-tasks.fusion-input.v5` | `src/core/fusion/types.ts:15` |
-| `pi-background-tasks.fusion-manifest.v3` | `src/core/fusion/types.ts:20` |
-| `pi-background-tasks.fusion-manifest.v4` | `src/core/fusion/types.ts:21` |
+| `pi-background-tasks.fusion-manifest.v3` | `src/core/fusion/types.ts:21` |
+| `pi-background-tasks.fusion-manifest.v4` | `src/core/fusion/types.ts:22` |
 | `pi-background-tasks.fusion-merge-input.v1` | `src/core/fusion/prompts.ts:325` |
 | `pi-background-tasks.fusion-models.v1` | `src/core/fusion/types.ts:13` |
 | `pi-background-tasks.fusion-progress.v1` | `src/fusion-extension.ts:57` |
 | `pi-background-tasks.fusion-request.v1` | `src/fusion-extension.ts:58` |
-| `pi-background-tasks.fusion-result.v4` | `src/core/fusion/types.ts:18` |
-| `pi-background-tasks.fusion-result.v5` | `src/core/fusion/types.ts:19` |
-| `pi-background-tasks.fusion-runtime-guard.v1` | `src/core/fusion/child-protocol.ts:18` |
-| `pi-background-tasks.fusion-source-policy.v1` | `src/core/fusion/types.ts:23` |
-| `pi-background-tasks.fusion-tool-call-seal.v1` | `src/core/fusion/child-protocol.ts:15` |
-| `pi-background-tasks.fusion-tool-call.v1` | `src/core/fusion/types.ts:27` |
-| `pi-background-tasks.fusion-validation-candidate.v1` | `src/core/fusion/types.ts:17` |
+| `pi-background-tasks.fusion-result.v4` | `src/core/fusion/types.ts:19` |
+| `pi-background-tasks.fusion-result.v5` | `src/core/fusion/types.ts:20` |
+| `pi-background-tasks.fusion-runtime-guard.v1` | `src/core/fusion/child-protocol.ts:19` |
+| `pi-background-tasks.fusion-source-policy.v1` | `src/core/fusion/types.ts:24` |
+| `pi-background-tasks.fusion-tool-call-seal.v1` | `src/core/fusion/child-protocol.ts:16` |
+| `pi-background-tasks.fusion-tool-call.v1` | `src/core/fusion/types.ts:28` |
+| `pi-background-tasks.fusion-validation-candidate.v1` | `src/core/fusion/types.ts:18` |
 | `pi-background-tasks.input-token-calibration.v1` | `src/core/context/token-budget.ts:18` |
 
 ### Status vocabularies

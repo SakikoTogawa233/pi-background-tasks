@@ -172,18 +172,38 @@ function emit() {
   }
   const text = responseText();
   const digest = createHash('sha256').update(text, 'utf8').digest('hex');
+  const cacheObservation = provider === 'anthropic'
+    ? {
+        schema_version: 'pi-background-tasks.fusion-claude-cache-observation.v1',
+        applicability: 'anthropic',
+        source: 'default',
+        requested_retention: 'long',
+        effective_retention: 'long',
+        breakpoint_count: 3,
+        request_ordinal: 1
+      }
+    : {
+        schema_version: 'pi-background-tasks.fusion-claude-cache-observation.v1',
+        applicability: 'not_applicable',
+        source: 'not_applicable',
+        requested_retention: null,
+        effective_retention: null,
+        breakpoint_count: 0,
+        request_ordinal: 1
+      };
   const metadata = {
-    schema_version: 'pi-background-tasks.fusion-child-result.v2',
+    schema_version: 'pi-background-tasks.fusion-child-result.v3',
     provider,
     model,
     stop_reason: 'stop',
     text_blocks: [{ utf8_bytes: Buffer.byteLength(text, 'utf8'), sha256: digest }],
     text_sha256: digest,
-    usage: { input: 11, output: 7, cacheRead: 2, cacheWrite: 3, totalTokens: 23, cost: { input: 0.001, output: 0.002, cacheRead: 0.003, cacheWrite: 0.004, total: 0.01 } }
+    usage: { input: 11, output: 7, cacheRead: 2, cacheWrite: 3, totalTokens: 23, cost: { input: 0.001, output: 0.002, cacheRead: 0.003, cacheWrite: 0.004, total: 0.01 } },
+    cache_observation: cacheObservation
   };
   const eventBytes = Buffer.from(JSON.stringify(metadata) + '\\n', 'utf8');
   const settlement = {
-    schema_version: 'pi-background-tasks.fusion-child-settlement.v1',
+    schema_version: 'pi-background-tasks.fusion-child-settlement.v2',
     status: 'complete',
     record_count: 1,
     records_sha256: createHash('sha256').update(eventBytes).digest('hex'),

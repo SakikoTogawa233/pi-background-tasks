@@ -1,11 +1,12 @@
 import { createHash } from 'node:crypto';
 import type { Usage } from '@earendil-works/pi-ai';
+import type { FusionClaudeCacheObservation } from './claude-cache.js';
 
 export const FUSION_CHILD_RESULT_SCHEMA_VERSION =
-  'pi-background-tasks.fusion-child-result.v2' as const;
+  'pi-background-tasks.fusion-child-result.v3' as const;
 export const FUSION_CHILD_RESULT_PREFIX = '\u001ePI_FUSION_CHILD_RESULT ';
 export const FUSION_CHILD_SETTLEMENT_SCHEMA_VERSION =
-  'pi-background-tasks.fusion-child-settlement.v1' as const;
+  'pi-background-tasks.fusion-child-settlement.v2' as const;
 export const FUSION_CHILD_SETTLEMENT_PREFIX = '\u001ePI_FUSION_CHILD_SETTLEMENT ';
 export const FUSION_TOOL_CALL_LOG_PATH_ENV = 'PI_FUSION_TOOL_CALL_LOG_PATH';
 export const FUSION_RESEARCH_ENABLED_ENV = 'PI_FUSION_RESEARCH_ENABLED';
@@ -35,6 +36,7 @@ export type FusionRuntimeGuardCode =
   | 'provider_request_limit'
   | 'provider_request_budget'
   | 'provider_payload_invalid'
+  | 'claude_cache_policy'
   | 'tool_call_limit';
 
 export interface FusionRuntimeGuardRecord {
@@ -69,13 +71,15 @@ export interface FusionChildResultMetadata {
   text_blocks: FusionChildTextBlockMetadata[];
   text_sha256: string;
   usage: FusionChildResultUsageMetadata;
+  cache_observation: FusionClaudeCacheObservation;
 }
 
 export type FusionChildSettlementFailureReason =
   | 'no_records'
   | 'final_not_stop'
   | 'invalid_non_final'
-  | 'runtime_guard';
+  | 'runtime_guard'
+  | 'cache_observation';
 
 export interface FusionChildSettlementRecord {
   schema_version: typeof FUSION_CHILD_SETTLEMENT_SCHEMA_VERSION;
@@ -129,6 +133,7 @@ export function isRecoverableFusionChildErrorRecord(record: FusionChildResultMet
 export function buildFusionChildSettlement(
   records: readonly FusionChildResultMetadata[],
   runtimeGuardFailed = false,
+  cacheObservationFailed = false,
 ): FusionChildSettlementRecord {
   const finalRecordIndex = records.length === 0 ? null : records.length - 1;
   const final = records.at(-1);
@@ -143,6 +148,7 @@ export function buildFusionChildSettlement(
   );
   let failureReason: FusionChildSettlementFailureReason | null = null;
   if (runtimeGuardFailed) failureReason = 'runtime_guard';
+  else if (cacheObservationFailed) failureReason = 'cache_observation';
   else if (final === undefined) failureReason = 'no_records';
   else if (final.stop_reason !== 'stop') failureReason = 'final_not_stop';
   else if (invalidNonFinal) failureReason = 'invalid_non_final';
@@ -158,13 +164,16 @@ export function buildFusionChildSettlement(
   };
 }
 
-export function buildFusionChildResultMetadata(message: {
-  provider: string;
-  model: string;
-  stopReason: string;
-  content: ReadonlyArray<{ type: string; text?: string }>;
-  usage: Usage;
-}): FusionChildResultMetadata {
+export function buildFusionChildResultMetadata(
+  message: {
+    provider: string;
+    model: string;
+    stopReason: string;
+    content: ReadonlyArray<{ type: string; text?: string }>;
+    usage: Usage;
+  },
+  cacheObservation: FusionClaudeCacheObservation,
+): FusionChildResultMetadata {
   const textBlocks = message.content.flatMap((part) =>
     part.type === 'text' && typeof part.text === 'string' ? [part.text] : [],
   );
@@ -193,5 +202,6 @@ export function buildFusionChildResultMetadata(message: {
     })),
     text_sha256: protocolSha256(textBlocks.join('')),
     usage,
+    cache_observation: cacheObservation,
   };
 }
