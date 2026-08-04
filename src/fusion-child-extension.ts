@@ -986,6 +986,12 @@ export default function fusionChildExtension(pi: ExtensionAPI): void {
     if (event.message.role !== 'assistant') return;
     const cacheObservation = pendingCacheObservation;
     if (cacheObservation === undefined) {
+      // Authentication and other pre-transport failures can produce an assistant
+      // error without ever reaching before_provider_request. Preserve Pi's original
+      // provider diagnostic and let settlement report no_records; emitting a second
+      // cache-policy error would mask the actionable failure. A successful result
+      // without an observation remains a hard invariant violation.
+      if (event.message.stopReason === 'error') return;
       latchAuditProcessFailure();
       throw new Error('fusion child assistant result has no matching cache-policy observation');
     }

@@ -828,7 +828,7 @@ void describe('package', () => {
     );
   });
 
-  void it('ships the Anthropic sanitizer as a real dependency for Claude children', async () => {
+  void it('ships shared Anthropic attribution plus the sanitizer for Claude children', async () => {
     const p = await pkg();
     const declared = p.dependencies?.['@ravshansbox/pi-anthropic-sps'];
     assert.equal(
@@ -841,11 +841,21 @@ void describe('package', () => {
       undefined,
       'runtime sanitizer must not be hidden in devDependencies',
     );
-    // Claude children run --no-extensions and inherit nothing from the parent, so the
-    // sanitizer must be resolved and passed explicitly rather than assumed present.
+    const attribution = await text('src/core/fusion/anthropic-attribution.ts');
+    assert.match(attribution, /X-Claude-Code-Session-Id/);
+    assert.match(attribution, /prompt-caching-scope-2026-01-05/);
+    assert.match(attribution, /cacheWrite1h/);
+    assert.match(attribution, /CLAUDE_CODE_200K_SUBSCRIPTION_CONTEXT_WINDOW/);
+    // Claude children run --no-extensions and inherit nothing from the parent, so
+    // attribution and sanitization must be resolved and passed explicitly.
     const child = await text('src/core/fusion/pi-child.ts');
     assert.match(child, /FUSION_SANITIZED_PROVIDER\s*=\s*'anthropic'/);
     assert.match(child, /@ravshansbox\/pi-anthropic-sps/);
+    assert.match(child, /resolveFusionAnthropicAttributionExtensionPath/);
+    assert.match(
+      child,
+      /return \[resolveAttribution\(\), resolveSanitizer\(\), childExtensionPath\]/,
+    );
     assert.match(
       child,
       /model\.provider !== FUSION_SANITIZED_PROVIDER/,
@@ -859,14 +869,20 @@ void describe('package', () => {
     assert.match(cache, /PI_CACHE_RETENTION/);
     assert.match(cache, /FUSION_CLAUDE_CACHE_BREAKPOINT_LIMIT\s*=\s*4/);
     assert.match(cache, /upstream call-level opt-out/);
+    assert.match(cache, /prompt-caching-scope-2026-01-05/);
 
+    const childRunner = await text('src/core/fusion/pi-child.ts');
+    assert.match(childRunner, /out\[FUSION_CLAUDE_CACHE_RETENTION_ENV\] = 'long'/);
     const childExtension = await text('src/fusion-child-extension.ts');
     const normalizeAt = childExtension.indexOf('normalizeFusionClaudeCachePayload({');
     const governAt = childExtension.indexOf('prepareFusionRuntimeRequest({', normalizeAt);
     assert.ok(normalizeAt >= 0, 'Claude cache policy must normalize final provider payloads');
     assert.ok(governAt > normalizeAt, 'runtime governor must measure the cache-normalized payload');
     assert.match(childExtension, /model\?\.provider === 'anthropic'/);
-    assert.match(await text('src/core/fusion/child-protocol.ts'), /cache_observation/);
+    const protocol = await text('src/core/fusion/child-protocol.ts');
+    assert.match(protocol, /cache_observation/);
+    assert.match(protocol, /cacheWrite1h/);
+    assert.match(protocol, /reasoning/);
   });
 
   void it('ships the markdown extractor as a real dependency without startup import', async () => {

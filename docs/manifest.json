@@ -87,9 +87,10 @@
       "state": "stale-sources"
     },
     {
-      "authored_body_sha256": "sha256:0463bea38a0f67ec728d5e98b3efe213490e8f79bf3e6dbbb1f1bad8d0b9c78f",
+      "authored_body_sha256": "sha256:9edf467c37b6f79d9cff8c8d52911f74cde1b3e8a4ea00527ec61378c95aa07d",
       "covers_sources": [
         "extensions/fusion-child.ts",
+        "src/core/fusion/anthropic-attribution.ts",
         "src/core/fusion/artifacts.ts",
         "src/core/fusion/budget.ts",
         "src/core/fusion/child-protocol.ts",
@@ -433,6 +434,7 @@
       "audience": "maintainer",
       "covers_sources": [
         "extensions/fusion-child.ts",
+        "src/core/fusion/anthropic-attribution.ts",
         "src/core/fusion/artifacts.ts",
         "src/core/fusion/budget.ts",
         "src/core/fusion/child-protocol.ts",
@@ -787,7 +789,7 @@
     "image": "https://raw.githubusercontent.com/ismailsaleekh/pi-background-tasks/main/logo.png",
     "name": "pi-background-tasks",
     "type": "module",
-    "version": "2.0.0"
+    "version": "2.1.0"
   },
   "public_surface_ids": [
     "command:bg",
@@ -1660,6 +1662,9 @@
     ],
     "src/core/extension-api.ts": [
       "api/eventbus-v1"
+    ],
+    "src/core/fusion/anthropic-attribution.ts": [
+      "subsystems/fusion"
     ],
     "src/core/fusion/artifacts.ts": [
       "subsystems/fusion"

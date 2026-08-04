@@ -1050,11 +1050,11 @@ export function rewriteAnthropicRequestPayload(args: {
     firstUserMessageTextFromPayload(args.payload),
   );
   const incomingCache = inspectCacheControls(args.payload);
-  const configuredCacheRetention =
-    args.cacheRetention ??
-    (args.env !== undefined || providerEnvValue(CACHE_RETENTION_ENV) !== undefined
-      ? resolveCacheRetentionPreference(args.env === undefined ? undefined : { env: args.env })
-      : incomingCache.retention);
+  // The provider builder has already resolved environment/session defaults and
+  // selected the cache surfaces. No incoming marker can therefore be Pi's
+  // explicit call-level `cacheRetention: "none"` (used for compaction). Reapplying
+  // the process default here would silently defeat that opt-out.
+  const configuredCacheRetention = args.cacheRetention ?? incomingCache.retention;
   const cacheControl =
     configuredCacheRetention === undefined
       ? undefined
@@ -1157,7 +1157,8 @@ function markLastConversationCacheSurface(
   const output = messages.map(cloneMessageForCacheControl);
   if (cacheControl === undefined) return output;
   for (let index = output.length - 1; index >= 0; index -= 1) {
-    if (markMessageContentCacheSurface(output[index]!, cacheControl)) break;
+    const message = output[index];
+    if (message !== undefined && markMessageContentCacheSurface(message, cacheControl)) break;
   }
   return output;
 }
@@ -1168,7 +1169,10 @@ function convertMessages(
 ): JsonObject[] {
   const params: JsonObject[] = [];
   for (let index = 0; index < messages.length; index += 1) {
-    const message = messages[index]!;
+    const message = messages[index];
+    if (message === undefined) {
+      throw new TypeError(`Anthropic message ${index} is missing`);
+    }
     if (message.role === 'user') {
       if (typeof message.content === 'string') {
         if (message.content.trim().length > 0)

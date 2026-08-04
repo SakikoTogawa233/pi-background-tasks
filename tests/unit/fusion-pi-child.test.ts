@@ -644,6 +644,63 @@ void describe('fusion Pi child runner', () => {
     }
   });
 
+  void it('preserves a pre-transport provider error instead of masking it as a cache-policy error', async () => {
+    const oldExitCode = process.exitCode;
+    const originalWrite = process.stderr.write.bind(process.stderr);
+    const stderrChunks: Buffer[] = [];
+    try {
+      process.stderr.write = ((
+        chunk: Uint8Array | string,
+        callback?: (error?: Error | null) => void,
+      ): boolean => {
+        stderrChunks.push(
+          typeof chunk === 'string' ? Buffer.from(chunk, 'utf8') : Buffer.from(chunk),
+        );
+        callback?.(null);
+        return true;
+      }) as typeof process.stderr.write;
+      type FusionChildPi = Parameters<typeof fusionChildExtension>[0];
+      type RecordedHandler = (event: object, context?: object) => unknown;
+      const handlers = new Map<string, RecordedHandler[]>();
+      const recorder = {
+        on(event: string, handler: RecordedHandler) {
+          handlers.set(event, [...(handlers.get(event) ?? []), handler]);
+        },
+      };
+      fusionChildExtension(recorder as typeof recorder & FusionChildPi);
+      const messageEnd = handlers.get('message_end')?.[0];
+      const agentSettled = handlers.get('agent_settled')?.[0];
+      assert.ok(messageEnd);
+      assert.ok(agentSettled);
+
+      await Promise.resolve(
+        messageEnd({
+          message: {
+            role: 'assistant',
+            provider: 'anthropic',
+            model: 'claude-sonnet-4-5',
+            stopReason: 'error',
+            errorMessage: 'OAuth refresh failed',
+            content: [],
+            usage: piUsage(0, 0, 0),
+          },
+        }),
+      );
+      await Promise.resolve(agentSettled({}, { isIdle: () => true }));
+
+      const stderr = Buffer.concat(stderrChunks);
+      assert.doesNotMatch(stderr.toString('utf8'), /no matching cache-policy observation/);
+      const settlement = parseFusionChildSettlement(stderr);
+      assert.ok(settlement);
+      assert.equal(settlement.status, 'failed');
+      assert.equal(settlement.failure_reason, 'no_records');
+      assert.equal(process.exitCode, 1);
+    } finally {
+      process.stderr.write = originalWrite;
+      process.exitCode = oldExitCode;
+    }
+  });
+
   void it('aborts an invalid Claude cache policy before provider transport', async () => {
     const priorRetention = process.env['PI_CACHE_RETENTION'];
     const oldExitCode = process.exitCode;
