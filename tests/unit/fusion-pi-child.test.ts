@@ -21,6 +21,7 @@ import {
   parseFusionRuntimeGuard,
   parseFusionToolCallLog,
   resolveAnthropicSanitizerExtensionPath,
+  resolveFusionAnthropicAttributionExtensionPath,
   runPiChild,
   type FusionChildProcess,
   type FusionChildSpawn,
@@ -917,25 +918,32 @@ void describe('fusion Pi child runner', () => {
     ]);
   });
 
-  void it('loads the Anthropic sanitizer before the runtime governor for Claude routes', () => {
+  void it('loads Anthropic attribution, sanitizer, then runtime governor for Claude routes', () => {
     // Pi's system prompt carries documentation lines Anthropic rejects. The parent gets
     // the sanitizer through extension discovery, but children run --no-extensions and
     // inherit nothing, so a Claude child without it fails at the provider.
     const sanitizer = () => '/pkg/anthropic-sps/index.ts';
+    const attribution = () => '/pkg/pi-background-tasks/anthropic-attribution.ts';
     const claude = buildFusionPiChildArgv(
       resolvedModel('anthropic', 'claude-opus-5'),
       'system',
       'extension.js',
       'reason',
       sanitizer,
+      attribution,
     );
     const extensionArgs = claude.reduce<string[]>((acc, value, index) => {
       if (value === '--extension') acc.push(claude[index + 1] ?? '');
       return acc;
     }, []);
-    assert.deepEqual(extensionArgs, ['/pkg/anthropic-sps/index.ts', 'extension.js']);
+    assert.deepEqual(extensionArgs, [
+      '/pkg/pi-background-tasks/anthropic-attribution.ts',
+      '/pkg/anthropic-sps/index.ts',
+      'extension.js',
+    ]);
     // The private child extension must run its provider-request governor after the
-    // sanitizer so it measures the final payload that transport will receive.
+    // attribution provider and sanitizer so it measures the final payload that
+    // transport will receive.
     assert.equal(extensionArgs.at(-1), 'extension.js');
   });
 
@@ -957,7 +965,11 @@ void describe('fusion Pi child runner', () => {
     }
   });
 
-  void it('resolves the sanitizer from the real installed package', () => {
+  void it('resolves the package-owned attribution extension and installed sanitizer', () => {
+    const attribution = resolveFusionAnthropicAttributionExtensionPath();
+    assert.match(attribution.replaceAll('\\', '/'), /core\/fusion\/anthropic-attribution\.ts$/);
+    assert.equal(existsSync(attribution), true);
+
     // The sanitizer package publishes no main/exports, so it must be located through its
     // manifest rather than a direct require. This pins that the real dependency resolves.
     const resolved = resolveAnthropicSanitizerExtensionPath();

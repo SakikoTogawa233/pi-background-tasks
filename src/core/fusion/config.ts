@@ -5,6 +5,7 @@ import { getAgentDir } from '@earendil-works/pi-coding-agent';
 import type { Api, Model } from '@earendil-works/pi-ai';
 import { isJsonObject, parseJsonText, type JsonObject } from '../common.js';
 import { replaceFileDurable } from '../durable-fs.js';
+import { CLAUDE_CODE_200K_SUBSCRIPTION_CONTEXT_WINDOW } from './anthropic-attribution.js';
 import {
   FUSION_MODEL_CONFIG_SCHEMA_VERSION,
   FusionError,
@@ -156,6 +157,13 @@ function requireContextWindow(model: Model<Api>, label: string): number {
     });
   }
   return Math.floor(value);
+}
+
+function transportContextWindow(model: Model<Api>, label: string): number {
+  const advertised = requireContextWindow(model, label);
+  return model.provider === 'anthropic'
+    ? Math.min(advertised, CLAUDE_CODE_200K_SUBSCRIPTION_CONTEXT_WINDOW)
+    : advertised;
 }
 
 function requireMaxOutputTokens(model: Model<Api>, label: string): number {
@@ -315,7 +323,7 @@ function resolveSelection(
       model: available.id,
       qualifiedId,
       thinkingLevel,
-      contextWindow: requireContextWindow(available, slotLabel),
+      contextWindow: transportContextWindow(available, slotLabel),
       maxOutputTokens: requireMaxOutputTokens(available, slotLabel),
     };
   }
@@ -334,7 +342,7 @@ function resolveSelection(
     model: model.id,
     qualifiedId: selection,
     thinkingLevel,
-    contextWindow: requireContextWindow(model, slotLabel),
+    contextWindow: transportContextWindow(model, slotLabel),
     maxOutputTokens: requireMaxOutputTokens(model, slotLabel),
   };
 }
