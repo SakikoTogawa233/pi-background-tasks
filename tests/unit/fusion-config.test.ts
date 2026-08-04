@@ -112,6 +112,29 @@ void describe('fusion model config', () => {
     assert.equal(resolved.merger.thinkingLevel, 'high');
   });
 
+  void it('caps Anthropic route capacity to the attributed 200K subscription transport', () => {
+    const claude = model('anthropic', 'claude-sonnet-4-6', 1_000_000);
+    const config = parseFusionModelConfig({
+      schema_version: FUSION_MODEL_CONFIG_SCHEMA_VERSION,
+      candidates: [
+        'anthropic/claude-sonnet-4-6',
+        'anthropic/claude-sonnet-4-6',
+        'anthropic/claude-sonnet-4-6',
+      ],
+      evaluator: 'anthropic/claude-sonnet-4-6',
+      merger: 'anthropic/claude-sonnet-4-6',
+    });
+    const resolved = resolveFusionModels({
+      config,
+      modelRegistry: registry([claude]),
+      currentModel: claude,
+      thinkingLevel: 'high',
+    });
+    assert.equal(resolved.candidates[0].contextWindow, 200_000);
+    assert.equal(resolved.evaluator.contextWindow, 200_000);
+    assert.equal(resolved.merger.contextWindow, 200_000);
+  });
+
   void it('rejects frontier models unless they use a supported subscription OAuth route', () => {
     const codex = model('openai-codex', 'gpt-5.5');
     assert.throws(
