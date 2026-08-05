@@ -1,4 +1,5 @@
 import { canonicalJson } from '../attested-pi-run.js';
+import { FUSION_CANDIDATE_OUTPUT_CONTRACT_INSTRUCTION } from './output-contract.js';
 import {
   FUSION_EVALUATION_SCHEMA_VERSION,
   FUSION_VALIDATE_CAPABILITY,
@@ -33,6 +34,8 @@ ${FUSION_CANONICAL_INPUT_GUIDE}
 
 Produce the strongest direct answer you can for the request using that context.
 
+${FUSION_CANDIDATE_OUTPUT_CONTRACT_INSTRUCTION}
+
 Do not invent process metadata. Do not mention provider names, model names, slots, or hidden workflow details. Do not specialize the answer; each child receives the same instruction. Output only the answer text.`;
 
 export const FUSION_INSPECT_CANONICAL_INPUT_GUIDE = `The JSON input contains only workflow, cwd, request, and clean-task context. context.kind is "clean_task".
@@ -47,6 +50,8 @@ ${FUSION_INSPECT_CANONICAL_INPUT_GUIDE}
 
 Produce the strongest direct answer you can for the request using that context.
 
+${FUSION_CANDIDATE_OUTPUT_CONTRACT_INSTRUCTION}
+
 Do not invent process metadata. Do not mention provider names, model names, slots, or hidden workflow details. Do not specialize the answer; each child receives the same instruction. Output only the answer text.`;
 
 export const FUSION_RESEARCH_CANONICAL_INPUT_GUIDE = `The JSON input contains only workflow, cwd, request, and clean-task context. Research uses context.kind "clean_task" with declared_sources: the only initial public URLs fusion_web_fetch may initiate. Redirects are followed only by the fetcher after public-address checks; fusion_web_fetch is targeted URL fetch, not search.
@@ -60,6 +65,8 @@ export const FUSION_CANDIDATE_RESEARCH_SYSTEM_PROMPT = `You are a Pi process pro
 ${FUSION_RESEARCH_CANONICAL_INPUT_GUIDE}
 
 Produce the strongest direct answer you can for the request using that context.
+
+${FUSION_CANDIDATE_OUTPUT_CONTRACT_INSTRUCTION}
 
 Do not invent process metadata. Do not mention provider names, model names, slots, or hidden workflow details. Do not specialize the answer; each child receives the same instruction. Output only the answer text.`;
 
@@ -198,6 +205,8 @@ Stay in scope. Validate what the request names. Do not propose unrelated refacto
 
 Close with what you verified and what you could not cover.
 
+${FUSION_CANDIDATE_OUTPUT_CONTRACT_INSTRUCTION}
+
 Do not invent process metadata. Do not mention provider names, model names, slots, or hidden workflow details. Do not specialize the report; each child receives the same instruction. Output only the required JSON.`;
 
 /**
@@ -301,7 +310,8 @@ export function buildBlindEvaluationInput(
     canonical_input: canonicalInput,
     candidates,
   };
-  if (validationSourceFindings !== undefined) input.validation_source_findings = validationSourceFindings;
+  if (validationSourceFindings !== undefined)
+    input.validation_source_findings = validationSourceFindings;
   return input;
 }
 

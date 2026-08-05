@@ -87,7 +87,7 @@
       "state": "stale-sources"
     },
     {
-      "authored_body_sha256": "sha256:9edf467c37b6f79d9cff8c8d52911f74cde1b3e8a4ea00527ec61378c95aa07d",
+      "authored_body_sha256": "sha256:200168b5db6e14947b5dbee9aef51c4e14d57de0df7716776250193b26b57289",
       "covers_sources": [
         "extensions/fusion-child.ts",
         "src/core/fusion/anthropic-attribution.ts",
@@ -100,6 +100,7 @@
         "src/core/fusion/context.ts",
         "src/core/fusion/evaluation.ts",
         "src/core/fusion/orchestrator.ts",
+        "src/core/fusion/output-contract.ts",
         "src/core/fusion/pi-child.ts",
         "src/core/fusion/prompts.ts",
         "src/core/fusion/result-package.ts",
@@ -444,6 +445,7 @@
         "src/core/fusion/context.ts",
         "src/core/fusion/evaluation.ts",
         "src/core/fusion/orchestrator.ts",
+        "src/core/fusion/output-contract.ts",
         "src/core/fusion/pi-child.ts",
         "src/core/fusion/prompts.ts",
         "src/core/fusion/result-package.ts",
@@ -789,7 +791,7 @@
     "image": "https://raw.githubusercontent.com/ismailsaleekh/pi-background-tasks/main/logo.png",
     "name": "pi-background-tasks",
     "type": "module",
-    "version": "2.1.0"
+    "version": "2.1.1"
   },
   "public_surface_ids": [
     "command:bg",
@@ -1691,6 +1693,9 @@
       "subsystems/fusion"
     ],
     "src/core/fusion/orchestrator.ts": [
+      "subsystems/fusion"
+    ],
+    "src/core/fusion/output-contract.ts": [
       "subsystems/fusion"
     ],
     "src/core/fusion/pi-child.ts": [

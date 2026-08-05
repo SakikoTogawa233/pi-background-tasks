@@ -554,6 +554,26 @@ export function addFusionUsage(target: FusionUsage, delta: FusionUsage): void {
   target.cost.total += delta.cost.total;
 }
 
+export type FusionRunStageProgressStatus = 'not_started' | 'incomplete' | 'completed';
+
+export interface FusionRunStageProgress {
+  status: FusionRunStageProgressStatus;
+  attempts_recorded: number;
+  children_created: number;
+  children_completed: number;
+  children_failed: number;
+  children_cancelled: number;
+  not_started_slots?: number | undefined;
+}
+
+export interface FusionRunProgress {
+  manifest_state: FusionState;
+  candidates: FusionRunStageProgress;
+  evaluation: FusionRunStageProgress;
+  merge: FusionRunStageProgress;
+  usage_so_far: FusionUsage;
+}
+
 export interface FusionResultBudgetDetails {
   policy_id: string;
   calibration_version: string;
@@ -715,6 +735,7 @@ export interface FusionErrorDetails {
   transient?: boolean;
   childCreated?: boolean;
   budget?: FusionBudgetErrorDetail;
+  runProgress?: FusionRunProgress;
 }
 
 export class FusionError extends Error {
@@ -726,6 +747,7 @@ export class FusionError extends Error {
   readonly transient: boolean;
   readonly childCreated: boolean;
   readonly budget: FusionBudgetErrorDetail | undefined;
+  readonly runProgress: FusionRunProgress | undefined;
 
   constructor(message: string, details: FusionErrorDetails) {
     super(message);
@@ -738,6 +760,7 @@ export class FusionError extends Error {
     this.transient = details.transient ?? false;
     this.childCreated = details.childCreated ?? true;
     this.budget = details.budget;
+    this.runProgress = details.runProgress;
   }
 }
 
@@ -780,6 +803,18 @@ export interface FusionToolCallTrace {
   summary: FusionToolCallLogSummary;
 }
 
+export interface FusionCandidateOutputRecovery {
+  kind: 'same_session_compression';
+  limit_bytes: number;
+  original_record_index: number;
+  replacement_record_index: number | null;
+  original_json_rendered_bytes: number;
+  replacement_json_rendered_bytes: number | null;
+  original_text_sha256: string;
+  original_text: string;
+  status: 'completed' | 'failed';
+}
+
 export interface FusionChildRunResult {
   stage: FusionStage;
   slot?: 1 | 2 | 3;
@@ -794,6 +829,7 @@ export interface FusionChildRunResult {
   firstRequestUsage?: FusionUsage;
   /** Number of provider requests represented by aggregate usage. */
   providerRequestCount?: number;
+  outputRecovery?: FusionCandidateOutputRecovery;
   events: Buffer;
   stderr: Buffer;
   exitCode: number;
@@ -801,11 +837,24 @@ export interface FusionChildRunResult {
   toolCallTrace?: FusionToolCallTrace;
 }
 
+export interface FusionAttemptOutputRecoveryRecord {
+  kind: 'same_session_compression';
+  status: 'completed' | 'failed';
+  limit_bytes: number;
+  original_response_path: string;
+  original_record_index: number;
+  replacement_record_index: number | null;
+  original_json_rendered_bytes: number;
+  replacement_json_rendered_bytes: number | null;
+  original_text_sha256: string;
+}
+
 export interface FusionAttemptArtifactRecord {
   stage: FusionStage;
   slot?: 1 | 2 | 3;
   attempt: number;
   status: 'completed' | 'failed' | 'cancelled';
+  child_created: boolean;
   prompt_path: string;
   events_path?: string;
   stderr_path?: string;
@@ -813,6 +862,7 @@ export interface FusionAttemptArtifactRecord {
   partial_response_path?: string;
   tool_calls_path?: string;
   tool_calls?: FusionToolCallLogSummary;
+  output_recovery?: FusionAttemptOutputRecoveryRecord;
   provider?: string;
   model?: string;
   qualifiedId?: string;

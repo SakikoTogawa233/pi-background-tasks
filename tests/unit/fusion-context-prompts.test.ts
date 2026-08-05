@@ -97,9 +97,28 @@ function sha256(value: string): string {
 
 void describe('fusion context projection and prompts', () => {
   void it('makes the validation candidate bare-JSON contract explicit', () => {
-    assert.match(FUSION_VALIDATE_CANDIDATE_SYSTEM_PROMPT, /Return only JSON matching this exact closed schema/);
-    assert.match(FUSION_VALIDATE_CANDIDATE_SYSTEM_PROMPT, /Do not wrap the JSON in Markdown fences or prose/);
+    assert.match(
+      FUSION_VALIDATE_CANDIDATE_SYSTEM_PROMPT,
+      /Return only JSON matching this exact closed schema/,
+    );
+    assert.match(
+      FUSION_VALIDATE_CANDIDATE_SYSTEM_PROMPT,
+      /Do not wrap the JSON in Markdown fences or prose/,
+    );
     assert.match(FUSION_VALIDATE_CANDIDATE_SYSTEM_PROMPT, /Emit exactly one bare JSON object/);
+  });
+
+  void it('discloses the exact candidate hard cap in every candidate profile', () => {
+    for (const prompt of [
+      FUSION_CANDIDATE_SYSTEM_PROMPT,
+      FUSION_CANDIDATE_INSPECT_SYSTEM_PROMPT,
+      FUSION_CANDIDATE_RESEARCH_SYSTEM_PROMPT,
+      FUSION_VALIDATE_CANDIDATE_SYSTEM_PROMPT,
+    ]) {
+      assert.match(prompt, /at most 49,152 JSON-rendered UTF-8 bytes/);
+      assert.match(prompt, /explicitly state limitations/);
+      assert.doesNotMatch(prompt, /32 KiB|32,768/);
+    }
   });
 
   void it('trims only command edges and preserves internal whitespace', () => {

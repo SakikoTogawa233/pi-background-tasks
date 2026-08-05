@@ -1,4 +1,4 @@
-import { randomBytes } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import { chmod, mkdir } from 'node:fs/promises';
 import { basename, isAbsolute, join, relative, sep } from 'node:path';
 import { canonicalJson, sha256Buffer } from '../attested-pi-run.js';
@@ -17,6 +17,7 @@ import {
   type FusionBudgetPlanV1,
   type FusionCalibrationViolation,
   type FusionCandidateId,
+  type FusionCandidateOutputRecovery,
   type FusionCapability,
   type FusionContextOmissionLedgerV2,
   type FusionChildRunResult,
@@ -32,6 +33,10 @@ import {
   type ResolvedFusionModels,
 } from './types.js';
 import { fusionWorkflowProfile, type FusionWorkflowProfile } from './workflows.js';
+import {
+  FUSION_CANDIDATE_MAX_OUTPUT_BYTES,
+  fusionJsonRenderedTextBytes,
+} from './output-contract.js';
 
 /**
  * Run ids are prefixed by workflow so an artifact directory is self-describing.
@@ -135,7 +140,9 @@ export interface RecordFusionFailedAttemptInput {
   stderr: Buffer;
   error: string;
   status: 'failed' | 'cancelled';
+  childCreated: boolean;
   responseKind: 'md' | 'txt';
+  outputRecovery?: FusionCandidateOutputRecovery;
   provider?: string;
   model?: string;
   qualifiedId?: string;
@@ -250,6 +257,59 @@ function calibrationViolationName(prefix: string): string {
   return `${prefix}.calibration-violation.json`;
 }
 
+function oversizedResponseName(prefix: string, kind: 'md' | 'txt'): string {
+  return `${prefix}.response.oversized.${kind}`;
+}
+
+function validateOutputRecovery(
+  recovery: FusionCandidateOutputRecovery,
+  replacementText?: string,
+): void {
+  if (recovery.limit_bytes !== FUSION_CANDIDATE_MAX_OUTPUT_BYTES) {
+    throw errorForArtifact('fusion output recovery limit mismatches the candidate contract');
+  }
+  const originalBytes = Buffer.from(recovery.original_text, 'utf8');
+  if (createHash('sha256').update(originalBytes).digest('hex') !== recovery.original_text_sha256) {
+    throw errorForArtifact('fusion output recovery original text hash mismatch');
+  }
+  if (
+    fusionJsonRenderedTextBytes(recovery.original_text) !== recovery.original_json_rendered_bytes
+  ) {
+    throw errorForArtifact('fusion output recovery original JSON-rendered byte count mismatch');
+  }
+  if (recovery.original_json_rendered_bytes <= recovery.limit_bytes) {
+    throw errorForArtifact('fusion output recovery original did not exceed the candidate contract');
+  }
+  if (replacementText !== undefined) {
+    const replacementBytes = fusionJsonRenderedTextBytes(replacementText);
+    if (replacementBytes !== recovery.replacement_json_rendered_bytes) {
+      throw errorForArtifact(
+        'fusion output recovery replacement JSON-rendered byte count mismatch',
+      );
+    }
+    if (recovery.status === 'completed' && replacementBytes > recovery.limit_bytes) {
+      throw errorForArtifact('completed fusion output recovery replacement exceeds the contract');
+    }
+  }
+}
+
+function outputRecoveryRecord(
+  recovery: FusionCandidateOutputRecovery,
+  path: string,
+): NonNullable<FusionAttemptArtifactRecord['output_recovery']> {
+  return {
+    kind: recovery.kind,
+    status: recovery.status,
+    limit_bytes: recovery.limit_bytes,
+    original_response_path: path,
+    original_record_index: recovery.original_record_index,
+    replacement_record_index: recovery.replacement_record_index,
+    original_json_rendered_bytes: recovery.original_json_rendered_bytes,
+    replacement_json_rendered_bytes: recovery.replacement_json_rendered_bytes,
+    original_text_sha256: recovery.original_text_sha256,
+  };
+}
+
 function artifactRefSha256Hex(value: string): string {
   const hex = value.startsWith('sha256:') ? value.slice('sha256:'.length) : value;
   if (!/^[0-9a-f]{64}$/u.test(hex)) {
@@ -351,6 +411,12 @@ export class FusionArtifactStore {
 
   childToolCallLogPath(stage: FusionStage, slot: 1 | 2 | 3 | undefined, attempt: number): string {
     return this.artifactPath(`${attemptPrefix(stage, slot, attempt)}.tool-calls.jsonl`);
+  }
+
+  childOutputRecoveryPath(slot: 1 | 2 | 3, attempt: number, responseKind: 'md' | 'txt'): string {
+    return this.artifactPath(
+      oversizedResponseName(attemptPrefix('candidate', slot, attempt), responseKind),
+    );
   }
 
   snapshot(): FusionArtifactManifest {
@@ -482,11 +548,22 @@ export class FusionArtifactStore {
       input.result.toolCallTrace === undefined
         ? undefined
         : await this.writeArtifact(`${prefix}.tool-calls.jsonl`, input.result.toolCallTrace.bytes);
+    if (input.result.outputRecovery !== undefined) {
+      validateOutputRecovery(input.result.outputRecovery, input.result.text);
+    }
+    const outputRecoveryRef =
+      input.result.outputRecovery === undefined
+        ? undefined
+        : await this.writeArtifact(
+            oversizedResponseName(prefix, input.responseKind),
+            input.result.outputRecovery.original_text,
+          );
     await this.updateManifest((manifest) => {
       const record: FusionAttemptArtifactRecord = {
         stage: input.result.stage,
         attempt: input.result.attempt,
         status: 'completed',
+        child_created: true,
         prompt_path: promptRef.path,
         events_path: eventsRef.path,
         stderr_path: stderrRef.path,
@@ -499,6 +576,12 @@ export class FusionArtifactStore {
       if (toolCallsRef !== undefined && input.result.toolCallTrace !== undefined) {
         record.tool_calls_path = toolCallsRef.path;
         record.tool_calls = { ...input.result.toolCallTrace.summary };
+      }
+      if (outputRecoveryRef !== undefined && input.result.outputRecovery !== undefined) {
+        record.output_recovery = outputRecoveryRecord(
+          input.result.outputRecovery,
+          outputRecoveryRef.path,
+        );
       }
       if (input.result.slot !== undefined) record.slot = input.result.slot;
       manifest.attempts.push(record);
@@ -548,11 +631,20 @@ export class FusionArtifactStore {
             `${prefix}.response.partial.${input.responseKind}`,
             input.partialResponse,
           );
+    if (input.outputRecovery !== undefined) validateOutputRecovery(input.outputRecovery);
+    const outputRecoveryRef =
+      input.outputRecovery === undefined
+        ? undefined
+        : await this.writeArtifact(
+            oversizedResponseName(prefix, input.responseKind),
+            input.outputRecovery.original_text,
+          );
     await this.updateManifest((manifest) => {
       const record: FusionAttemptArtifactRecord = {
         stage: input.stage,
         attempt: input.attempt,
         status: input.status,
+        child_created: input.childCreated,
         prompt_path: promptRef.path,
         events_path: eventsRef.path,
         stderr_path: stderrRef.path,
@@ -560,6 +652,9 @@ export class FusionArtifactStore {
         error: input.error,
       };
       if (partialResponseRef !== undefined) record.partial_response_path = partialResponseRef.path;
+      if (outputRecoveryRef !== undefined && input.outputRecovery !== undefined) {
+        record.output_recovery = outputRecoveryRecord(input.outputRecovery, outputRecoveryRef.path);
+      }
       if (input.provider !== undefined) record.provider = input.provider;
       if (input.model !== undefined) record.model = input.model;
       if (input.qualifiedId !== undefined) record.qualifiedId = input.qualifiedId;

@@ -192,24 +192,30 @@ function emit() {
         request_ordinal: 1
       };
   const metadata = {
-    schema_version: 'pi-background-tasks.fusion-child-result.v3',
+    schema_version: 'pi-background-tasks.fusion-child-result.v4',
     provider,
     model,
     stop_reason: 'stop',
     text_blocks: [{ utf8_bytes: Buffer.byteLength(text, 'utf8'), sha256: digest }],
     text_sha256: digest,
     usage: { input: 11, output: 7, cacheRead: 2, cacheWrite: 3, totalTokens: 23, cost: { input: 0.001, output: 0.002, cacheRead: 0.003, cacheWrite: 0.004, total: 0.01 } },
-    cache_observation: cacheObservation
+    cache_observation: cacheObservation,
+    output_contract: {
+      json_rendered_bytes: Buffer.byteLength(JSON.stringify(text), 'utf8'),
+      candidate_limit_bytes: stage === 'candidate' ? 49152 : null,
+      recovery_role: 'none'
+    }
   };
   const eventBytes = Buffer.from(JSON.stringify(metadata) + '\\n', 'utf8');
   const settlement = {
-    schema_version: 'pi-background-tasks.fusion-child-settlement.v2',
+    schema_version: 'pi-background-tasks.fusion-child-settlement.v3',
     status: 'complete',
     record_count: 1,
     records_sha256: createHash('sha256').update(eventBytes).digest('hex'),
     final_record_index: 0,
     final_text_sha256: digest,
     recovered_error_ordinals: [],
+    recovered_output_cap_ordinals: [],
     failure_reason: null
   };
   process.stderr.write('\\x1ePI_FUSION_CHILD_RESULT ' + JSON.stringify(metadata) + '\\n');

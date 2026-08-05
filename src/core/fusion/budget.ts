@@ -24,6 +24,20 @@ import {
 } from './prompts.js';
 import { FUSION_REASON_WORKFLOW, type FusionWorkflowProfile } from './workflows.js';
 import {
+  FUSION_CANDIDATE_MAX_OUTPUT_BYTES,
+  FUSION_DIAGNOSTICS_MAX_BYTES,
+  FUSION_EVALUATION_MAX_OUTPUT_BYTES,
+  FUSION_MERGE_MAX_OUTPUT_BYTES,
+} from './output-contract.js';
+export {
+  FUSION_CANDIDATE_MAX_OUTPUT_BYTES,
+  FUSION_DIAGNOSTICS_MAX_BYTES,
+  FUSION_EVALUATION_MAX_OUTPUT_BYTES,
+  FUSION_MERGE_MAX_OUTPUT_BYTES,
+  assertChildOutputWithinContract,
+  fusionOutputContractBytes,
+} from './output-contract.js';
+import {
   FUSION_BUDGET_PLAN_SCHEMA_VERSION,
   FUSION_CALIBRATION_VIOLATION_SCHEMA_VERSION,
   FUSION_EVALUATION_SCHEMA_VERSION,
@@ -53,11 +67,6 @@ import {
 } from './types.js';
 
 export const FUSION_CALIBRATED_BYTES_PER_TOKEN = TOKEN_BUDGET_FAMILY_CALIBRATIONS;
-
-export const FUSION_CANDIDATE_MAX_OUTPUT_BYTES = 48 * 1024;
-export const FUSION_EVALUATION_MAX_OUTPUT_BYTES = 64 * 1024;
-export const FUSION_MERGE_MAX_OUTPUT_BYTES = 64 * 1024;
-export const FUSION_DIAGNOSTICS_MAX_BYTES = 8 * 1024;
 
 const FUSION_OUTPUT_RESERVE_RATE_X100 = 200;
 export const FUSION_UTILIZATION_WARNING_THRESHOLD_BASIS_POINTS = 8000;
@@ -241,22 +250,6 @@ export function fusionTokenUpperBound(utf8Bytes: number): number {
     scope: 'conservative',
     segments: [{ kind: 'known_text', bytes: utf8Bytes, multibyteBytes: 0, denseBytes: 0 }],
   }).tokens;
-}
-
-export function fusionOutputContractBytes(stage: FusionStage): number {
-  if (stage === 'candidate') return FUSION_CANDIDATE_MAX_OUTPUT_BYTES;
-  if (stage === 'evaluation') return FUSION_EVALUATION_MAX_OUTPUT_BYTES;
-  return FUSION_MERGE_MAX_OUTPUT_BYTES;
-}
-
-export function assertChildOutputWithinContract(stage: FusionStage, text: string): void {
-  const bytes = Buffer.byteLength(JSON.stringify(text), 'utf8');
-  const allowed = fusionOutputContractBytes(stage);
-  if (bytes <= allowed) return;
-  throw new FusionError(
-    `fusion ${stage} response is ${String(bytes)} JSON-rendered bytes, exceeding the ${String(allowed)}-byte output contract for that stage; the response is preserved in the run artifacts and is not forwarded or truncated`,
-    { code: 'child_output_cap', stage, childCreated: true },
-  );
 }
 
 function utf8Bytes(value: string): number {
@@ -561,6 +554,13 @@ function entryLabel(entry: FusionStageBudgetPlanEntry): string {
   const slot = entry.slot === undefined ? '' : `-${String(entry.slot)}`;
   const conditional = entry.conditional ? ' (conditional)' : '';
   return `${entry.budget_stage}${slot}${conditional}`;
+}
+
+function blockingChildLabel(entry: FusionStageBudgetPlanEntry): string {
+  if (entry.budget_stage === 'candidate') return `candidate-${String(entry.slot ?? 1)}`;
+  if (entry.budget_stage === 'evaluation_repair') return 'evaluator-repair';
+  if (entry.budget_stage === 'evaluation') return 'evaluator';
+  return 'merger';
 }
 
 function formatTable(entries: readonly FusionStageBudgetPlanEntry[]): string {
@@ -983,10 +983,10 @@ export class FusionBudget {
           ? ' Dominant byte class is dense ASCII/low-whitespace content; the whitespace gate is a heuristic token-density proxy, not a bound.'
           : ` Dominant byte class is ${dominantByteClass}.`;
     const message =
-      `Fusion prompt budget exceeded by ${checkText} before child creation. Primary blocking stage: ${entryLabel(primary)} on route ${primary.route.qualified_id}. ` +
+      `Fusion prompt budget exceeded by ${checkText} before ${blockingChildLabel(primary)} child creation. Primary blocking stage: ${entryLabel(primary)} on route ${primary.route.qualified_id}. ` +
       `Forecast ${String(primary.input_utf8_bytes)} UTF-8 bytes (<= ${String(primary.input_only_input_tokens_upper_bound)} input tokens) against ${String(primary.allowed_input_tokens)} allowed input tokens, over by ${String(Math.max(0, tokensOver))} tokens. ` +
       `Estimator: ${rateText}.${routeWarning}${dominantText} ` +
-      `No child was created. Nothing was clipped, dropped, or substituted. Artifact directory: ${artifactDir}.\n` +
+      `The ${blockingChildLabel(primary)} child was not created. Nothing was clipped, dropped, or substituted. Artifact directory: ${artifactDir}.\n` +
       `Per-stage forecast table:\n${formatTable(plan.stages)}\n` +
       `Primary blocker byte composition: ${compositionText}.\n` +
       `Additional blockers: ${additional.length === 0 ? 'none' : additional}.\n` +

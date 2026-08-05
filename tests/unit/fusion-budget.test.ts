@@ -301,7 +301,17 @@ function assertBudgetError(
   assert.ok(budget.blockers.length > 0);
   // The human-readable message must name every actionable fact too.
   assert.match(error.message, /Primary blocking stage/);
-  assert.match(error.message, /No child was created/);
+  assert.doesNotMatch(error.message, /No child was created\./);
+  assert.match(
+    error.message,
+    stage === 'candidate'
+      ? /The candidate-\d child was not created\./
+      : stage === 'evaluation_repair'
+        ? /The evaluator-repair child was not created\./
+        : stage === 'evaluation'
+          ? /The evaluator child was not created\./
+          : /The merger child was not created\./,
+  );
   assert.match(error.message, /Nothing was clipped, dropped, or substituted/);
   assert.match(error.message, new RegExp(String(budget.measured_utf8_bytes)));
   assert.match(error.message, new RegExp(String(budget.allowed_input_tokens)));

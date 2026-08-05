@@ -172,7 +172,7 @@ function childResult(options: RunPiChildOptions, text: string): FusionChildRunRe
       totalTokens: 2,
       cost: { input: 0.01, output: 0.02, cacheRead: 0, cacheWrite: 0, total: 0.03 },
     },
-    events: Buffer.from('{"schema_version":"pi-background-tasks.fusion-child-result.v3"}\n'),
+    events: Buffer.from('{"schema_version":"pi-background-tasks.fusion-child-result.v4"}\n'),
     stderr: Buffer.alloc(0),
     exitCode: 0,
     signal: null,
@@ -216,7 +216,7 @@ function childRunError(
   );
   return new FusionChildRunError(
     fusionError,
-    Buffer.from('{"schema_version":"pi-background-tasks.fusion-child-result.v3"}\n'),
+    Buffer.from('{"schema_version":"pi-background-tasks.fusion-child-result.v4"}\n'),
     Buffer.alloc(0),
     Buffer.alloc(0),
     {
@@ -844,6 +844,152 @@ void describe('fusion orchestrator', () => {
       }
     } finally {
       await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  void it('reports durable completed, failed, and not-started stage truth on late budget failures', async () => {
+    const cases: Array<{
+      name: string;
+      models: ResolvedFusionModels;
+      runner: FusionChildRunner;
+      blockedStage: 'evaluation' | 'merge';
+      expectedEvaluationStatus: 'not_started' | 'incomplete' | 'completed';
+      expectedUsage: number;
+    }> = [
+      {
+        name: 'evaluation launch',
+        models: {
+          ...models(),
+          evaluator: resolved('p/eval', 180_000),
+        },
+        runner: (options) =>
+          Promise.resolve(
+            childResult(
+              options,
+              options.stage === 'candidate' ? 'c'.repeat(48_000) : 'unexpected downstream child',
+            ),
+          ),
+        blockedStage: 'evaluation',
+        expectedEvaluationStatus: 'not_started',
+        expectedUsage: 6,
+      },
+      {
+        name: 'evaluation repair launch',
+        models: {
+          ...models(),
+          evaluator: resolved('p/eval', 100_000),
+        },
+        runner: (options) =>
+          Promise.resolve(
+            childResult(
+              options,
+              options.stage === 'candidate'
+                ? 'candidate'
+                : options.stage === 'evaluation'
+                  ? 'x'.repeat(60_000)
+                  : 'unexpected merge',
+            ),
+          ),
+        blockedStage: 'evaluation',
+        expectedEvaluationStatus: 'incomplete',
+        expectedUsage: 8,
+      },
+      {
+        name: 'merge launch',
+        models: {
+          ...models(),
+          evaluator: resolved('p/eval', 300_000),
+          merger: resolved('p/merge', 180_000),
+        },
+        runner: (options) =>
+          Promise.resolve(
+            childResult(
+              options,
+              options.stage === 'candidate'
+                ? 'c'.repeat(48_000)
+                : options.stage === 'evaluation'
+                  ? JSON.stringify(evaluation())
+                  : 'unexpected merge',
+            ),
+          ),
+        blockedStage: 'merge',
+        expectedEvaluationStatus: 'completed',
+        expectedUsage: 8,
+      },
+    ];
+
+    for (const item of cases) {
+      const root = await mkdtemp(
+        join(tmpdir(), `pi-fusion-progress-${item.name.replaceAll(' ', '-')}-`),
+      );
+      try {
+        const calls: RunPiChildOptions[] = [];
+        let failedProgressMessage = '';
+        const canonical = canonicalInput();
+        let thrown: unknown;
+        try {
+          await new FusionOrchestrator({
+            childRunner: async (options) => {
+              calls.push(options);
+              return item.runner(options);
+            },
+          }).run({
+            source: 'command',
+            cwd: root,
+            canonicalInput: canonical,
+            canonicalInputSerialized: JSON.stringify(canonical),
+            contextLedger: ledger,
+            config: defaultFusionModelConfig(),
+            models: item.models,
+            onProgress: (event) => {
+              if (event.type === 'failed') failedProgressMessage = event.error;
+            },
+          });
+        } catch (error) {
+          thrown = error;
+        }
+        assert.ok(thrown instanceof FusionError, item.name);
+        assert.equal(thrown.code, 'prompt_budget_exceeded_measured', item.name);
+        assert.doesNotMatch(thrown.message, /No child was created\./, item.name);
+        assert.match(
+          thrown.message,
+          item.blockedStage === 'merge'
+            ? /The merger child was not created\./
+            : /The evaluator(?:-repair)? child was not created\./,
+          item.name,
+        );
+        assert.equal(failedProgressMessage, thrown.message, item.name);
+        const progress = thrown.runProgress;
+        assert.ok(progress, item.name);
+        assert.equal(progress.candidates.status, 'completed', item.name);
+        assert.equal(progress.candidates.children_created, 3, item.name);
+        assert.equal(progress.candidates.children_completed, 3, item.name);
+        assert.equal(progress.evaluation.status, item.expectedEvaluationStatus, item.name);
+        assert.equal(progress.merge.status, 'not_started', item.name);
+        assert.equal(progress.usage_so_far.totalTokens, item.expectedUsage, item.name);
+        assert.match(thrown.message, new RegExp(`totalTokens=${String(item.expectedUsage)}`));
+        assert.equal(
+          calls.some(
+            (call) =>
+              call.stage === item.blockedStage &&
+              (item.name !== 'evaluation repair launch' || call.attempt === 2),
+          ),
+          false,
+          item.name,
+        );
+        assert.ok(thrown.artifactDir);
+        const manifest = parseObject(
+          await readFile(join(root, thrown.artifactDir, 'manifest.json'), 'utf8'),
+        );
+        assertManifestUsageEqualsAttemptSum(manifest);
+        assert.equal(
+          stringField(manifest, 'error'),
+          thrown.message,
+          'durable error and thrown error must carry identical run truth',
+        );
+      } finally {
+        await rm(root, { recursive: true, force: true });
+      }
     }
   });
 

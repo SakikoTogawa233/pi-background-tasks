@@ -1,7 +1,8 @@
 import { createHash, randomBytes as nodeRandomBytes } from 'node:crypto';
 import { canonicalJson } from '../attested-pi-run.js';
 import { parseJsonText } from '../common.js';
-import { FUSION_BUDGET_POLICY, FusionBudget, assertChildOutputWithinContract } from './budget.js';
+import { FUSION_BUDGET_POLICY, FusionBudget } from './budget.js';
+import { assertChildOutputWithinContract } from './output-contract.js';
 import {
   FusionArtifactStore,
   type CreateFusionArtifactStoreOptions,
@@ -39,7 +40,9 @@ import {
   FUSION_VALIDATE_CANDIDATE_SCHEMA_VERSION,
   FusionError,
   addFusionUsage,
+  cloneFusionUsage,
   createEmptyFusionUsage,
+  type FusionArtifactManifest,
   type FusionCalibrationViolation,
   type FusionCapability,
   type FusionCanonicalInputV3,
@@ -50,6 +53,7 @@ import {
   type FusionEvaluationV1,
   type FusionModelConfigV1,
   type FusionProgressEvent,
+  type FusionRunProgress,
   type FusionRunResult,
   type FusionSource,
   type FusionStage,
@@ -162,6 +166,7 @@ function asFusionError(error: unknown, artifactDir: string, messageOverride?: st
     if (error.slot !== undefined) details.slot = error.slot;
     if (error.attempt !== undefined) details.attempt = error.attempt;
     if (error.budget !== undefined) details.budget = error.budget;
+    if (error.runProgress !== undefined) details.runProgress = error.runProgress;
     return new FusionError(messageOverride ?? error.message, details);
   }
   return new FusionError(messageOverride ?? errorText(error), {
@@ -169,6 +174,103 @@ function asFusionError(error: unknown, artifactDir: string, messageOverride?: st
     artifactDir,
     childCreated: false,
   });
+}
+
+function fusionStageProgress(
+  manifest: FusionArtifactManifest,
+  stage: FusionStage,
+): FusionRunProgress['candidates'] {
+  const attempts = manifest.attempts.filter((attempt) => attempt.stage === stage);
+  const created = attempts.filter((attempt) => attempt.child_created).length;
+  const completed = attempts.filter(
+    (attempt) => attempt.child_created && attempt.status === 'completed',
+  ).length;
+  const failed = attempts.filter(
+    (attempt) => attempt.child_created && attempt.status === 'failed',
+  ).length;
+  const cancelled = attempts.filter(
+    (attempt) => attempt.child_created && attempt.status === 'cancelled',
+  ).length;
+  const completedByState =
+    stage === 'candidate'
+      ? completed >= 3
+      : stage === 'evaluation'
+        ? manifest.artifacts['evaluation.json'] !== undefined ||
+          manifest.state === 'evaluation_complete' ||
+          manifest.state === 'merging' ||
+          manifest.state === 'completed'
+        : manifest.artifacts['merged.md'] !== undefined || manifest.state === 'completed';
+  const progress: FusionRunProgress['candidates'] = {
+    status: completedByState ? 'completed' : created === 0 ? 'not_started' : 'incomplete',
+    attempts_recorded: attempts.length,
+    children_created: created,
+    children_completed: completed,
+    children_failed: failed,
+    children_cancelled: cancelled,
+  };
+  if (stage === 'candidate') {
+    const createdSlots = new Set(
+      attempts.flatMap((attempt) =>
+        attempt.child_created && attempt.slot !== undefined ? [attempt.slot] : [],
+      ),
+    );
+    progress.not_started_slots = 3 - createdSlots.size;
+  }
+  return progress;
+}
+
+export function buildFusionRunProgress(manifest: FusionArtifactManifest): FusionRunProgress {
+  return {
+    manifest_state: manifest.state,
+    candidates: fusionStageProgress(manifest, 'candidate'),
+    evaluation: fusionStageProgress(manifest, 'evaluation'),
+    merge: fusionStageProgress(manifest, 'merge'),
+    usage_so_far: cloneFusionUsage(manifest.usage),
+  };
+}
+
+function formatFusionRunStage(name: string, stage: FusionRunProgress['candidates']): string {
+  const notStarted =
+    stage.not_started_slots === undefined
+      ? ''
+      : `, ${String(stage.not_started_slots)} slot(s) not started`;
+  return `${name}=${stage.status} (${String(stage.children_created)} created, ${String(stage.children_completed)} completed, ${String(stage.children_failed)} failed, ${String(stage.children_cancelled)} cancelled${notStarted})`;
+}
+
+export function formatFusionRunProgress(progress: FusionRunProgress): string {
+  const usage = progress.usage_so_far;
+  const optionalUsage = [
+    usage.cacheWrite1h === undefined ? undefined : `cacheWrite1h=${String(usage.cacheWrite1h)}`,
+    usage.reasoning === undefined ? undefined : `reasoning=${String(usage.reasoning)}`,
+  ].filter((value): value is string => value !== undefined);
+  const optionalText = optionalUsage.length === 0 ? '' : `, ${optionalUsage.join(', ')}`;
+  return (
+    `Run progress from durable attempts: ${formatFusionRunStage('candidates', progress.candidates)}; ` +
+    `${formatFusionRunStage('evaluation', progress.evaluation)}; ` +
+    `${formatFusionRunStage('merge', progress.merge)}. ` +
+    `Usage so far: input=${String(usage.input)}, output=${String(usage.output)}, cacheRead=${String(usage.cacheRead)}, cacheWrite=${String(usage.cacheWrite)}${optionalText}, totalTokens=${String(usage.totalTokens)}, ` +
+    `cost.input=${String(usage.cost.input)}, cost.output=${String(usage.cost.output)}, cost.cacheRead=${String(usage.cost.cacheRead)}, cost.cacheWrite=${String(usage.cost.cacheWrite)}, cost.total=${String(usage.cost.total)}.`
+  );
+}
+
+function withRunProgress(
+  error: unknown,
+  artifactDir: string,
+  progress: FusionRunProgress,
+): FusionError {
+  const base = asFusionError(error, artifactDir);
+  const details: FusionErrorDetails = {
+    code: base.code,
+    artifactDir,
+    transient: base.transient,
+    childCreated: base.childCreated,
+    runProgress: progress,
+  };
+  if (base.stage !== undefined) details.stage = base.stage;
+  if (base.slot !== undefined) details.slot = base.slot;
+  if (base.attempt !== undefined) details.attempt = base.attempt;
+  if (base.budget !== undefined) details.budget = base.budget;
+  return new FusionError(`${base.message}\n${formatFusionRunProgress(progress)}`, details);
 }
 
 function withTerminalArtifactFailure(
@@ -201,7 +303,9 @@ function recordFailureInput(
       error: error.message,
       status: error.code === 'child_cancelled' ? 'cancelled' : 'failed',
       responseKind,
+      childCreated: error.childCreated,
       usage: error.usage,
+      ...(error.outputRecovery === undefined ? {} : { outputRecovery: error.outputRecovery }),
     };
     if (slot !== undefined) base.slot = slot;
     if (error.provider !== undefined) base.provider = error.provider;
@@ -221,6 +325,7 @@ function recordFailureInput(
     status:
       error instanceof FusionError && error.code === 'child_cancelled' ? 'cancelled' : 'failed',
     responseKind,
+    childCreated: error instanceof FusionError ? error.childCreated : false,
   };
   if (slot !== undefined) base.slot = slot;
   return base;
@@ -245,6 +350,7 @@ function childOptions(
   slot?: CandidateSlot,
   toolCallLogPath?: string,
   sourcePolicy?: { path: string; sha256: string },
+  candidateOutputRecoveryPath?: string,
 ): RunPiChildOptions {
   const out: RunPiChildOptions = {
     stage,
@@ -259,6 +365,8 @@ function childOptions(
   if (slot !== undefined) out.slot = slot;
   if (toolCallLogPath !== undefined) out.toolCallLogPath = toolCallLogPath;
   if (sourcePolicy !== undefined) out.sourcePolicy = sourcePolicy;
+  if (candidateOutputRecoveryPath !== undefined)
+    out.candidateOutputRecoveryPath = candidateOutputRecoveryPath;
   return out;
 }
 
@@ -848,10 +956,15 @@ export class FusionOrchestrator {
       const cancelled =
         input.signal?.aborted === true ||
         (error instanceof FusionError && error.code === 'child_cancelled');
-      const message = errorText(error);
+      let terminalError: FusionError;
       try {
         await store.setUsage(usage);
-        await store.writeError(cancelled ? 'cancelled' : 'failed', message);
+        terminalError = withRunProgress(
+          error,
+          store.artifactDir,
+          buildFusionRunProgress(store.snapshot()),
+        );
+        await store.writeError(cancelled ? 'cancelled' : 'failed', terminalError.message);
       } catch (artifactError) {
         throw withTerminalArtifactFailure(error, store.artifactDir, artifactError);
       }
@@ -860,17 +973,17 @@ export class FusionOrchestrator {
           type: 'cancelled',
           runId: store.runId,
           artifactDir: store.artifactDir,
-          reason: message,
+          reason: terminalError.message,
         });
       } else {
         input.onProgress?.({
           type: 'failed',
           runId: store.runId,
           artifactDir: store.artifactDir,
-          error: message,
+          error: terminalError.message,
         });
       }
-      throw asFusionError(error, store.artifactDir);
+      throw terminalError;
     }
   }
 
@@ -934,12 +1047,12 @@ export class FusionOrchestrator {
             result,
             slot,
           );
-          // The response is durable before the contract check, so an oversized
-          // answer is preserved as evidence rather than lost.
-          assertChildOutputWithinContract('candidate', result.text);
-          completed += 1;
+          // The response and its consumed usage are durable before the contract
+          // check, so an oversized answer is preserved and accounted rather than lost.
           addFusionUsage(usage, result.usage);
           await store.setUsage(usage);
+          assertChildOutputWithinContract('candidate', result.text);
+          completed += 1;
           input.onProgress?.({ type: 'candidate_completed', slot, completed, total: 3 });
           return { slot, result };
         });
@@ -1135,6 +1248,10 @@ export class FusionOrchestrator {
           : undefined;
       const sourcePolicy =
         capability === 'research' ? store.sourcePolicyLaunchReference() : undefined;
+      const candidateOutputRecoveryPath =
+        stage === 'candidate' && slot !== undefined
+          ? store.childOutputRecoveryPath(slot, logicalAttempt, responseKind)
+          : undefined;
       try {
         return await this.childRunner(
           childOptions(
@@ -1149,6 +1266,7 @@ export class FusionOrchestrator {
             slot,
             toolCallLogPath,
             sourcePolicy,
+            candidateOutputRecoveryPath,
           ),
         );
       } catch (error) {

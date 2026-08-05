@@ -420,6 +420,7 @@ void describe('package', () => {
       'src/core/fusion/pi-child.ts',
       'src/core/fusion/child-protocol.ts',
       'src/core/fusion/budget.ts',
+      'src/core/fusion/output-contract.ts',
       'src/core/fusion/workflows.ts',
       'src/core/fusion/result-package.ts',
       'src/fusion-extension.ts',
@@ -960,6 +961,7 @@ void describe('package', () => {
       'src/core/fusion/artifacts.ts',
       'src/core/fusion/orchestrator.ts',
       'src/core/fusion/budget.ts',
+      'src/core/fusion/output-contract.ts',
       'src/core/fusion/web-fetch.ts',
       'src/ui/fusion-model-selector.ts',
       'src/fusion-child-extension.ts',
@@ -1005,7 +1007,8 @@ void describe('package', () => {
       assert.doesNotMatch(source, /costTotal/, `${file} must not carry the retired cost shape`);
     }
     const childProtocol = await text('src/core/fusion/child-protocol.ts');
-    assert.match(childProtocol, /fusion-child-result\.v3/);
+    assert.match(childProtocol, /fusion-child-result\.v4/);
+    assert.match(childProtocol, /fusion-child-settlement\.v3/);
     for (const key of ['input', 'output', 'cacheRead', 'cacheWrite', 'total']) {
       assert.match(childProtocol, new RegExp(`cost\\.${key}`));
     }
@@ -1051,6 +1054,7 @@ void describe('package', () => {
   void it('keeps the Fusion context/budget path free of silent truncation and fallback shapes', async () => {
     const context = await text('src/core/fusion/context.ts');
     const budget = await text('src/core/fusion/budget.ts');
+    const outputContract = await text('src/core/fusion/output-contract.ts');
     const orchestratorText = await text('src/core/fusion/orchestrator.ts');
     const orchestratorSource = () => orchestratorText;
     // The projection transform and the size arithmetic are shared with
@@ -1073,6 +1077,7 @@ void describe('package', () => {
     for (const [label, source] of [
       ['context', codeOnly(context)],
       ['budget', codeOnly(budget)],
+      ['output-contract', codeOnly(outputContract)],
       ['visible-conversation-v2', codeOnly(transform)],
       ['parent-snapshot', codeOnly(parentSnapshot)],
       ['token-budget', codeOnly(tokenBudget)],
@@ -1095,7 +1100,8 @@ void describe('package', () => {
     // Output contracts must be enforced, which is what makes per-stage forecasts
     // a guarantee rather than an assumption.
     assert.match(budget, /assertChildOutputWithinContract/);
-    assert.match(budget, /child_output_cap/);
+    assert.match(outputContract, /child_output_cap/);
+    assert.match(outputContract, /fusionJsonRenderedTextBytes/);
     assert.match(orchestratorSource(), /assertChildOutputWithinContract\('candidate'/);
 
     // Forecasts must add contract maxima to real empty-slot prompt renderings.
@@ -1311,6 +1317,7 @@ void describe('package', () => {
       'src/core/fusion/artifacts.ts',
       'src/core/fusion/orchestrator.ts',
       'src/core/fusion/budget.ts',
+      'src/core/fusion/output-contract.ts',
       'src/core/fusion/web-fetch.ts',
       'src/core/fusion/result-package.ts',
       'README.md',
@@ -1406,6 +1413,7 @@ void describe('package', () => {
         'src/core/fusion/orchestrator.ts',
         'src/core/fusion/pi-child.ts',
         'src/core/fusion/child-protocol.ts',
+        'src/core/fusion/output-contract.ts',
         'src/core/fusion/result-package.ts',
         'src/ui/background-tasks-manager.ts',
         'src/ui/fusion-model-selector.ts',

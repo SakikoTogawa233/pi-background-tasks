@@ -1,5 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { mkdtemp, readFile, readdir, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -43,7 +44,7 @@ function childResult(options: RunPiChildOptions, text: string): FusionChildRunRe
     qualifiedId: options.model.qualifiedId,
     text,
     usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2, cost: { input: 0.01, output: 0.02, cacheRead: 0, cacheWrite: 0, total: 0.03 } },
-    events: Buffer.from('{"schema_version":"pi-background-tasks.fusion-child-result.v3"}\n'),
+    events: Buffer.from('{"schema_version":"pi-background-tasks.fusion-child-result.v4"}\n'),
     stderr: Buffer.alloc(0),
     exitCode: 0,
     signal: null,
@@ -107,13 +108,36 @@ void describe('fusion validate orchestration', () => {
   void it('uses clean input, inspect candidates, no-tool adjudicators, and deterministic validated rendering', async () => {
     await withRoot(async (root) => {
       const calls: RunPiChildOptions[] = [];
+      const oversizedOriginal = 'o'.repeat(50_000);
       const built = buildFusionCleanTaskCanonicalInput({ cwd: root, source: 'tool', workflow: 'validate', request: canonicalJson({ objective: 'validate', background: [], changeSummary: 'changed', scope: ['src'], acceptanceCriteria: ['works'], verification: { status: 'not_run', evidence: [], reason: 'unit' }, knownLimitations: [], exclusions: [] }) });
-      const orchestrator = new FusionOrchestrator({ childRunner: async (options) => {
-        calls.push(options);
-        if (options.stage === 'candidate') return childResult(options, candidateReport(options.slot ?? 0));
-        if (options.stage === 'evaluation') return childResult(options, evaluatorText(options.userPrompt));
-        return childResult(options, 'ignored free-form merger prose');
-      }});
+      const orchestrator = new FusionOrchestrator({
+        childRunner: (options) => {
+          calls.push(options);
+          if (options.stage === 'candidate') {
+            const candidate = childResult(options, candidateReport(options.slot ?? 0));
+            if (options.slot === 1) {
+              candidate.outputRecovery = {
+                kind: 'same_session_compression',
+                limit_bytes: 49_152,
+                original_record_index: 0,
+                replacement_record_index: 1,
+                original_json_rendered_bytes: 50_002,
+                replacement_json_rendered_bytes: Buffer.byteLength(
+                  JSON.stringify(candidate.text),
+                  'utf8',
+                ),
+                original_text_sha256: createHash('sha256').update(oversizedOriginal).digest('hex'),
+                original_text: oversizedOriginal,
+                status: 'completed',
+              };
+            }
+            return Promise.resolve(candidate);
+          }
+          if (options.stage === 'evaluation')
+            return Promise.resolve(childResult(options, evaluatorText(options.userPrompt)));
+          return Promise.resolve(childResult(options, 'ignored free-form merger prose'));
+        },
+      });
       const result = await orchestrator.run({ source: 'tool', cwd: root, canonicalInput: built.input, canonicalInputSerialized: built.serialized, config: defaultFusionModelConfig(), models: models(), profile: FUSION_VALIDATE_WORKFLOW });
 
       assert.equal(calls.length, 5);
@@ -128,6 +152,13 @@ void describe('fusion validate orchestration', () => {
       assert.equal(result.details.workflow, 'validate');
       assert.equal(result.details.schema_version, FUSION_RESULT_SCHEMA_VERSION);
       assert.equal(result.details.context.kind, 'clean_task');
+      assert.equal(
+        await readFile(
+          join(root, result.details.artifact_dir, 'candidate-1.attempt-1.response.oversized.txt'),
+          'utf8',
+        ),
+        oversizedOriginal,
+      );
     });
   });
 

@@ -6,6 +6,7 @@ import { createRequire } from 'node:module';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
+  FUSION_CANDIDATE_OUTPUT_RECOVERY_PATH_ENV,
   FUSION_CHILD_MAX_PROVIDER_REQUESTS,
   FUSION_CHILD_MAX_TOOL_CALLS,
   FUSION_CHILD_MIN_OUTPUT_RESERVE_TOKENS,
@@ -26,6 +27,8 @@ import {
   buildFusionChildSettlement,
   isRecoverableFusionChildErrorRecord,
   serializeFusionChildResultRecords,
+  type FusionChildOutputContractMetadata,
+  type FusionChildOutputRecoveryRole,
   type FusionChildResultMetadata,
   type FusionChildSettlementFailureReason,
   type FusionChildSettlementRecord,
@@ -51,6 +54,7 @@ import {
   cloneFusionUsage,
   createEmptyFusionUsage,
   type FusionCapability,
+  type FusionCandidateOutputRecovery,
   type FusionChildRunResult,
   type FusionErrorDetails,
   type FusionStage,
@@ -60,6 +64,10 @@ import {
   type ResolvedFusionModel,
 } from './types.js';
 import { isJsonObject, parseJsonText } from '../common.js';
+import {
+  FUSION_CANDIDATE_MAX_OUTPUT_BYTES,
+  fusionJsonRenderedTextBytes,
+} from './output-contract.js';
 import { canonicalizeFusionPublicUrl, readFusionSourcePolicyFile } from './source-policy.js';
 import {
   assertWindowsCommandLineWithinLimit,
@@ -113,6 +121,7 @@ export const FUSION_CHILD_REMOVED_ENV_KEYS = [
   'PI_API_BASE_URL',
   'PI_AUTH_FILE',
   FUSION_TOOL_CALL_LOG_PATH_ENV,
+  FUSION_CANDIDATE_OUTPUT_RECOVERY_PATH_ENV,
   FUSION_RESEARCH_ENABLED_ENV,
   FUSION_SOURCE_POLICY_PATH_ENV,
   FUSION_SOURCE_POLICY_SHA256_ENV,
@@ -180,6 +189,7 @@ export interface RunPiChildOptions {
   piLaunchDependencies?: PiLaunchDependencies | undefined;
   toolCallLogPath?: string | undefined;
   sourcePolicy?: { path: string; sha256: string } | undefined;
+  candidateOutputRecoveryPath?: string | undefined;
 }
 
 interface CloseRecord {
@@ -215,6 +225,7 @@ export class FusionChildRunError extends FusionError {
   readonly provider: string | undefined;
   readonly modelName: string | undefined;
   readonly qualifiedId: string | undefined;
+  readonly outputRecovery: FusionCandidateOutputRecovery | undefined;
 
   constructor(
     error: FusionError,
@@ -223,6 +234,7 @@ export class FusionChildRunError extends FusionError {
     stderr: Buffer,
     close: CloseRecord,
     observed: ObservedChildSnapshot,
+    outputRecovery?: FusionCandidateOutputRecovery,
   ) {
     const details: FusionErrorDetails = {
       code: error.code,
@@ -244,6 +256,7 @@ export class FusionChildRunError extends FusionError {
     this.provider = observed.provider;
     this.modelName = observed.model;
     this.qualifiedId = observed.qualifiedId;
+    this.outputRecovery = outputRecovery;
   }
 }
 
@@ -750,6 +763,51 @@ function parseFusionClaudeCacheObservation(
   };
 }
 
+const FUSION_OUTPUT_RECOVERY_ROLES = new Set<FusionChildOutputRecoveryRole>([
+  'none',
+  'oversized_original',
+  'replacement',
+]);
+
+function parseChildOutputContract(value: unknown): FusionChildOutputContractMetadata {
+  const record = assertClosedRecord(
+    value,
+    ['json_rendered_bytes', 'candidate_limit_bytes', 'recovery_role'],
+    'fusion child result.output_contract',
+  );
+  const candidateLimitValue = record['candidate_limit_bytes'];
+  const candidateLimit =
+    candidateLimitValue === null
+      ? null
+      : requirePositiveSafeInteger(
+          record,
+          'candidate_limit_bytes',
+          'fusion child result.output_contract',
+        );
+  if (candidateLimit !== null && candidateLimit !== FUSION_CANDIDATE_MAX_OUTPUT_BYTES) {
+    throw new Error('fusion child result candidate output limit mismatches the shared contract');
+  }
+  const recoveryRole = record['recovery_role'];
+  if (
+    typeof recoveryRole !== 'string' ||
+    !FUSION_OUTPUT_RECOVERY_ROLES.has(recoveryRole as FusionChildOutputRecoveryRole)
+  ) {
+    throw new Error('fusion child result.output_contract.recovery_role is invalid');
+  }
+  if (recoveryRole !== 'none' && candidateLimit === null) {
+    throw new Error('fusion child result output recovery has no candidate contract');
+  }
+  return {
+    json_rendered_bytes: requireUsageInteger(
+      record,
+      'json_rendered_bytes',
+      'fusion child result.output_contract',
+    ),
+    candidate_limit_bytes: candidateLimit,
+    recovery_role: recoveryRole as FusionChildOutputRecoveryRole,
+  };
+}
+
 function parseChildResultMetadata(value: unknown): FusionChildResultMetadata {
   const record = assertClosedRecord(
     value,
@@ -762,6 +820,7 @@ function parseChildResultMetadata(value: unknown): FusionChildResultMetadata {
       'text_sha256',
       'usage',
       'cache_observation',
+      'output_contract',
     ],
     'fusion child result',
   );
@@ -789,6 +848,7 @@ function parseChildResultMetadata(value: unknown): FusionChildResultMetadata {
     text_sha256: requireSha256(record, 'text_sha256', 'fusion child result'),
     usage,
     cache_observation: parseFusionClaudeCacheObservation(record['cache_observation'], provider),
+    output_contract: parseChildOutputContract(record['output_contract']),
   };
 }
 
@@ -937,6 +997,7 @@ const FUSION_CHILD_SETTLEMENT_FAILURE_REASONS = new Set<FusionChildSettlementFai
   'invalid_non_final',
   'runtime_guard',
   'cache_observation',
+  'output_recovery',
 ]);
 
 export function parseFusionChildSettlement(
@@ -965,6 +1026,7 @@ export function parseFusionChildSettlement(
         'final_record_index',
         'final_text_sha256',
         'recovered_error_ordinals',
+        'recovered_output_cap_ordinals',
         'failure_reason',
       ],
       'fusion child settlement',
@@ -1009,6 +1071,28 @@ export function parseFusionChildSettlement(
         throw new Error('fusion child settlement recovered-error ordinals are not canonical');
       }
     }
+    const recoveredOutputValue = record['recovered_output_cap_ordinals'];
+    if (!Array.isArray(recoveredOutputValue)) {
+      throw new Error('fusion child settlement.recovered_output_cap_ordinals must be an array');
+    }
+    const recoveredOutputCapOrdinals = recoveredOutputValue.map((value, index) => {
+      if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0) {
+        throw new Error(
+          `fusion child settlement.recovered_output_cap_ordinals[${String(index)}] must be a non-negative safe integer`,
+        );
+      }
+      return value;
+    });
+    for (let index = 0; index < recoveredOutputCapOrdinals.length; index += 1) {
+      const ordinal = recoveredOutputCapOrdinals[index];
+      if (
+        ordinal === undefined ||
+        ordinal >= recordCount - 1 ||
+        (index > 0 && ordinal <= (recoveredOutputCapOrdinals[index - 1] ?? -1))
+      ) {
+        throw new Error('fusion child settlement recovered-output ordinals are not canonical');
+      }
+    }
     const failureValue = record['failure_reason'];
     let failureReason: FusionChildSettlementFailureReason | null;
     if (failureValue === null) failureReason = null;
@@ -1040,6 +1124,7 @@ export function parseFusionChildSettlement(
       final_record_index: finalRecordIndex,
       final_text_sha256: finalTextSha256,
       recovered_error_ordinals: recoveredErrorOrdinals,
+      recovered_output_cap_ordinals: recoveredOutputCapOrdinals,
       failure_reason: failureReason,
     });
     cursor = newline + 1;
@@ -1457,8 +1542,84 @@ function reconstructFinalText(response: Buffer, record: FusionChildResultMetadat
   const text = joined.toString('utf8');
   if (!Buffer.from(text, 'utf8').equals(joined))
     throw new Error('Pi final text is not valid UTF-8');
+  if (fusionJsonRenderedTextBytes(text) !== record.output_contract.json_rendered_bytes) {
+    throw new Error('Pi final text JSON-rendered byte count mismatch');
+  }
   if (text.trim().length === 0) throw new Error('Pi assistant response is empty');
   return text;
+}
+
+type ParsedCandidateOutputRecovery = Omit<FusionCandidateOutputRecovery, 'original_text'>;
+
+async function readCandidateOutputRecovery(
+  path: string,
+  evidence: ParsedCandidateOutputRecovery,
+): Promise<FusionCandidateOutputRecovery> {
+  let handle: Awaited<ReturnType<typeof open>>;
+  try {
+    handle = await open(path, constants.O_RDONLY | FUSION_PI_CHILD_O_NOFOLLOW);
+  } catch (error) {
+    if (isNotFound(error))
+      throw new Error('fusion oversized candidate response artifact is missing');
+    if (isJsonObject(error) && error['code'] === 'ELOOP') {
+      throw new Error('fusion oversized candidate response artifact is a symlink');
+    }
+    throw error;
+  }
+  try {
+    const stats = await handle.stat();
+    if (!stats.isFile()) {
+      throw new Error('fusion oversized candidate response artifact is not a regular file');
+    }
+    if (stats.size > FUSION_CHILD_STDOUT_LIMIT_BYTES) {
+      throw new Error(
+        `fusion oversized candidate response artifact exceeds ${String(FUSION_CHILD_STDOUT_LIMIT_BYTES)} bytes`,
+      );
+    }
+    const bytes = await handle.readFile();
+    if (sha256Buffer(bytes) !== evidence.original_text_sha256) {
+      throw new Error('fusion oversized candidate response artifact hash mismatch');
+    }
+    const text = bytes.toString('utf8');
+    if (!Buffer.from(text, 'utf8').equals(bytes)) {
+      throw new Error('fusion oversized candidate response artifact is not valid UTF-8');
+    }
+    if (fusionJsonRenderedTextBytes(text) !== evidence.original_json_rendered_bytes) {
+      throw new Error('fusion oversized candidate response JSON-rendered byte count mismatch');
+    }
+    if (evidence.original_json_rendered_bytes <= evidence.limit_bytes) {
+      throw new Error('fusion output recovery original did not exceed the candidate contract');
+    }
+    return { ...evidence, original_text: text };
+  } finally {
+    await handle.close();
+  }
+}
+
+function parsedCandidateOutputRecovery(
+  records: readonly FusionChildResultMetadata[],
+  status: FusionCandidateOutputRecovery['status'],
+): ParsedCandidateOutputRecovery | undefined {
+  const originalRecordIndex = records.findIndex(
+    (record) => record.output_contract.recovery_role === 'oversized_original',
+  );
+  if (originalRecordIndex < 0) return undefined;
+  const original = records[originalRecordIndex];
+  if (original === undefined) throw new Error('Pi output recovery original record disappeared');
+  const replacementRecordIndex = records.findIndex(
+    (record) => record.output_contract.recovery_role === 'replacement',
+  );
+  const replacement = replacementRecordIndex < 0 ? undefined : records[replacementRecordIndex];
+  return {
+    kind: 'same_session_compression',
+    limit_bytes: FUSION_CANDIDATE_MAX_OUTPUT_BYTES,
+    original_record_index: originalRecordIndex,
+    replacement_record_index: replacementRecordIndex < 0 ? null : replacementRecordIndex,
+    original_json_rendered_bytes: original.output_contract.json_rendered_bytes,
+    replacement_json_rendered_bytes: replacement?.output_contract.json_rendered_bytes ?? null,
+    original_text_sha256: original.text_sha256,
+    status,
+  };
 }
 
 export class FusionPiCompactResultParser {
@@ -1479,6 +1640,53 @@ export class FusionPiCompactResultParser {
     }
   }
 
+  finishOutputRecoveryFailure(
+    response: Buffer,
+    stderr: Buffer,
+  ): {
+    usage: FusionUsage;
+    provider: string;
+    model: string;
+    qualifiedId: string;
+    events: Buffer;
+    diagnostics: Buffer;
+    outputRecovery: ParsedCandidateOutputRecovery;
+  } {
+    const parsed = parseFusionChildStderr(stderr);
+    const settlement = parseFusionChildSettlement(stderr);
+    if (settlement === undefined) throw new Error('Pi child emitted no terminal result settlement');
+    const expectedSettlement = buildFusionChildSettlement(parsed.records);
+    if (JSON.stringify(settlement) !== JSON.stringify(expectedSettlement)) {
+      throw new Error('Pi child terminal result settlement does not match the metadata stream');
+    }
+    if (settlement.status !== 'failed' || settlement.failure_reason !== 'output_recovery') {
+      throw new Error('Pi child did not report a failed candidate output recovery');
+    }
+    if (parsed.diagnostics.includes(PI_EXTENSION_ERROR_PREFIX_BYTES)) {
+      throw new Error('Pi child reported an extension error diagnostic');
+    }
+    const final = parsed.records.at(-1);
+    if (final === undefined) throw new Error('Pi child emitted no compact result metadata');
+    for (const record of parsed.records) this.assertModel(record);
+    this.assertCacheObservationOrdinals(parsed.records);
+    this.assertTranscriptStopReasons(parsed.records);
+    reconstructFinalText(response, final);
+    const outputRecovery = parsedCandidateOutputRecovery(parsed.records, 'failed');
+    if (outputRecovery === undefined) {
+      throw new Error('Pi child output-recovery failure omitted the oversized original');
+    }
+    const observed = this.observedFromRecords(parsed.records);
+    return {
+      usage: observed.usage,
+      provider: final.provider,
+      model: final.model,
+      qualifiedId: `${final.provider}/${final.model}`,
+      events: parsed.events,
+      diagnostics: parsed.diagnostics,
+      outputRecovery,
+    };
+  }
+
   finish(
     response: Buffer,
     stderr: Buffer,
@@ -1492,6 +1700,7 @@ export class FusionPiCompactResultParser {
     qualifiedId: string;
     events: Buffer;
     diagnostics: Buffer;
+    outputRecovery: ParsedCandidateOutputRecovery | undefined;
   } {
     const parsed = parseFusionChildStderr(stderr);
     const runtimeGuard = parseFusionRuntimeGuard(stderr);
@@ -1518,8 +1727,9 @@ export class FusionPiCompactResultParser {
       );
     }
     const observed = this.observedFromRecords(parsed.records);
+    const text = reconstructFinalText(response, final);
     return {
-      text: reconstructFinalText(response, final),
+      text,
       usage: observed.usage,
       firstRequestUsage: cloneFusionUsage(parsed.records[0]?.usage ?? createEmptyFusionUsage()),
       providerRequestCount: parsed.records.length,
@@ -1528,6 +1738,7 @@ export class FusionPiCompactResultParser {
       qualifiedId: `${final.provider}/${final.model}`,
       events: parsed.events,
       diagnostics: parsed.diagnostics,
+      outputRecovery: parsedCandidateOutputRecovery(parsed.records, 'completed'),
     };
   }
 
@@ -1559,11 +1770,15 @@ export class FusionPiCompactResultParser {
         if (record.stop_reason !== 'stop') {
           throw new Error(this.stopReasonError('final', 'stop', record.stop_reason, true));
         }
-      } else if (record.stop_reason !== 'toolUse' && !isRecoverableFusionChildErrorRecord(record)) {
+      } else if (
+        record.stop_reason !== 'toolUse' &&
+        !isRecoverableFusionChildErrorRecord(record) &&
+        record.output_contract.recovery_role !== 'oversized_original'
+      ) {
         throw new Error(
           this.stopReasonError(
             `non-final record ${index}`,
-            'toolUse or a settled zero-usage retry marker',
+            'toolUse, a settled zero-usage retry marker, or one oversized original',
             record.stop_reason,
             true,
           ),
@@ -1832,6 +2047,18 @@ export async function runPiChild(options: RunPiChildOptions): Promise<FusionChil
   const platform = options.platform ?? process.platform;
   const capability = options.capability ?? FUSION_NO_TOOLS_CAPABILITY;
   const env = fusionPiChildEnv(options.env ?? process.env, options.model.provider);
+  if (options.candidateOutputRecoveryPath !== undefined) {
+    if (options.stage !== 'candidate') {
+      throw childError(
+        'candidate output recovery may be enabled only for candidate children',
+        'orchestration_failed',
+        options,
+        false,
+        false,
+      );
+    }
+    env[FUSION_CANDIDATE_OUTPUT_RECOVERY_PATH_ENV] = options.candidateOutputRecoveryPath;
+  }
   if (capability !== 'reason') {
     if (options.toolCallLogPath === undefined) {
       throw childError(
@@ -2049,8 +2276,32 @@ export async function runPiChild(options: RunPiChildOptions): Promise<FusionChil
       // A primary process/cap error remains authoritative; malformed metadata is
       // surfaced below when the child otherwise exits successfully.
     }
+    const readPartialOutputRecovery = async (): Promise<
+      FusionCandidateOutputRecovery | undefined
+    > => {
+      let parsedRecords: readonly FusionChildResultMetadata[];
+      try {
+        parsedRecords = parseFusionChildStderr(rawStderr).records;
+      } catch {
+        return undefined;
+      }
+      const evidence = parsedCandidateOutputRecovery(parsedRecords, 'failed');
+      if (evidence === undefined) return undefined;
+      if (options.candidateOutputRecoveryPath === undefined) {
+        throw new Error('fusion child emitted output-recovery evidence without an artifact path');
+      }
+      return readCandidateOutputRecovery(options.candidateOutputRecoveryPath, evidence);
+    };
     const primary = state.primaryError;
-    if (primary !== undefined)
+    if (primary !== undefined) {
+      let outputRecovery: FusionCandidateOutputRecovery | undefined;
+      try {
+        outputRecovery = await readPartialOutputRecovery();
+      } catch (error) {
+        state.cleanupErrors.push(
+          `output recovery evidence invalid: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
       throw new FusionChildRunError(
         withCleanupErrors(primary, state.cleanupErrors),
         compactEvents,
@@ -2058,7 +2309,81 @@ export async function runPiChild(options: RunPiChildOptions): Promise<FusionChil
         diagnostics,
         close,
         observed,
+        outputRecovery,
       );
+    }
+    let terminalSettlement: FusionChildSettlementRecord | undefined;
+    try {
+      terminalSettlement = parseFusionChildSettlement(rawStderr);
+    } catch (error) {
+      throw new FusionChildRunError(
+        withCleanupErrors(
+          childError(
+            `Pi child terminal settlement invalid: ${error instanceof Error ? error.message : String(error)}`,
+            'child_event_invalid',
+            options,
+          ),
+          state.cleanupErrors,
+        ),
+        compactEvents,
+        response,
+        diagnostics,
+        close,
+        observed,
+      );
+    }
+    if (terminalSettlement?.failure_reason === 'output_recovery') {
+      try {
+        const failure = parser.finishOutputRecoveryFailure(response, rawStderr);
+        if (options.candidateOutputRecoveryPath === undefined) {
+          throw new Error(
+            'fusion child output-recovery failure omitted the configured artifact path',
+          );
+        }
+        const outputRecovery = await readCandidateOutputRecovery(
+          options.candidateOutputRecoveryPath,
+          failure.outputRecovery,
+        );
+        const recoveryMessage =
+          outputRecovery.replacement_json_rendered_bytes === null
+            ? `Pi child could not complete its one allowed same-session candidate compression continuation; the ${String(outputRecovery.original_json_rendered_bytes)}-byte original is preserved and nothing was truncated`
+            : `Pi child compressed candidate response is still ${String(outputRecovery.replacement_json_rendered_bytes)} JSON-rendered bytes, exceeding the ${String(outputRecovery.limit_bytes)}-byte output contract; both responses are preserved and nothing was truncated`;
+        throw new FusionChildRunError(
+          withCleanupErrors(
+            childError(recoveryMessage, 'child_output_cap', options),
+            state.cleanupErrors,
+          ),
+          failure.events,
+          response,
+          failure.diagnostics,
+          close,
+          {
+            usage: failure.usage,
+            provider: failure.provider,
+            model: failure.model,
+            qualifiedId: failure.qualifiedId,
+          },
+          outputRecovery,
+        );
+      } catch (error) {
+        if (error instanceof FusionChildRunError) throw error;
+        throw new FusionChildRunError(
+          withCleanupErrors(
+            childError(
+              `Pi child output-recovery evidence invalid: ${error instanceof Error ? error.message : String(error)}`,
+              'child_event_invalid',
+              options,
+            ),
+            state.cleanupErrors,
+          ),
+          compactEvents,
+          response,
+          diagnostics,
+          close,
+          observed,
+        );
+      }
+    }
     if (close.code !== 0 || close.signal !== null) {
       let runtimeGuard: FusionRuntimeGuardRecord | undefined;
       try {
@@ -2124,6 +2449,42 @@ export async function runPiChild(options: RunPiChildOptions): Promise<FusionChil
         observed,
       );
     }
+    let outputRecovery: FusionCandidateOutputRecovery | undefined;
+    if (parsed.outputRecovery !== undefined) {
+      if (options.candidateOutputRecoveryPath === undefined) {
+        throw new FusionChildRunError(
+          childError(
+            'Pi child output-recovery evidence has no configured artifact path',
+            'child_event_invalid',
+            options,
+          ),
+          parsed.events,
+          response,
+          parsed.diagnostics,
+          close,
+          observed,
+        );
+      }
+      try {
+        outputRecovery = await readCandidateOutputRecovery(
+          options.candidateOutputRecoveryPath,
+          parsed.outputRecovery,
+        );
+      } catch (error) {
+        throw new FusionChildRunError(
+          childError(
+            `Pi child output-recovery artifact invalid: ${error instanceof Error ? error.message : String(error)}`,
+            'child_event_invalid',
+            options,
+          ),
+          parsed.events,
+          response,
+          parsed.diagnostics,
+          close,
+          observed,
+        );
+      }
+    }
     let toolCallTrace: FusionToolCallTrace | undefined;
     if (capability !== 'reason') {
       // The launch path above refuses to spawn a tool-enabled child without a log path, so
@@ -2157,6 +2518,7 @@ export async function runPiChild(options: RunPiChildOptions): Promise<FusionChil
           diagnostics,
           close,
           observed,
+          outputRecovery,
         );
       }
     }
@@ -2176,6 +2538,7 @@ export async function runPiChild(options: RunPiChildOptions): Promise<FusionChil
       signal: close.signal,
     };
     if (options.slot !== undefined) result.slot = options.slot;
+    if (outputRecovery !== undefined) result.outputRecovery = outputRecovery;
     if (toolCallTrace !== undefined) result.toolCallTrace = toolCallTrace;
     return result;
   } finally {

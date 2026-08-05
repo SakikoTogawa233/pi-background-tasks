@@ -1,5 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import { mkdtemp, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -63,7 +64,7 @@ function childResult(
       totalTokens: 3,
       cost: { input: 0.01, output: 0.02, cacheRead: 0, cacheWrite: 0, total: 0.03 },
     },
-    events: Buffer.from('{"schema_version":"pi-background-tasks.fusion-child-result.v3"}\n'),
+    events: Buffer.from('{"schema_version":"pi-background-tasks.fusion-child-result.v4"}\n'),
     stderr: Buffer.from('stderr'),
     exitCode: 0,
     signal: null,
@@ -182,6 +183,67 @@ void describe('fusion artifacts', () => {
       assert.ok(typeof artifacts === 'object' && artifacts !== null);
       assert.ok(Reflect.has(artifacts, 'canonical-input.json'));
       assert.equal(Reflect.has(artifacts, 'candidate-1.attempt-1.tool-calls.jsonl'), false);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  void it('records same-session output recovery without putting original text in the manifest', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'pi-fusion-artifacts-output-recovery-'));
+    try {
+      const store = await FusionArtifactStore.create({
+        cwd: root,
+        runId: 'reason-00000000000000000000000000000002',
+        source: 'command',
+        config: defaultFusionModelConfig(),
+        models: models(),
+      });
+      const result = childResult('candidate', 'compressed answer');
+      const original = 'o'.repeat(50_000);
+      result.outputRecovery = {
+        kind: 'same_session_compression',
+        limit_bytes: 49_152,
+        original_record_index: 0,
+        replacement_record_index: 1,
+        original_json_rendered_bytes: 50_002,
+        replacement_json_rendered_bytes: 19,
+        original_text_sha256: createHash('sha256').update(original).digest('hex'),
+        original_text: original,
+        status: 'completed',
+      };
+      await store.recordChildAttempt({
+        result,
+        systemPrompt: 'system prompt',
+        prompt: 'prompt',
+        responseKind: 'md',
+      });
+      assert.equal(
+        await readFile(
+          join(store.artifactDirAbs, 'candidate-1.attempt-1.response.oversized.md'),
+          'utf8',
+        ),
+        original,
+      );
+      const manifest = parseManifest(
+        await readFile(join(store.artifactDirAbs, 'manifest.json'), 'utf8'),
+      );
+      const attempts = field(manifest, 'attempts');
+      assert.ok(Array.isArray(attempts));
+      const attempt: unknown = attempts[0];
+      assert.ok(typeof attempt === 'object' && attempt !== null);
+      assert.equal(field(attempt, 'child_created'), true);
+      assert.deepEqual(field(attempt, 'output_recovery'), {
+        kind: 'same_session_compression',
+        status: 'completed',
+        limit_bytes: 49_152,
+        original_response_path: 'candidate-1.attempt-1.response.oversized.md',
+        original_record_index: 0,
+        replacement_record_index: 1,
+        original_json_rendered_bytes: 50_002,
+        replacement_json_rendered_bytes: 19,
+        original_text_sha256: createHash('sha256').update(original).digest('hex'),
+      });
+      assert.equal(JSON.stringify(manifest).includes(original), false);
     } finally {
       await rm(root, { recursive: true, force: true });
     }
@@ -366,6 +428,7 @@ void describe('fusion artifacts', () => {
         stderr: Buffer.from('err'),
         error: 'boom',
         status: 'failed',
+        childCreated: true,
         responseKind: 'md',
         provider: 'p',
         model: 'b',
@@ -388,9 +451,10 @@ void describe('fusion artifacts', () => {
       assert.equal(field(manifest, 'error'), 'boom');
       const attempts = field(manifest, 'attempts');
       assert.ok(Array.isArray(attempts));
-      const firstAttempt = attempts[0];
+      const firstAttempt: unknown = attempts[0];
       assert.ok(typeof firstAttempt === 'object' && firstAttempt !== null);
       assert.equal(field(firstAttempt, 'status'), 'failed');
+      assert.equal(field(firstAttempt, 'child_created'), true);
       assert.equal(field(firstAttempt, 'response_path'), 'candidate-2.attempt-1.response.md');
       assert.equal(
         field(firstAttempt, 'partial_response_path'),

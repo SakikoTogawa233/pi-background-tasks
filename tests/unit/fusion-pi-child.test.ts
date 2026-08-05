@@ -36,6 +36,9 @@ import {
   type ResolvedFusionModel,
 } from '../../src/core/fusion/types.js';
 import fusionChildExtension, {
+  FUSION_CANDIDATE_MAX_OUTPUT_BYTES,
+  FUSION_CANDIDATE_OUTPUT_COMPRESSION_PROMPT,
+  FUSION_CANDIDATE_OUTPUT_RECOVERY_PATH_ENV,
   FUSION_CHILD_MAX_PROVIDER_REQUESTS,
   FUSION_CHILD_MAX_TOOL_CALLS,
   FUSION_CLAUDE_CACHE_OBSERVATION_SCHEMA_VERSION,
@@ -176,6 +179,8 @@ function compactFrame(input: {
   stopReason: string;
   usage: Usage;
   requestOrdinal?: number;
+  candidateLimitBytes?: number | null;
+  recoveryRole?: 'none' | 'oversized_original' | 'replacement';
 }): string {
   const provider = input.provider ?? 'openai-codex';
   const record = buildFusionChildResultMetadata(
@@ -187,6 +192,10 @@ function compactFrame(input: {
       usage: input.usage,
     },
     cacheObservation(provider, input.requestOrdinal),
+    {
+      candidateLimitBytes: input.candidateLimitBytes ?? null,
+      recoveryRole: input.recoveryRole ?? 'none',
+    },
   );
   return `${FUSION_CHILD_RESULT_PREFIX}${JSON.stringify(record)}\n`;
 }
@@ -701,6 +710,111 @@ void describe('fusion Pi child runner', () => {
     }
   });
 
+  void it('queues exactly one same-session no-tool compression turn and seals both records', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'pi-fusion-output-recovery-hook-'));
+    const priorPath = process.env[FUSION_CANDIDATE_OUTPUT_RECOVERY_PATH_ENV];
+    const oldExitCode = process.exitCode;
+    const originalWrite = process.stderr.write.bind(process.stderr);
+    const stderrChunks: Buffer[] = [];
+    try {
+      const recoveryPath = join(root, 'candidate.response.oversized.md');
+      process.env[FUSION_CANDIDATE_OUTPUT_RECOVERY_PATH_ENV] = recoveryPath;
+      process.stderr.write = ((
+        chunk: Uint8Array | string,
+        callback?: (error?: Error | null) => void,
+      ): boolean => {
+        stderrChunks.push(
+          typeof chunk === 'string' ? Buffer.from(chunk, 'utf8') : Buffer.from(chunk),
+        );
+        callback?.(null);
+        return true;
+      }) as typeof process.stderr.write;
+      type FusionChildPi = Parameters<typeof fusionChildExtension>[0];
+      type RecordedHandler = (event: object, context?: object) => unknown;
+      const handlers = new Map<string, RecordedHandler[]>();
+      const activeToolSets: string[][] = [];
+      const followUps: Array<{ message: string; deliverAs: string | undefined }> = [];
+      const recorder = {
+        on(event: string, handler: RecordedHandler) {
+          handlers.set(event, [...(handlers.get(event) ?? []), handler]);
+        },
+        setActiveTools(names: string[]) {
+          activeToolSets.push([...names]);
+        },
+        sendUserMessage(message: string, options?: { deliverAs?: string }) {
+          followUps.push({ message, deliverAs: options?.deliverAs });
+        },
+      };
+      fusionChildExtension(recorder as typeof recorder & FusionChildPi);
+      const beforeProvider = handlers.get('before_provider_request')?.[0];
+      const messageEnd = handlers.get('message_end')?.[0];
+      const agentSettled = handlers.get('agent_settled')?.[0];
+      assert.ok(beforeProvider);
+      assert.ok(messageEnd);
+      assert.ok(agentSettled);
+      const original = 'x'.repeat(FUSION_CANDIDATE_MAX_OUTPUT_BYTES);
+      await Promise.resolve(
+        beforeProvider({ payload: { input: 'first' } }, fusionExtensionEventContext),
+      );
+      await Promise.resolve(
+        messageEnd({
+          message: {
+            role: 'assistant',
+            provider: 'openai-codex',
+            model: 'gpt-5.5',
+            stopReason: 'stop',
+            content: [{ type: 'text', text: original }],
+            usage: piUsage(3, 4, 7),
+          },
+        }),
+      );
+      assert.deepEqual(activeToolSets, [[]]);
+      assert.deepEqual(followUps, [
+        { message: FUSION_CANDIDATE_OUTPUT_COMPRESSION_PROMPT, deliverAs: 'followUp' },
+      ]);
+      assert.equal(await readFile(recoveryPath, 'utf8'), original);
+
+      await Promise.resolve(
+        beforeProvider({ payload: { input: 'second' } }, fusionExtensionEventContext),
+      );
+      await Promise.resolve(
+        messageEnd({
+          message: {
+            role: 'assistant',
+            provider: 'openai-codex',
+            model: 'gpt-5.5',
+            stopReason: 'stop',
+            content: [{ type: 'text', text: 'compressed' }],
+            usage: piUsage(5, 2, 7),
+          },
+        }),
+      );
+      await Promise.resolve(agentSettled({}, { isIdle: () => true }));
+
+      const stderr = Buffer.concat(stderrChunks);
+      const parsed = parseFusionChildStderr(stderr);
+      assert.equal(parsed.records.length, 2);
+      assert.equal(parsed.records[0]?.output_contract.recovery_role, 'oversized_original');
+      assert.equal(
+        parsed.records[0].output_contract.json_rendered_bytes,
+        FUSION_CANDIDATE_MAX_OUTPUT_BYTES + 2,
+      );
+      assert.equal(parsed.records[1]?.output_contract.recovery_role, 'replacement');
+      const settlement = parseFusionChildSettlement(stderr);
+      assert.ok(settlement);
+      assert.equal(settlement.status, 'complete');
+      assert.deepEqual(settlement.recovered_output_cap_ordinals, [0]);
+      assert.equal(process.exitCode, oldExitCode);
+    } finally {
+      process.stderr.write = originalWrite;
+      process.exitCode = oldExitCode;
+      if (priorPath === undefined)
+        Reflect.deleteProperty(process.env, FUSION_CANDIDATE_OUTPUT_RECOVERY_PATH_ENV);
+      else process.env[FUSION_CANDIDATE_OUTPUT_RECOVERY_PATH_ENV] = priorPath;
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   void it('aborts an invalid Claude cache policy before provider transport', async () => {
     const priorRetention = process.env['PI_CACHE_RETENTION'];
     const oldExitCode = process.exitCode;
@@ -860,6 +974,7 @@ void describe('fusion Pi child runner', () => {
       Anthropic_Api_Key: 'mixed-case-key',
       ANTHROPIC_OAUTH_TOKEN: 'subscription-oauth',
       [FUSION_CLAUDE_CACHE_RETENTION_ENV]: 'long',
+      [FUSION_CANDIDATE_OUTPUT_RECOVERY_PATH_ENV]: '/tmp/inherited-recovery.md',
       UNRELATED_ENV: 'preserved',
     });
     assert.equal(env['PI_SESSION_ID'], undefined);
@@ -874,6 +989,7 @@ void describe('fusion Pi child runner', () => {
     assert.equal(env[FUSION_CLAUDE_CACHE_RETENTION_ENV], 'long');
     assert.equal(env['UNRELATED_ENV'], 'preserved');
     assert.equal(env[FUSION_TOOL_CALL_LOG_PATH_ENV], undefined);
+    assert.equal(env[FUSION_CANDIDATE_OUTPUT_RECOVERY_PATH_ENV], undefined);
     assert.equal(env['PI_SKIP_VERSION_CHECK'], '1');
   });
 
@@ -1642,7 +1758,7 @@ void describe('fusion Pi child runner', () => {
     });
     assert.equal(result.stderr.toString('utf8'), 'diagnostic');
     assert.equal(result.events.toString('utf8').split('\n').filter(Boolean).length, 3);
-    assert.match(result.events.toString('utf8'), /fusion-child-settlement\.v2/);
+    assert.match(result.events.toString('utf8'), /fusion-child-settlement\.v3/);
     assert.doesNotMatch(result.events.toString('utf8'), /final héllo/);
   });
 
@@ -2638,6 +2754,239 @@ void describe('fusion Pi child runner', () => {
       () => parseFusionChildStderr(Buffer.from(`${FUSION_CHILD_RESULT_PREFIX}{}`)),
       /newline-terminated/,
     );
+  });
+
+  void it('verifies and returns a same-session compressed candidate plus its original artifact', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'pi-fusion-output-recovery-parent-'));
+    try {
+      const original = 'x'.repeat(FUSION_CANDIDATE_MAX_OUTPUT_BYTES);
+      const replacement = 'compact final';
+      const recoveryPath = join(root, 'candidate.response.oversized.md');
+      await writeFile(recoveryPath, original, 'utf8');
+      const frames =
+        compactFrame({
+          text: original,
+          stopReason: 'stop',
+          usage: piUsage(3, 4, 7),
+          requestOrdinal: 1,
+          candidateLimitBytes: FUSION_CANDIDATE_MAX_OUTPUT_BYTES,
+          recoveryRole: 'oversized_original',
+        }) +
+        compactFrame({
+          text: replacement,
+          stopReason: 'stop',
+          usage: piUsage(5, 2, 7),
+          requestOrdinal: 2,
+          candidateLimitBytes: FUSION_CANDIDATE_MAX_OUTPUT_BYTES,
+          recoveryRole: 'replacement',
+        });
+      const child = new FakeChild(700);
+      const harness = makeSpawn(child);
+      const run = runPiChild({
+        stage: 'candidate',
+        slot: 1,
+        attempt: 1,
+        cwd: root,
+        model: resolvedModel(),
+        systemPrompt: 'system',
+        userPrompt: 'prompt',
+        candidateOutputRecoveryPath: recoveryPath,
+        spawn: harness.spawn,
+        platform: 'win32',
+      });
+      await tick();
+      child.stdout.emitData(`${replacement}\n`);
+      child.stderr.emitData(withSettlement(frames));
+      child.close(0, null);
+      const result = await run;
+      assert.equal(result.text, replacement);
+      assert.equal(result.providerRequestCount, 2);
+      assert.equal(result.usage.totalTokens, 14);
+      assert.deepEqual(result.outputRecovery, {
+        kind: 'same_session_compression',
+        limit_bytes: FUSION_CANDIDATE_MAX_OUTPUT_BYTES,
+        original_record_index: 0,
+        replacement_record_index: 1,
+        original_json_rendered_bytes: FUSION_CANDIDATE_MAX_OUTPUT_BYTES + 2,
+        replacement_json_rendered_bytes: Buffer.byteLength(JSON.stringify(replacement), 'utf8'),
+        original_text_sha256: createHash('sha256').update(original).digest('hex'),
+        original_text: original,
+        status: 'completed',
+      });
+      assert.equal(
+        Reflect.get(
+          harness.records[0]?.options.env ?? {},
+          FUSION_CANDIDATE_OUTPUT_RECOVERY_PATH_ENV,
+        ),
+        recoveryPath,
+      );
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  void it('rejects a tampered oversized-original artifact before accepting the replacement', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'pi-fusion-output-recovery-tamper-'));
+    try {
+      const original = 'x'.repeat(FUSION_CANDIDATE_MAX_OUTPUT_BYTES);
+      const replacement = 'compact final';
+      const recoveryPath = join(root, 'candidate.response.oversized.md');
+      await writeFile(recoveryPath, `${original}tampered`, 'utf8');
+      const frames =
+        compactFrame({
+          text: original,
+          stopReason: 'stop',
+          usage: piUsage(3, 4, 7),
+          requestOrdinal: 1,
+          candidateLimitBytes: FUSION_CANDIDATE_MAX_OUTPUT_BYTES,
+          recoveryRole: 'oversized_original',
+        }) +
+        compactFrame({
+          text: replacement,
+          stopReason: 'stop',
+          usage: piUsage(5, 2, 7),
+          requestOrdinal: 2,
+          candidateLimitBytes: FUSION_CANDIDATE_MAX_OUTPUT_BYTES,
+          recoveryRole: 'replacement',
+        });
+      const child = new FakeChild(703);
+      const harness = makeSpawn(child);
+      const run = runPiChild({
+        stage: 'candidate',
+        slot: 1,
+        attempt: 1,
+        cwd: root,
+        model: resolvedModel(),
+        systemPrompt: 'system',
+        userPrompt: 'prompt',
+        candidateOutputRecoveryPath: recoveryPath,
+        spawn: harness.spawn,
+        platform: 'win32',
+      });
+      await tick();
+      child.stdout.emitData(`${replacement}\n`);
+      child.stderr.emitData(withSettlement(frames));
+      child.close(0, null);
+      await assert.rejects(run, (error: unknown) => {
+        assert.ok(error instanceof FusionChildRunError);
+        assert.equal(error.code, 'child_event_invalid');
+        assert.match(error.message, /artifact hash mismatch/);
+        return true;
+      });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  void it('hard-fails after one still-oversized replacement and preserves both responses', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'pi-fusion-output-recovery-failed-'));
+    try {
+      const original = 'o'.repeat(FUSION_CANDIDATE_MAX_OUTPUT_BYTES);
+      const replacement = 'r'.repeat(FUSION_CANDIDATE_MAX_OUTPUT_BYTES);
+      const recoveryPath = join(root, 'candidate.response.oversized.md');
+      await writeFile(recoveryPath, original, 'utf8');
+      const frames =
+        compactFrame({
+          text: original,
+          stopReason: 'stop',
+          usage: piUsage(3, 4, 7),
+          requestOrdinal: 1,
+          candidateLimitBytes: FUSION_CANDIDATE_MAX_OUTPUT_BYTES,
+          recoveryRole: 'oversized_original',
+        }) +
+        compactFrame({
+          text: replacement,
+          stopReason: 'stop',
+          usage: piUsage(5, 6, 11),
+          requestOrdinal: 2,
+          candidateLimitBytes: FUSION_CANDIDATE_MAX_OUTPUT_BYTES,
+          recoveryRole: 'replacement',
+        });
+      const child = new FakeChild(701);
+      const harness = makeSpawn(child);
+      const run = runPiChild({
+        stage: 'candidate',
+        slot: 2,
+        attempt: 1,
+        cwd: root,
+        model: resolvedModel(),
+        systemPrompt: 'system',
+        userPrompt: 'prompt',
+        candidateOutputRecoveryPath: recoveryPath,
+        spawn: harness.spawn,
+        platform: 'win32',
+      });
+      await tick();
+      child.stdout.emitData(`${replacement}\n`);
+      child.stderr.emitData(withSettlement(frames));
+      child.close(1, null);
+      await assert.rejects(run, (error: unknown) => {
+        assert.ok(error instanceof FusionChildRunError);
+        assert.equal(error.code, 'child_output_cap');
+        assert.match(error.message, /both responses are preserved and nothing was truncated/);
+        assert.equal(error.response.toString('utf8'), `${replacement}\n`);
+        assert.equal(error.usage.totalTokens, 18);
+        const recovery = error.outputRecovery;
+        assert.ok(recovery);
+        assert.equal(recovery.status, 'failed');
+        assert.equal(recovery.original_text, original);
+        assert.equal(recovery.replacement_record_index, 1);
+        return true;
+      });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  void it('retains a hash-verified oversized original when cancellation interrupts compression', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'pi-fusion-output-recovery-cancel-'));
+    try {
+      const original = 'c'.repeat(FUSION_CANDIDATE_MAX_OUTPUT_BYTES);
+      const recoveryPath = join(root, 'candidate.response.oversized.md');
+      await writeFile(recoveryPath, original, 'utf8');
+      const originalFrame = compactFrame({
+        text: original,
+        stopReason: 'stop',
+        usage: piUsage(3, 4, 7),
+        requestOrdinal: 1,
+        candidateLimitBytes: FUSION_CANDIDATE_MAX_OUTPUT_BYTES,
+        recoveryRole: 'oversized_original',
+      });
+      const child = new FakeChild(702);
+      const harness = makeSpawn(child);
+      const controller = new AbortController();
+      const run = runPiChild({
+        stage: 'candidate',
+        slot: 3,
+        attempt: 1,
+        cwd: root,
+        model: resolvedModel(),
+        systemPrompt: 'system',
+        userPrompt: 'prompt',
+        candidateOutputRecoveryPath: recoveryPath,
+        signal: controller.signal,
+        spawn: harness.spawn,
+        platform: 'win32',
+        killGraceMs: 20,
+        sigkillWaitMs: 20,
+      });
+      await tick();
+      child.stderr.emitData(originalFrame);
+      controller.abort();
+      child.close(null, 'SIGTERM');
+      await assert.rejects(run, (error: unknown) => {
+        assert.ok(error instanceof FusionChildRunError);
+        assert.equal(error.code, 'child_cancelled');
+        const recovery = error.outputRecovery;
+        assert.ok(recovery);
+        assert.equal(recovery.status, 'failed');
+        assert.equal(recovery.replacement_record_index, null);
+        assert.equal(recovery.original_text, original);
+        return true;
+      });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
   });
 
   void it('rejects stdin write failures and terminates the child loudly', async () => {

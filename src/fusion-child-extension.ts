@@ -8,7 +8,7 @@ import {
   readFileSync,
   writeSync,
 } from 'node:fs';
-import { dirname } from 'node:path';
+import { dirname, isAbsolute } from 'node:path';
 import { parseJsonText } from './core/common.js';
 import type { ExtensionAPI } from '@earendil-works/pi-coding-agent';
 import { Type, type Static } from 'typebox';
@@ -38,6 +38,7 @@ import {
   type FusionClaudeCacheObservation,
 } from './core/fusion/claude-cache.js';
 import {
+  FUSION_CANDIDATE_OUTPUT_RECOVERY_PATH_ENV,
   FUSION_CHILD_MAX_PROVIDER_REQUESTS,
   FUSION_CHILD_MAX_TOOL_CALLS,
   FUSION_CHILD_MAX_TOTAL_TOOL_RESULT_BYTES,
@@ -60,6 +61,11 @@ import {
   type FusionRuntimeGuardCode,
   type FusionRuntimeGuardRecord,
 } from './core/fusion/child-protocol.js';
+import {
+  FUSION_CANDIDATE_MAX_OUTPUT_BYTES,
+  FUSION_CANDIDATE_OUTPUT_COMPRESSION_PROMPT,
+  fusionJsonRenderedTextBytes,
+} from './core/fusion/output-contract.js';
 
 export {
   FUSION_CLAUDE_CACHE_BREAKPOINT_LIMIT,
@@ -78,6 +84,7 @@ export {
 } from './core/fusion/claude-cache.js';
 
 export {
+  FUSION_CANDIDATE_OUTPUT_RECOVERY_PATH_ENV,
   FUSION_CHILD_MAX_PROVIDER_REQUESTS,
   FUSION_CHILD_MAX_TOOL_CALLS,
   FUSION_CHILD_MAX_TOTAL_TOOL_RESULT_BYTES,
@@ -105,6 +112,12 @@ export {
   type FusionRuntimeGuardCode,
   type FusionRuntimeGuardRecord,
 } from './core/fusion/child-protocol.js';
+
+export {
+  FUSION_CANDIDATE_MAX_OUTPUT_BYTES,
+  FUSION_CANDIDATE_OUTPUT_COMPRESSION_PROMPT,
+  fusionJsonRenderedTextBytes,
+} from './core/fusion/output-contract.js';
 
 const FUSION_CHILD_O_NOFOLLOW = typeof constants.O_NOFOLLOW === 'number' ? constants.O_NOFOLLOW : 0;
 
@@ -250,6 +263,24 @@ function createToolCallLog(path: string): void {
     0o600,
     'fusion tool-call log',
     (fd) => {
+      fsyncSync(fd);
+    },
+  );
+  fsyncParentDirectorySync(path);
+}
+
+function createCandidateOutputRecoveryArtifact(path: string, text: string): void {
+  if (!isAbsolute(path)) {
+    throw new Error(`${FUSION_CANDIDATE_OUTPUT_RECOVERY_PATH_ENV} must be an absolute path`);
+  }
+  const bytes = Buffer.from(text, 'utf8');
+  withRegularFileDescriptorSync(
+    path,
+    constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | FUSION_CHILD_O_NOFOLLOW,
+    0o600,
+    'fusion oversized candidate response',
+    (fd) => {
+      writeAllSync(fd, bytes, 'fusion oversized candidate response');
       fsyncSync(fd);
     },
   );
@@ -673,6 +704,15 @@ function fusionWebFetchResultText(result: Awaited<ReturnType<typeof fusionWebFet
  */
 export default function fusionChildExtension(pi: ExtensionAPI): void {
   const toolCallLogPath = process.env[FUSION_TOOL_CALL_LOG_PATH_ENV];
+  const candidateOutputRecoveryPath = process.env[FUSION_CANDIDATE_OUTPUT_RECOVERY_PATH_ENV];
+  if (
+    candidateOutputRecoveryPath !== undefined &&
+    (candidateOutputRecoveryPath.trim().length === 0 || !isAbsolute(candidateOutputRecoveryPath))
+  ) {
+    throw new Error(
+      `${FUSION_CANDIDATE_OUTPUT_RECOVERY_PATH_ENV} must be an absolute non-blank path`,
+    );
+  }
   const researchEnabled = process.env[FUSION_RESEARCH_ENABLED_ENV];
   if (researchEnabled !== undefined && researchEnabled !== '1') {
     throw new Error(`${FUSION_RESEARCH_ENABLED_ENV} must be unset or exactly 1`);
@@ -687,6 +727,8 @@ export default function fusionChildExtension(pi: ExtensionAPI): void {
   let providerRequestCount = 0;
   let toolCallCount = 0;
   let runtimeGuardFailed = false;
+  let outputRecoveryFailed = false;
+  let outputRecoveryPhase: 'eligible' | 'queued' | 'finished' = 'eligible';
   let settlementPublished = false;
   const childResultRecords: FusionChildResultMetadata[] = [];
   let pendingCacheObservation: FusionClaudeCacheObservation | undefined;
@@ -828,6 +870,15 @@ export default function fusionChildExtension(pi: ExtensionAPI): void {
     pi.on('tool_call', async (event, ctx) => {
       try {
         requireOpen('tool_call');
+        if (outputRecoveryPhase === 'queued') {
+          outputRecoveryFailed = true;
+          latchAuditProcessFailure();
+          ctx.abort();
+          return {
+            block: true,
+            reason: 'fusion candidate output compression is a no-tool continuation',
+          };
+        }
         if (runtimeGuardFailed) {
           ctx.abort();
           return { block: true, reason: 'fusion child runtime guard already refused the run' };
@@ -996,9 +1047,58 @@ export default function fusionChildExtension(pi: ExtensionAPI): void {
       throw new Error('fusion child assistant result has no matching cache-policy observation');
     }
     pendingCacheObservation = undefined;
-    const record = buildFusionChildResultMetadata(event.message, cacheObservation);
+    const text = event.message.content
+      .flatMap((part) => (part.type === 'text' ? [part.text] : []))
+      .join('');
+    const renderedBytes = fusionJsonRenderedTextBytes(text);
+    const isReplacement = outputRecoveryPhase === 'queued';
+    const shouldRecover =
+      candidateOutputRecoveryPath !== undefined &&
+      outputRecoveryPhase === 'eligible' &&
+      event.message.stopReason === 'stop' &&
+      renderedBytes > FUSION_CANDIDATE_MAX_OUTPUT_BYTES;
+    const recoveryRole = isReplacement
+      ? 'replacement'
+      : shouldRecover
+        ? 'oversized_original'
+        : 'none';
+    const record = buildFusionChildResultMetadata(event.message, cacheObservation, {
+      candidateLimitBytes:
+        candidateOutputRecoveryPath === undefined ? null : FUSION_CANDIDATE_MAX_OUTPUT_BYTES,
+      recoveryRole,
+    });
+    if (shouldRecover) {
+      try {
+        createCandidateOutputRecoveryArtifact(candidateOutputRecoveryPath, text);
+      } catch (error) {
+        outputRecoveryFailed = true;
+        latchAuditProcessFailure();
+        throw error;
+      }
+    }
     await writeMetadata(record);
     childResultRecords.push(record);
+    if (shouldRecover) {
+      outputRecoveryPhase = 'queued';
+      try {
+        pi.setActiveTools([]);
+        pi.sendUserMessage(FUSION_CANDIDATE_OUTPUT_COMPRESSION_PROMPT, {
+          deliverAs: 'followUp',
+        });
+      } catch (error) {
+        outputRecoveryFailed = true;
+        latchAuditProcessFailure();
+        throw error;
+      }
+      return;
+    }
+    if (isReplacement) {
+      outputRecoveryPhase = 'finished';
+      if (renderedBytes > FUSION_CANDIDATE_MAX_OUTPUT_BYTES) {
+        outputRecoveryFailed = true;
+        latchAuditProcessFailure();
+      }
+    }
   });
   pi.on('agent_settled', async (_event, ctx) => {
     if (settlementPublished) {
@@ -1015,6 +1115,7 @@ export default function fusionChildExtension(pi: ExtensionAPI): void {
       childResultRecords,
       runtimeGuardFailed,
       cacheObservationFailed,
+      outputRecoveryFailed,
     );
     if (settlement.status !== 'complete') latchAuditProcessFailure();
     await writeSettlement(settlement);
