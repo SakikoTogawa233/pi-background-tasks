@@ -1051,6 +1051,26 @@ void describe('package', () => {
     assert.match(fusionFacade, /onReady/);
   });
 
+  void it('BUG-185 keeps post-launch Fusion guards free of token/output reservation admission', async () => {
+    const child = await text('src/fusion-child-extension.ts');
+    const protocol = await text('src/core/fusion/child-protocol.ts');
+    const parent = await text('src/core/fusion/pi-child.ts');
+    const types = await text('src/core/fusion/types.ts');
+
+    assert.doesNotMatch(
+      child,
+      /estimateInputTokens|knownJsonSegment|resolveTokenBudgetFamily|contextWindowTokens|maxOutputTokens|provider_request_budget|estimated_input_tokens|allowed_input_tokens|reserved_output_tokens|safety_reserve_tokens/,
+    );
+    assert.doesNotMatch(
+      protocol,
+      /provider_request_budget|estimated_input_tokens|allowed_input_tokens|reserved_output_tokens|safety_reserve_tokens|FUSION_CHILD_MIN_OUTPUT_RESERVE_TOKENS|FUSION_CHILD_SAFETY_RESERVE_TOKENS/,
+    );
+    assert.doesNotMatch(parent, /child_runtime_budget_exceeded|allowed-input arithmetic/);
+    assert.match(protocol, /pi-background-tasks\.fusion-runtime-guard\.v2/);
+    assert.match(types, /child_runtime_limit_exceeded/);
+    assert.match(types, /child_runtime_payload_invalid/);
+  });
+
   void it('keeps the Fusion context/budget path free of silent truncation and fallback shapes', async () => {
     const context = await text('src/core/fusion/context.ts');
     const budget = await text('src/core/fusion/budget.ts');

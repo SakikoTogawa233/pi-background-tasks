@@ -297,14 +297,27 @@ void describe('fusion Pi child runner', () => {
     assert.equal(FUSION_CHILD_IDLE_TIMEOUT_MS, 20 * 60 * 1000);
   });
 
-  void it('blocks an oversized final provider payload before transport with route-aware output reservation', () => {
+  void it('BUG-185 never rejects a provider request by subtracting possible output from context', () => {
+    const input = {
+      payload: { input: 'x '.repeat(300_000) },
+      provider: 'openai-codex',
+      model: 'gpt-5.6-terra',
+      contextWindowTokens: 272_000,
+      maxOutputTokens: 128_000,
+      requestOrdinal: 23,
+      toolCallCount: 133,
+    };
+
+    assert.equal(prepareFusionRuntimeRequest(input).guard, undefined);
+    assert.equal(evaluateFusionRuntimeRequest(input), undefined);
+  });
+
+  void it('stably clones provider payloads and preserves only explicit execution-limit guards', () => {
     const originalPayload = { input: 'small request' };
     const prepared = prepareFusionRuntimeRequest({
       payload: originalPayload,
       provider: 'openai-codex',
       model: 'gpt-5.6-terra',
-      contextWindowTokens: 272_000,
-      maxOutputTokens: 128_000,
       requestOrdinal: 1,
       toolCallCount: 0,
     });
@@ -313,7 +326,7 @@ void describe('fusion Pi child runner', () => {
     assert.notEqual(
       prepared.payload,
       originalPayload,
-      'transport receives the measured JSON clone',
+      'transport receives the validated JSON clone',
     );
 
     let toJsonCalls = 0;
@@ -326,8 +339,6 @@ void describe('fusion Pi child runner', () => {
       },
       provider: 'openai-codex',
       model: 'gpt-5.6-terra',
-      contextWindowTokens: 272_000,
-      maxOutputTokens: 128_000,
       requestOrdinal: 1,
       toolCallCount: 0,
     });
@@ -335,41 +346,22 @@ void describe('fusion Pi child runner', () => {
     assert.deepEqual(stateful.payload, { input: 'measured once' });
     assert.equal(toJsonCalls, 1);
 
-    const allowed = evaluateFusionRuntimeRequest({
-      payload: originalPayload,
-      provider: 'openai-codex',
-      model: 'gpt-5.6-terra',
-      contextWindowTokens: 272_000,
-      maxOutputTokens: 128_000,
-      requestOrdinal: 1,
-      toolCallCount: 0,
-    });
-    assert.equal(allowed, undefined);
-
     const blocked = evaluateFusionRuntimeRequest({
       payload: { input: 'x '.repeat(300_000) },
       provider: 'openai-codex',
       model: 'gpt-5.6-terra',
-      contextWindowTokens: 272_000,
-      maxOutputTokens: 128_000,
-      requestOrdinal: 23,
+      requestOrdinal: FUSION_CHILD_MAX_PROVIDER_REQUESTS + 1,
       toolCallCount: 133,
     });
     assert.ok(blocked);
-    assert.equal(blocked.code, 'provider_request_budget');
-    assert.equal(blocked.allowed_input_tokens, 139_904);
-    assert.equal(blocked.reserved_output_tokens, 128_000);
-    assert.ok(blocked.estimated_input_tokens > blocked.allowed_input_tokens);
-    assert.match(blocked.message, /blocked provider request 23 before transport/);
+    assert.equal(blocked.code, 'provider_request_limit');
+    assert.ok(blocked.payload_bytes > 600_000);
+    assert.match(blocked.message, /provider request 129/);
     assert.doesNotMatch(blocked.message, /x x x/);
 
     const frame = Buffer.from(`${FUSION_RUNTIME_GUARD_PREFIX}${JSON.stringify(blocked)}\n`, 'utf8');
     assert.deepEqual(parseFusionRuntimeGuard(frame), blocked);
-    const route = {
-      ...resolvedModel('openai-codex', 'gpt-5.6-terra'),
-      contextWindow: 272_000,
-      maxOutputTokens: 128_000,
-    };
+    const route = resolvedModel('openai-codex', 'gpt-5.6-terra');
     assert.doesNotThrow(() => assertFusionRuntimeGuardMatchesModel(blocked, route));
     assert.throws(
       () => assertFusionRuntimeGuardMatchesModel({ ...blocked, model: 'substituted-model' }, route),
@@ -386,7 +378,7 @@ void describe('fusion Pi child runner', () => {
       /unknown key|keys mismatch/,
     );
     assert.throws(
-      () => parseFusionRuntimeGuard(malformed({ ...blocked, code: 'unsupported' })),
+      () => parseFusionRuntimeGuard(malformed({ ...blocked, code: 'provider_request_budget' })),
       /code is unsupported/,
     );
     assert.throws(
@@ -394,43 +386,34 @@ void describe('fusion Pi child runner', () => {
       /request_ordinal must be a positive/,
     );
     assert.throws(
-      () =>
-        parseFusionRuntimeGuard(
-          malformed({ ...blocked, estimated_input_tokens: blocked.allowed_input_tokens }),
-        ),
-      /has no token overage/,
+      () => parseFusionRuntimeGuard(malformed({ ...blocked, allowed_input_tokens: 139_904 })),
+      /unknown key|keys mismatch/,
     );
   });
 
-  void it('fails closed for provider request loops and invalid payload capacity', () => {
+  void it('fails closed for provider/tool loops and malformed provider payloads', () => {
     const limited = evaluateFusionRuntimeRequest({
       payload: { input: 'small' },
       provider: 'openai-codex',
       model: 'gpt-5.6-terra',
-      contextWindowTokens: 272_000,
-      maxOutputTokens: 128_000,
       requestOrdinal: FUSION_CHILD_MAX_PROVIDER_REQUESTS + 1,
       toolCallCount: 10,
     });
     assert.equal(limited?.code, 'provider_request_limit');
 
-    const invalid = evaluateFusionRuntimeRequest({
+    const missingModel = evaluateFusionRuntimeRequest({
       payload: { input: 'small' },
-      provider: 'openai-codex',
-      model: 'gpt-5.6-terra',
-      contextWindowTokens: 100_000,
-      maxOutputTokens: 128_000,
+      provider: undefined,
+      model: undefined,
       requestOrdinal: 1,
       toolCallCount: 0,
     });
-    assert.equal(invalid?.code, 'provider_payload_invalid');
-    assert.match(invalid?.message ?? '', /no safe provider input capacity/);
+    assert.equal(missingModel?.code, 'provider_payload_invalid');
+    assert.match(missingModel.message, /active model is unavailable/);
     const nonObject = prepareFusionRuntimeRequest({
       payload: 'not an object',
       provider: 'openai-codex',
       model: 'gpt-5.6-terra',
-      contextWindowTokens: 272_000,
-      maxOutputTokens: 128_000,
       requestOrdinal: 1,
       toolCallCount: 0,
     });
@@ -441,8 +424,6 @@ void describe('fusion Pi child runner', () => {
       evaluateFusionRuntimeToolLimit({
         provider: 'openai-codex',
         model: 'gpt-5.6-terra',
-        contextWindowTokens: 272_000,
-        maxOutputTokens: 128_000,
         requestOrdinal: 12,
         toolCallCount: FUSION_CHILD_MAX_TOOL_CALLS,
       }),
@@ -451,8 +432,6 @@ void describe('fusion Pi child runner', () => {
     const toolLimited = evaluateFusionRuntimeToolLimit({
       provider: 'openai-codex',
       model: 'gpt-5.6-terra',
-      contextWindowTokens: 272_000,
-      maxOutputTokens: 128_000,
       requestOrdinal: 12,
       toolCallCount: FUSION_CHILD_MAX_TOOL_CALLS + 1,
     });
@@ -2529,8 +2508,11 @@ void describe('fusion Pi child runner', () => {
       assert.ok(beforeProvider);
       assert.ok(messageEnd);
       assert.ok(agentSettled);
+      let aborts = 0;
       const providerContext = {
-        abort: () => undefined,
+        abort: () => {
+          aborts += 1;
+        },
         model: {
           provider: 'p',
           id: 'm',
@@ -2538,7 +2520,10 @@ void describe('fusion Pi child runner', () => {
           maxTokens: 32_768,
         },
       };
-      await Promise.resolve(beforeProvider({ payload: { input: 'retry' } }, providerContext));
+      await Promise.resolve(
+        beforeProvider({ payload: { input: 'x '.repeat(300_000) } }, providerContext),
+      );
+      assert.equal(aborts, 0, 'BUG-185 large stable payload must continue to provider handling');
       await Promise.resolve(
         messageEnd({
           message: {
@@ -3074,7 +3059,7 @@ void describe('fusion Pi child runner', () => {
     assert.deepEqual(child.killCalls, ['SIGTERM', 'SIGKILL']);
   });
 
-  void it('surfaces a typed runtime-budget refusal instead of a generic exit code', async () => {
+  void it('surfaces a typed runtime request-limit refusal instead of a generic exit code', async () => {
     const child = new FakeChild(110);
     const harness = makeSpawn(child);
     const run = runPiChild({
@@ -3095,9 +3080,7 @@ void describe('fusion Pi child runner', () => {
       payload: { input: 'x '.repeat(300_000) },
       provider: 'openai-codex',
       model: 'gpt-5.5',
-      contextWindowTokens: 100_000,
-      maxOutputTokens: 32_768,
-      requestOrdinal: 8,
+      requestOrdinal: FUSION_CHILD_MAX_PROVIDER_REQUESTS + 1,
       toolCallCount: 20,
     });
     assert.ok(guard);
@@ -3107,14 +3090,14 @@ void describe('fusion Pi child runner', () => {
     child.close(1, null);
     await assert.rejects(run, (error: unknown) => {
       assert.ok(error instanceof FusionChildRunError);
-      assert.equal(error.code, 'child_runtime_budget_exceeded');
-      assert.match(error.message, /blocked provider request 8 before transport/);
+      assert.equal(error.code, 'child_runtime_limit_exceeded');
+      assert.match(error.message, /provider request 129/);
       assert.equal(error.usage.totalTokens, 21);
       return true;
     });
   });
 
-  void it('surfaces an invalid Claude cache policy distinctly from a budget refusal', async () => {
+  void it('surfaces an invalid Claude cache policy distinctly from an execution-limit refusal', async () => {
     const child = new FakeChild(112);
     const harness = makeSpawn(child);
     const model = resolvedModel('anthropic', 'claude-opus-4-8');
@@ -3142,11 +3125,6 @@ void describe('fusion Pi child runner', () => {
       tool_call_count: 0,
       payload_bytes: 0,
       payload_sha256: emptyHash,
-      estimated_input_tokens: 0,
-      context_window_tokens: model.contextWindow,
-      reserved_output_tokens: model.maxOutputTokens,
-      safety_reserve_tokens: 4_096,
-      allowed_input_tokens: model.contextWindow - model.maxOutputTokens - 4_096,
       message: 'fusion child could not apply Claude cache policy',
     };
     child.stderr.emitData(

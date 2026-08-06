@@ -9,10 +9,8 @@ import {
   FUSION_CANDIDATE_OUTPUT_RECOVERY_PATH_ENV,
   FUSION_CHILD_MAX_PROVIDER_REQUESTS,
   FUSION_CHILD_MAX_TOOL_CALLS,
-  FUSION_CHILD_MIN_OUTPUT_RESERVE_TOKENS,
   FUSION_CHILD_RESULT_PREFIX,
   FUSION_CHILD_RESULT_SCHEMA_VERSION,
-  FUSION_CHILD_SAFETY_RESERVE_TOKENS,
   FUSION_CHILD_SETTLEMENT_PREFIX,
   FUSION_CHILD_SETTLEMENT_SCHEMA_VERSION,
   FUSION_RESEARCH_ENABLED_ENV,
@@ -854,7 +852,6 @@ function parseChildResultMetadata(value: unknown): FusionChildResultMetadata {
 
 const FUSION_RUNTIME_GUARD_CODES = new Set<FusionRuntimeGuardCode>([
   'provider_request_limit',
-  'provider_request_budget',
   'provider_payload_invalid',
   'claude_cache_policy',
   'tool_call_limit',
@@ -885,11 +882,6 @@ export function parseFusionRuntimeGuard(stderr: Buffer): FusionRuntimeGuardRecor
         'tool_call_count',
         'payload_bytes',
         'payload_sha256',
-        'estimated_input_tokens',
-        'context_window_tokens',
-        'reserved_output_tokens',
-        'safety_reserve_tokens',
-        'allowed_input_tokens',
         'message',
       ],
       'fusion runtime guard',
@@ -914,57 +906,13 @@ export function parseFusionRuntimeGuard(stderr: Buffer): FusionRuntimeGuardRecor
       tool_call_count: requireUsageInteger(record, 'tool_call_count', 'fusion runtime guard'),
       payload_bytes: requireUsageInteger(record, 'payload_bytes', 'fusion runtime guard'),
       payload_sha256: requireSha256(record, 'payload_sha256', 'fusion runtime guard'),
-      estimated_input_tokens: requireUsageInteger(
-        record,
-        'estimated_input_tokens',
-        'fusion runtime guard',
-      ),
-      context_window_tokens: requireUsageInteger(
-        record,
-        'context_window_tokens',
-        'fusion runtime guard',
-      ),
-      reserved_output_tokens: requirePositiveSafeInteger(
-        record,
-        'reserved_output_tokens',
-        'fusion runtime guard',
-      ),
-      safety_reserve_tokens: requirePositiveSafeInteger(
-        record,
-        'safety_reserve_tokens',
-        'fusion runtime guard',
-      ),
-      allowed_input_tokens: requireUsageInteger(
-        record,
-        'allowed_input_tokens',
-        'fusion runtime guard',
-      ),
       message: requireNonBlankString(record, 'message', 'fusion runtime guard'),
     };
-    if (frame.code !== 'provider_payload_invalid') {
-      if (frame.context_window_tokens === 0) {
-        throw new Error('fusion runtime guard.context_window_tokens must be positive');
+    const emptyPayloadHash = createHash('sha256').update(Buffer.alloc(0)).digest('hex');
+    if (frame.code === 'claude_cache_policy' || frame.code === 'provider_payload_invalid') {
+      if (frame.payload_bytes !== 0 || frame.payload_sha256 !== emptyPayloadHash) {
+        throw new Error('fusion runtime guard invalid-payload evidence mismatch');
       }
-      const expectedAllowed =
-        frame.context_window_tokens - frame.reserved_output_tokens - frame.safety_reserve_tokens;
-      if (expectedAllowed < 0 || frame.allowed_input_tokens !== expectedAllowed) {
-        throw new Error('fusion runtime guard allowed-input arithmetic mismatch');
-      }
-    }
-    if (frame.code === 'claude_cache_policy') {
-      if (
-        frame.payload_bytes !== 0 ||
-        frame.payload_sha256 !== createHash('sha256').update(Buffer.alloc(0)).digest('hex') ||
-        frame.estimated_input_tokens !== 0
-      ) {
-        throw new Error('fusion runtime guard Claude cache policy payload evidence mismatch');
-      }
-    }
-    if (
-      frame.code === 'provider_request_budget' &&
-      frame.estimated_input_tokens <= frame.allowed_input_tokens
-    ) {
-      throw new Error('fusion runtime guard provider budget code has no token overage');
     }
     if (
       frame.code === 'provider_request_limit' &&
@@ -976,11 +924,7 @@ export function parseFusionRuntimeGuard(stderr: Buffer): FusionRuntimeGuardRecor
       if (frame.tool_call_count <= FUSION_CHILD_MAX_TOOL_CALLS) {
         throw new Error('fusion runtime guard tool call limit was not exceeded');
       }
-      if (
-        frame.payload_bytes !== 0 ||
-        frame.payload_sha256 !== createHash('sha256').update(Buffer.alloc(0)).digest('hex') ||
-        frame.estimated_input_tokens !== 0
-      ) {
+      if (frame.payload_bytes !== 0 || frame.payload_sha256 !== emptyPayloadHash) {
         throw new Error('fusion runtime guard tool call limit payload evidence mismatch');
       }
     }
@@ -1178,22 +1122,7 @@ export function assertFusionRuntimeGuardMatchesModel(
     );
   }
   if (routeUnknown && guard.code !== 'provider_payload_invalid') {
-    throw new Error('fusion runtime guard omitted the route for a capacity-backed refusal');
-  }
-  if (guard.code === 'provider_payload_invalid') return;
-  const expectedReservedOutput = Math.max(
-    FUSION_CHILD_MIN_OUTPUT_RESERVE_TOKENS,
-    model.maxOutputTokens,
-  );
-  const expectedAllowedInput =
-    model.contextWindow - expectedReservedOutput - FUSION_CHILD_SAFETY_RESERVE_TOKENS;
-  if (
-    guard.context_window_tokens !== model.contextWindow ||
-    guard.reserved_output_tokens !== expectedReservedOutput ||
-    guard.safety_reserve_tokens !== FUSION_CHILD_SAFETY_RESERVE_TOKENS ||
-    guard.allowed_input_tokens !== expectedAllowedInput
-  ) {
-    throw new Error('fusion runtime guard capacity evidence does not match the resolved route');
+    throw new Error('fusion runtime guard omitted the route for a route-bound refusal');
   }
 }
 
@@ -2417,7 +2346,9 @@ export async function runPiChild(options: RunPiChildOptions): Promise<FusionChil
               ? 'child_exit_failed'
               : runtimeGuard.code === 'claude_cache_policy'
                 ? 'child_cache_policy_invalid'
-                : 'child_runtime_budget_exceeded',
+                : runtimeGuard.code === 'provider_payload_invalid'
+                  ? 'child_runtime_payload_invalid'
+                  : 'child_runtime_limit_exceeded',
             options,
           ),
           state.cleanupErrors,

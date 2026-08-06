@@ -101,6 +101,9 @@ These are source constants, not documented operator env knobs:
 | Child stale-output watchdog | 20 minutes |
 | Child stdout cap | 32 MiB |
 | Child stderr cap | 4 MiB |
+| Provider requests per child | 128 |
+| Tool calls per child | 192 |
+| Aggregate candidate tool-result bytes | 8 MiB |
 | Candidate output contract | 48 KiB JSON-rendered bytes |
 | Evaluator output contract | 64 KiB JSON-rendered bytes |
 | Merger output contract | 64 KiB JSON-rendered bytes |
@@ -109,7 +112,7 @@ These are source constants, not documented operator env knobs:
 | `fusion_web_fetch` returned content cap | 32 KiB |
 | `fusion_web_fetch` redirect cap | 5 hops |
 
-Oversized Fusion outputs fail loudly and are preserved in local artifacts where applicable. They are not forwarded or silently truncated.
+Oversized Fusion outputs fail loudly and are preserved in local artifacts where applicable. They are not forwarded or silently truncated. Post-launch Fusion requests are not admitted or refused by estimating live input tokens and subtracting the model's possible output from its context window; Pi/provider context handling remains authoritative after Fusion's pre-spawn stage-budget checks.
 
 ## Offline behavior
 

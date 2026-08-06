@@ -21,25 +21,21 @@ export const FUSION_TOOL_CALL_SEAL_SCHEMA_VERSION =
   'pi-background-tasks.fusion-tool-call-seal.v1' as const;
 export const FUSION_TOOL_CALL_SEAL_SUFFIX = '.seal.json';
 export const FUSION_RUNTIME_GUARD_SCHEMA_VERSION =
-  'pi-background-tasks.fusion-runtime-guard.v1' as const;
+  'pi-background-tasks.fusion-runtime-guard.v2' as const;
 export const FUSION_RUNTIME_GUARD_PREFIX = '\u001ePI_FUSION_RUNTIME_GUARD ';
 export const FUSION_CHILD_MAX_PROVIDER_REQUESTS = 128;
 export const FUSION_CHILD_MAX_TOOL_CALLS = 192;
-export const FUSION_CHILD_MIN_OUTPUT_RESERVE_TOKENS = 32_768;
-export const FUSION_CHILD_SAFETY_RESERVE_TOKENS = 4_096;
 
 /**
  * Aggregate ceiling on tool-result bytes a single candidate child may accumulate.
  *
- * The byte ceiling complements the runtime provider-payload governor and tool/request
- * count limits. It remains an independent bound on total tool material even when Pi
- * compaction keeps each individual provider request within the route context window.
+ * The byte ceiling complements the tool/request count limits and pre-spawn stage
+ * budgets. It remains an independent bound on total tool material across the child run.
  */
 export const FUSION_CHILD_MAX_TOTAL_TOOL_RESULT_BYTES = 8 * 1024 * 1024;
 
 export type FusionRuntimeGuardCode =
   | 'provider_request_limit'
-  | 'provider_request_budget'
   | 'provider_payload_invalid'
   | 'claude_cache_policy'
   | 'tool_call_limit';
@@ -53,11 +49,6 @@ export interface FusionRuntimeGuardRecord {
   tool_call_count: number;
   payload_bytes: number;
   payload_sha256: string;
-  estimated_input_tokens: number;
-  context_window_tokens: number;
-  reserved_output_tokens: number;
-  safety_reserve_tokens: number;
-  allowed_input_tokens: number;
   message: string;
 }
 

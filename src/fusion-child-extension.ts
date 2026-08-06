@@ -13,11 +13,6 @@ import { parseJsonText } from './core/common.js';
 import type { ExtensionAPI } from '@earendil-works/pi-coding-agent';
 import { Type, type Static } from 'typebox';
 import {
-  estimateInputTokens,
-  knownJsonSegment,
-  resolveTokenBudgetFamily,
-} from './core/context/token-budget.js';
-import {
   FUSION_TOOL_CALL_LOG_SCHEMA_VERSION,
   FUSION_WEB_FETCH_TOOL_NAME,
   type FusionToolCallLogRecord,
@@ -42,9 +37,7 @@ import {
   FUSION_CHILD_MAX_PROVIDER_REQUESTS,
   FUSION_CHILD_MAX_TOOL_CALLS,
   FUSION_CHILD_MAX_TOTAL_TOOL_RESULT_BYTES,
-  FUSION_CHILD_MIN_OUTPUT_RESERVE_TOKENS,
   FUSION_CHILD_RESULT_PREFIX,
-  FUSION_CHILD_SAFETY_RESERVE_TOKENS,
   FUSION_CHILD_SETTLEMENT_PREFIX,
   FUSION_RESEARCH_ENABLED_ENV,
   FUSION_RUNTIME_GUARD_PREFIX,
@@ -88,10 +81,8 @@ export {
   FUSION_CHILD_MAX_PROVIDER_REQUESTS,
   FUSION_CHILD_MAX_TOOL_CALLS,
   FUSION_CHILD_MAX_TOTAL_TOOL_RESULT_BYTES,
-  FUSION_CHILD_MIN_OUTPUT_RESERVE_TOKENS,
   FUSION_CHILD_RESULT_PREFIX,
   FUSION_CHILD_RESULT_SCHEMA_VERSION,
-  FUSION_CHILD_SAFETY_RESERVE_TOKENS,
   FUSION_CHILD_SETTLEMENT_PREFIX,
   FUSION_CHILD_SETTLEMENT_SCHEMA_VERSION,
   FUSION_RESEARCH_ENABLED_ENV,
@@ -370,8 +361,6 @@ export interface FusionRuntimeRequestEvaluationInput {
   payload: unknown;
   provider: string | undefined;
   model: string | undefined;
-  contextWindowTokens: number | undefined;
-  maxOutputTokens: number | undefined;
   requestOrdinal: number;
   toolCallCount: number;
 }
@@ -384,23 +373,6 @@ function invalidFusionRuntimeRequest(
     'provider_payload_invalid' | 'claude_cache_policy'
   > = 'provider_payload_invalid',
 ): FusionRuntimeGuardRecord {
-  const contextWindowTokens =
-    input.contextWindowTokens !== undefined &&
-    Number.isSafeInteger(input.contextWindowTokens) &&
-    input.contextWindowTokens > 0
-      ? input.contextWindowTokens
-      : 0;
-  const modelOutputTokens =
-    input.maxOutputTokens !== undefined &&
-    Number.isSafeInteger(input.maxOutputTokens) &&
-    input.maxOutputTokens > 0
-      ? input.maxOutputTokens
-      : 0;
-  const reservedOutputTokens = Math.max(FUSION_CHILD_MIN_OUTPUT_RESERVE_TOKENS, modelOutputTokens);
-  const allowedInputTokens = Math.max(
-    0,
-    contextWindowTokens - reservedOutputTokens - FUSION_CHILD_SAFETY_RESERVE_TOKENS,
-  );
   const emptyPayload = Buffer.alloc(0);
   return {
     schema_version: FUSION_RUNTIME_GUARD_SCHEMA_VERSION,
@@ -411,11 +383,6 @@ function invalidFusionRuntimeRequest(
     tool_call_count: input.toolCallCount,
     payload_bytes: 0,
     payload_sha256: sha256(emptyPayload),
-    estimated_input_tokens: 0,
-    context_window_tokens: contextWindowTokens,
-    reserved_output_tokens: reservedOutputTokens,
-    safety_reserve_tokens: FUSION_CHILD_SAFETY_RESERVE_TOKENS,
-    allowed_input_tokens: allowedInputTokens,
     message: `fusion child could not validate provider request ${String(input.requestOrdinal)}: ${detail}`,
   };
 }
@@ -455,84 +422,31 @@ export function prepareFusionRuntimeRequest(
 export function evaluateFusionRuntimeRequest(
   input: FusionRuntimeRequestEvaluationInput,
 ): FusionRuntimeGuardRecord | undefined {
-  let code: FusionRuntimeGuardCode | undefined;
-  let message = '';
-  let payloadBytes = Buffer.alloc(0);
-  let estimatedInputTokens = 0;
-  let allowedInputTokens = 0;
-  const provider = input.provider ?? 'unknown';
-  const model = input.model ?? 'unknown';
-  const contextWindowTokens = input.contextWindowTokens ?? 0;
-  const reservedOutputTokens = Math.max(
-    FUSION_CHILD_MIN_OUTPUT_RESERVE_TOKENS,
-    input.maxOutputTokens ?? 0,
-  );
-  try {
-    if (input.provider === undefined || input.model === undefined) {
-      throw new Error('active model is unavailable');
-    }
-    if (!Number.isSafeInteger(contextWindowTokens) || contextWindowTokens <= 0) {
-      throw new Error('active model context window is unavailable');
-    }
-    if (
-      input.maxOutputTokens === undefined ||
-      !Number.isSafeInteger(input.maxOutputTokens) ||
-      input.maxOutputTokens <= 0
-    ) {
-      throw new Error('active model maximum output tokens are unavailable');
-    }
-    allowedInputTokens =
-      contextWindowTokens - reservedOutputTokens - FUSION_CHILD_SAFETY_RESERVE_TOKENS;
-    if (allowedInputTokens <= 0) {
-      throw new Error('active model has no safe provider input capacity');
-    }
-    const payloadText = JSON.stringify(input.payload);
-    if (payloadText === undefined) throw new Error('provider payload serialized to undefined');
-    payloadBytes = Buffer.from(payloadText, 'utf8');
-    const family = resolveTokenBudgetFamily({ provider, model });
-    estimatedInputTokens = estimateInputTokens({
-      family: family.family,
-      calibrationBacked: family.backed,
-      familyResolution: family.resolution,
-      allowedInputTokens,
-      scope: 'fusion',
-      segments: [knownJsonSegment(payloadText)],
-    }).tokens;
-    if (input.requestOrdinal > FUSION_CHILD_MAX_PROVIDER_REQUESTS) {
-      code = 'provider_request_limit';
-      message = `fusion child reached provider request ${String(input.requestOrdinal)}, exceeding the ${String(FUSION_CHILD_MAX_PROVIDER_REQUESTS)}-request execution limit`;
-    } else if (estimatedInputTokens > allowedInputTokens) {
-      code = 'provider_request_budget';
-      message = `fusion child blocked provider request ${String(input.requestOrdinal)} before transport: exact final payload is ${String(payloadBytes.length)} UTF-8 bytes (estimated <= ${String(estimatedInputTokens)} input tokens), exceeding ${String(allowedInputTokens)} allowed input tokens after reserving ${String(reservedOutputTokens)} model output + ${String(FUSION_CHILD_SAFETY_RESERVE_TOKENS)} safety from the ${String(contextWindowTokens)}-token context window`;
-    }
-  } catch (error) {
-    code = 'provider_payload_invalid';
-    message = `fusion child could not validate provider request ${String(input.requestOrdinal)}: ${error instanceof Error ? error.message : String(error)}`;
+  if (input.provider === undefined || input.model === undefined) {
+    return invalidFusionRuntimeRequest(input, 'active model is unavailable');
   }
-  if (code === undefined) return undefined;
+  if (input.requestOrdinal <= FUSION_CHILD_MAX_PROVIDER_REQUESTS) return undefined;
+  const serialized: unknown = JSON.stringify(input.payload);
+  if (typeof serialized !== 'string') {
+    return invalidFusionRuntimeRequest(input, 'provider payload serialized to a non-string value');
+  }
+  const payloadBytes = Buffer.from(serialized, 'utf8');
   return {
     schema_version: FUSION_RUNTIME_GUARD_SCHEMA_VERSION,
-    code,
-    provider,
-    model,
+    code: 'provider_request_limit',
+    provider: input.provider,
+    model: input.model,
     request_ordinal: input.requestOrdinal,
     tool_call_count: input.toolCallCount,
     payload_bytes: payloadBytes.length,
     payload_sha256: sha256(payloadBytes),
-    estimated_input_tokens: estimatedInputTokens,
-    context_window_tokens: contextWindowTokens,
-    reserved_output_tokens: reservedOutputTokens,
-    safety_reserve_tokens: FUSION_CHILD_SAFETY_RESERVE_TOKENS,
-    allowed_input_tokens: allowedInputTokens,
-    message,
+    message: `fusion child reached provider request ${String(input.requestOrdinal)}, exceeding the ${String(FUSION_CHILD_MAX_PROVIDER_REQUESTS)}-request execution limit`,
   };
 }
 
 export interface FusionRuntimeToolLimitEvaluationInput {
   provider: string | undefined;
   model: string | undefined;
-  contextWindowTokens: number | undefined;
-  maxOutputTokens: number | undefined;
   requestOrdinal: number;
   toolCallCount: number;
 }
@@ -541,23 +455,6 @@ export function evaluateFusionRuntimeToolLimit(
   input: FusionRuntimeToolLimitEvaluationInput,
 ): FusionRuntimeGuardRecord | undefined {
   if (input.toolCallCount <= FUSION_CHILD_MAX_TOOL_CALLS) return undefined;
-  const contextWindowTokens =
-    input.contextWindowTokens !== undefined &&
-    Number.isSafeInteger(input.contextWindowTokens) &&
-    input.contextWindowTokens > 0
-      ? input.contextWindowTokens
-      : 0;
-  const modelOutputTokens =
-    input.maxOutputTokens !== undefined &&
-    Number.isSafeInteger(input.maxOutputTokens) &&
-    input.maxOutputTokens > 0
-      ? input.maxOutputTokens
-      : 0;
-  const reservedOutputTokens = Math.max(FUSION_CHILD_MIN_OUTPUT_RESERVE_TOKENS, modelOutputTokens);
-  const allowedInputTokens = Math.max(
-    0,
-    contextWindowTokens - reservedOutputTokens - FUSION_CHILD_SAFETY_RESERVE_TOKENS,
-  );
   const emptyPayload = Buffer.alloc(0);
   return {
     schema_version: FUSION_RUNTIME_GUARD_SCHEMA_VERSION,
@@ -568,11 +465,6 @@ export function evaluateFusionRuntimeToolLimit(
     tool_call_count: input.toolCallCount,
     payload_bytes: 0,
     payload_sha256: sha256(emptyPayload),
-    estimated_input_tokens: 0,
-    context_window_tokens: contextWindowTokens,
-    reserved_output_tokens: reservedOutputTokens,
-    safety_reserve_tokens: FUSION_CHILD_SAFETY_RESERVE_TOKENS,
-    allowed_input_tokens: allowedInputTokens,
     message: `fusion child reached tool call ${String(input.toolCallCount)}, exceeding the ${String(FUSION_CHILD_MAX_TOOL_CALLS)}-call execution limit`,
   };
 }
@@ -773,8 +665,6 @@ export default function fusionChildExtension(pi: ExtensionAPI): void {
           payload: event.payload,
           provider: model?.provider,
           model: model?.id,
-          contextWindowTokens: model?.contextWindow,
-          maxOutputTokens: model?.maxTokens,
           requestOrdinal: providerRequestCount,
           toolCallCount,
         },
@@ -793,8 +683,6 @@ export default function fusionChildExtension(pi: ExtensionAPI): void {
       payload: cacheNormalizedPayload,
       provider: model?.provider,
       model: model?.id,
-      contextWindowTokens: model?.contextWindow,
-      maxOutputTokens: model?.maxTokens,
       requestOrdinal: providerRequestCount,
       toolCallCount,
     });
@@ -888,8 +776,6 @@ export default function fusionChildExtension(pi: ExtensionAPI): void {
         const guard = evaluateFusionRuntimeToolLimit({
           provider: model?.provider,
           model: model?.id,
-          contextWindowTokens: model?.contextWindow,
-          maxOutputTokens: model?.maxTokens,
           requestOrdinal: providerRequestCount,
           toolCallCount,
         });
