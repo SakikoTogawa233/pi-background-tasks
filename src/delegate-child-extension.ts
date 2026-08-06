@@ -36,18 +36,17 @@ import {
  * - enforcing turn and tool-call limits;
  * - committing exactly one result package atomically.
  *
- * Measured Pi 0.83 behaviour this design accounts for (see
- * `tests/scripted-provider/pi-hook-contract.test.ts`):
+ * Measured behavior across the supported Pi lines (see
+ * `tests/scripted-provider/pi-hook-contract.test.ts` and `scripts/test-compat.ts`):
  *
- * - Throwing from a `context` handler does NOT stop the provider call. Pi
- *   catches the exception and dispatches anyway. A throw is therefore never used
- *   as a barrier here.
- * - `ctx.abort()` does not skip the provider call site, but the call receives an
- *   already-aborted signal and the run terminates. That is the barrier used.
- * - Because neither mechanism is a hard admission gate on its own, the guard
- *   ALSO replaces the offending content in the returned message set. Even a
- *   provider that ignored the aborted signal could not transmit the content,
- *   because the content is no longer there.
+ * - Throwing from a `context` handler does NOT stop dispatch. Pi catches the
+ *   exception and continues, so a throw is never used as a barrier here.
+ * - `ctx.abort()` blocks transport in both supported modes: Pi 0.81.1-0.83.0
+ *   invoke the provider with an already-aborted signal, while Pi 0.84.0 skips
+ *   the provider entry point during signal-aware auth resolution.
+ * - The guard ALSO replaces the offending content in the returned message set.
+ *   Even a non-conforming provider could not transmit the content because the
+ *   content is no longer there.
  */
 
 const SPILL_DIRNAME = 'spill';
@@ -471,8 +470,8 @@ export default function delegateChildExtension(pi: ExtensionAPI): void {
       if (verdict.withinBudget) return undefined;
       const message = `delegate child context reached ${String(verdict.measuredTokens)} input tokens against a ${String(verdict.allowedTokens)}-token allowance on route ${seed.route.qualified_id}, over by ${String(verdict.overageTokens)}; estimator family ${verdict.rateSource.family}, source ${verdict.rateSource.source}, backed=${String(verdict.backed)}, dominant_byte_class=${verdict.dominantByteClass}, rate ${String(verdict.rateSource.effective_rate_bytes_per_token_x100)}/100 B/tok + ${String(verdict.rateSource.affine_f_tokens)} tokens`;
       latch('provider_context_budget_exhausted', message);
-      // Barrier one: terminate the run. Measured on Pi 0.83, this hands the
-      // provider call an already-aborted signal and stops further turns.
+      // Barrier one: terminate the run. Depending on the supported Pi line,
+      // this skips provider dispatch or hands it an already-aborted signal.
       ctx.abort();
       // Barrier two: remove the content itself, so the request could not carry it
       // even if a provider ignored the aborted signal. Retaining only the first

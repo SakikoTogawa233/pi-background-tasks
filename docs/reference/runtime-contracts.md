@@ -37,11 +37,11 @@ This generated registry lists production environment-variable references, runtim
 | `PI_API_BASE_URL` | remove | `src/core/attested-pi-run.ts:135`<br>`src/core/fusion/pi-child.ts:100` |
 | `PI_API_KEY` | remove | `src/core/attested-pi-run.ts:135`<br>`src/core/fusion/pi-child.ts:100` |
 | `PI_AUTH_FILE` | remove | `src/core/attested-pi-run.ts:135`<br>`src/core/fusion/pi-child.ts:100` |
-| `PI_BG_DELEGATE_ARTIFACT_DIR` | read, write | `src/core/delegate/launch.ts:324`<br>`src/delegate-child-extension.ts:277` |
-| `PI_BG_DELEGATE_LAUNCH_NONCE` | read, write | `src/core/delegate/launch.ts:328`<br>`src/delegate-child-extension.ts:281` |
-| `PI_BG_DELEGATE_SEED_PATH` | read, write | `src/core/delegate/launch.ts:325`<br>`src/delegate-child-extension.ts:278` |
-| `PI_BG_DELEGATE_SEED_SHA256` | read, write | `src/core/delegate/launch.ts:326`<br>`src/delegate-child-extension.ts:279` |
-| `PI_BG_DELEGATE_TASK_ID` | read, write | `src/core/delegate/launch.ts:327`<br>`src/delegate-child-extension.ts:280` |
+| `PI_BG_DELEGATE_ARTIFACT_DIR` | read, write | `src/core/delegate/launch.ts:324`<br>`src/delegate-child-extension.ts:276` |
+| `PI_BG_DELEGATE_LAUNCH_NONCE` | read, write | `src/core/delegate/launch.ts:328`<br>`src/delegate-child-extension.ts:280` |
+| `PI_BG_DELEGATE_SEED_PATH` | read, write | `src/core/delegate/launch.ts:325`<br>`src/delegate-child-extension.ts:277` |
+| `PI_BG_DELEGATE_SEED_SHA256` | read, write | `src/core/delegate/launch.ts:326`<br>`src/delegate-child-extension.ts:278` |
+| `PI_BG_DELEGATE_TASK_ID` | read, write | `src/core/delegate/launch.ts:327`<br>`src/delegate-child-extension.ts:279` |
 | `PI_BG_DISABLE_PI_TELEMETRY` | read | `src/core/registry.ts:194` |
 | `PI_BG_DISABLE_UPDATE_CHECK` | read | `src/extension.ts:455` |
 | `PI_BG_MAX_OUTPUT_BYTES` | read | `src/core/registry.ts:68` |
@@ -117,7 +117,7 @@ This generated registry lists production environment-variable references, runtim
 | --- | --- |
 | `phase2.pi_task_attestation.v1` | `src/core/attested-pi-run.ts:20` |
 | `pi-background-tasks.delegate-budget-plan.v2` | `src/core/delegate/types.ts:21` |
-| `pi-background-tasks.delegate-child-terminal.v1` | `src/delegate-child-extension.ts:381` |
+| `pi-background-tasks.delegate-child-terminal.v1` | `src/delegate-child-extension.ts:380` |
 | `pi-background-tasks.delegate-hook-contract.v1` | `src/core/delegate/hook-contract.ts:15` |
 | `pi-background-tasks.delegate-launch.v1` | `src/delegate-extension.ts:398` |
 | `pi-background-tasks.delegate-ledger.v1` | `src/core/delegate/types.ts:16` |

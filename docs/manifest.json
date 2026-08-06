@@ -65,7 +65,7 @@
       "state": "pass"
     },
     {
-      "authored_body_sha256": "sha256:a60f4f25e266ea5cf9e5c89b1b6fbf7bf7fc07d2600a6b82bc5bd9d39eb60438",
+      "authored_body_sha256": "sha256:60b6235d33b9c7df1b1494c0c071862aee059074ce58058c103f9a71d5d9e7d8",
       "covers_sources": [
         "extensions/delegate-child.ts",
         "src/core/delegate/artifacts.ts",
@@ -84,7 +84,7 @@
       "rel": "docs/subsystems/delegation.md",
       "required": true,
       "reviewer": "gpt-5.5-final-delegation-review-panel-plus-timeout-delta",
-      "state": "stale-sources"
+      "state": "stale-authored-prose"
     },
     {
       "authored_body_sha256": "sha256:200168b5db6e14947b5dbee9aef51c4e14d57de0df7716776250193b26b57289",
@@ -791,7 +791,7 @@
     "image": "https://raw.githubusercontent.com/ismailsaleekh/pi-background-tasks/main/logo.png",
     "name": "pi-background-tasks",
     "type": "module",
-    "version": "2.1.1"
+    "version": "2.1.2"
   },
   "public_surface_ids": [
     "command:bg",

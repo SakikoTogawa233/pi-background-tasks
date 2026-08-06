@@ -279,25 +279,25 @@ void describe('Pi hook contract characterisation', { concurrency: false }, () =>
         const rows = await records(h.logPath);
         assert.equal(hooksOf(rows, 'context_aborting').length > 0, true);
         const providerCalls = hooksOf(rows, 'provider_call');
-        // Pi 0.83 still invokes streamSimple after ctx.abort(); it does not skip
-        // the call site. What it does guarantee is that the call is handed an
-        // already-aborted signal, so a conforming provider never issues the
-        // request. Recorded exactly as observed, never assumed.
-        note('context_abort_skips_stream_invocation', providerCalls.length === 0);
-        const everyCallAborted =
-          providerCalls.length > 0 &&
-          providerCalls.every((call) => call['signalAborted'] === true);
-        assert.equal(
-          everyCallAborted,
-          true,
-          'after ctx.abort() in a context handler, every subsequent model call must receive an already-aborted signal',
+        // Pi 0.81.1-0.83.0 invoke streamSimple with an already-aborted signal;
+        // Pi 0.84.0 propagates the signal through auth resolution and skips the
+        // provider entry point entirely. Both modes block transport. The exact
+        // per-version behavior is pinned again by scripts/test-compat.ts.
+        const skippedStreamInvocation = providerCalls.length === 0;
+        note('context_abort_skips_stream_invocation', skippedStreamInvocation);
+        const everyDispatchedCallAborted = providerCalls.every(
+          (call) => call['signalAborted'] === true,
         );
-        note('context_abort_blocks_provider_call', everyCallAborted);
+        assert.equal(
+          skippedStreamInvocation || everyDispatchedCallAborted,
+          true,
+          'ctx.abort() must either skip stream invocation or hand every dispatched call an already-aborted signal',
+        );
+        note('context_abort_blocks_provider_call', true);
 
         // The run must also terminate rather than continuing to further turns.
-        assert.equal(
-          providerCalls.length,
-          1,
+        assert.ok(
+          providerCalls.length <= 1,
           'an aborted context handler must not allow the agent loop to keep issuing model calls',
         );
         note('context_abort_terminates_run', true);
@@ -434,7 +434,7 @@ void describe('Pi hook contract characterisation', { concurrency: false }, () =>
     },
   );
 
-  void it('writes the observed hook-contract evidence consumed by delegate preflight', async () => {
+  void it('matches the supported-range hook-contract evidence consumed by delegate preflight', async () => {
     for (const guarantee of DELEGATE_REQUIRED_HOOK_GUARANTEES) {
       assert.equal(
         observed.get(guarantee),
@@ -451,8 +451,9 @@ void describe('Pi hook contract characterisation', { concurrency: false }, () =>
         context_fires_before_every_model_call: true,
         context_result_messages_reach_provider: true,
         context_abort_blocks_provider_call: true,
-        context_abort_skips_stream_invocation:
-          observed.get('context_abort_skips_stream_invocation') === true,
+        // The shipped evidence is the conservative contract shared by every
+        // supported Pi line. Pi 0.84 skips the call, but 0.81.1-0.83.0 do not.
+        context_abort_skips_stream_invocation: false,
         context_abort_terminates_run: true,
         context_throw_blocks_provider_call: throwBlocks === true,
         context_throw_isolated_to_throwing_handler: true,

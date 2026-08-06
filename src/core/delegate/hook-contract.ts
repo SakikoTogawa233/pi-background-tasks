@@ -22,14 +22,15 @@ export const DELEGATE_HOOK_CONTRACT_SCHEMA_VERSION =
  * `ctx.abort()` so the request is never issued, then report a typed failure over
  * the child result channel.
  *
- * Empirically established by the characterisation gate on Pi 0.83:
- * `ctx.abort()` does NOT skip the `streamSimple` call site. Pi still invokes the
- * provider entry point, but hands it an already-aborted `AbortSignal`, so no
- * network request is issued and the run terminates with stop reason `aborted`.
- * Throwing from a `context` handler is NOT a barrier at all: Pi catches the
- * exception, reports it as an extension error, and dispatches the call anyway.
- * The guard therefore uses abort, never a throw, and additionally suppresses the
- * oversized content itself so a non-conforming provider cannot transmit it.
+ * Empirically established across the supported Pi lines by the characterisation
+ * and exact-version compatibility gates: Pi 0.81.1-0.83.0 invoke the provider
+ * entry point with an already-aborted `AbortSignal`, while Pi 0.84.0 propagates
+ * that signal through auth resolution and skips the entry point. No network
+ * request is issued in either mode, and the run terminates. Throwing from a
+ * `context` handler is NOT a barrier at all: Pi catches the exception, reports
+ * it as an extension error, and continues dispatch. The guard therefore uses
+ * abort, never a throw, and additionally suppresses the oversized content itself
+ * so a non-conforming provider cannot transmit it.
  *
  * `tool-result-spill-v1`: replace an oversized `tool_result` payload with an
  * explicit hash-accounted receipt before it enters the transcript.
@@ -65,11 +66,11 @@ export interface DelegateHookContractEvidence {
  * Guarantees the child guard actually depends on.
  *
  * `context_throw_blocks_provider_call` and
- * `context_abort_skips_stream_invocation` are deliberately absent, because
- * neither holds on Pi 0.83. The gate records both as observed evidence, and the
- * guard is built so that it does not need either: it aborts the run AND removes
- * the oversized content from the outgoing message set, so the request cannot be
- * issued and could not carry the content even if it were.
+ * `context_abort_skips_stream_invocation` are deliberately absent. Throws do
+ * not block dispatch, and skipping the stream entry point is not shared by every
+ * supported Pi line. The guard needs neither behavior: it aborts the run AND
+ * removes the oversized content from the outgoing message set, so the request
+ * cannot be issued and could not carry the content even if it were.
  */
 export const DELEGATE_REQUIRED_HOOK_GUARANTEES: readonly DelegateHookGuaranteeName[] = [
   'context_fires_before_every_model_call',

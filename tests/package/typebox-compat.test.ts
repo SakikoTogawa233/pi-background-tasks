@@ -12,7 +12,7 @@ import { parseJsonText } from '../../src/core/common.js';
 // `URL.pathname` yields `/D:/...` on Windows, which then joins into `D:\D:\...`.
 const packageRoot = fileURLToPath(new URL('../../', import.meta.url));
 
-/** TypeBox APIs removed in the 1.3.x line bundled by Pi 0.83.0. */
+/** TypeBox APIs removed in the 1.3.x line bundled by Pi 0.83.0 and 0.84.0. */
 const REMOVED_TYPEBOX_APIS = [
   'Type.Base',
   'Type.Awaited',
@@ -59,7 +59,11 @@ void describe('TypeBox compatibility', () => {
     const installed = parseJsonText(await readFile(typeboxPackageJson, 'utf8'));
     assert.ok(isRecord(installed));
     const version = String(installed['version']);
-    assert.match(version, /^1\.3\./, `expected the Pi 0.83 TypeBox 1.3.x line, saw ${version}`);
+    assert.match(
+      version,
+      /^1\.3\./,
+      `expected the Pi 0.83/0.84 TypeBox 1.3.x line, saw ${version}`,
+    );
 
     const manifest = parseJsonText(await readFile(join(packageRoot, 'package.json'), 'utf8'));
     assert.ok(isRecord(manifest));
@@ -84,7 +88,7 @@ void describe('TypeBox compatibility', () => {
     assert.ok(isRecord(peers));
     for (const key of ['@earendil-works/pi-coding-agent', '@earendil-works/pi-tui']) {
       const declaredRange = stringValue(peers[key]);
-      for (const supported of ['0.81.1', '0.82.1', '0.83.0']) {
+      for (const supported of ['0.81.1', '0.82.1', '0.83.0', '0.84.0']) {
         assert.ok(
           declaredRange.includes(supported),
           `${key} must declare ${supported}: ${declaredRange}`,
@@ -98,7 +102,7 @@ void describe('TypeBox compatibility', () => {
     }
   });
 
-  void it('uses no TypeBox API removed by the Pi 0.83 bundled version', async () => {
+  void it('uses no TypeBox API removed by the Pi 0.83/0.84 bundled version', async () => {
     const violations: string[] = [];
     for (const file of await sourceFiles()) {
       const text = await readFile(file, 'utf8');

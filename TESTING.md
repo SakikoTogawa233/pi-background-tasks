@@ -35,29 +35,30 @@ real Pi agent loop against a deterministic scripted provider and records what Pi
 guard depends on that behaviour and it must be proven by execution rather than read
 from type declarations.
 
-The observed guarantees are written to
+The conservative guarantees shared by every supported Pi line are written to
 `tests/scripted-provider/pi-hook-contract-evidence.json` and shipped as
 `src/core/delegate/hook-contract-evidence.json`. A package test asserts the two are
-byte-identical, so the runtime gate and the gate that proved it cannot drift apart.
-If the evidence file already exists, the gate **compares** against it rather than
-rewriting it: a change in Pi's hook behaviour fails loudly and forces a deliberate
-re-review of the child guard instead of silently regenerating.
+byte-identical, so the runtime gate and its proving evidence cannot drift apart. If the evidence file already exists, the gate **compares** against it rather
+than rewriting it: a change in a required Pi hook invariant fails loudly and forces
+a deliberate re-review of the child guard instead of silent regeneration. The
+release compatibility gate additionally pins each supported line's exact abort mode.
 
-On Pi 0.83 the gate establishes, by execution:
+Across the supported Pi lines, the gates establish by execution:
 
 | Question | Observed |
 |---|---|
 | Does `context` fire before every model call? | yes, once per call, in extension load order |
 | Do messages returned from `context` reach the provider? | yes |
 | Does **throwing** in `context` prevent the provider call? | **no** — Pi catches it and dispatches anyway |
-| Does `ctx.abort()` prevent it? | it does not skip the call site, but the call receives an already-aborted signal and the run terminates |
+| Does `ctx.abort()` prevent transport? | yes; Pi 0.81.1–0.83.0 invoke the provider with an already-aborted signal, while Pi 0.84.0 skips provider invocation during signal-aware auth resolution; every line terminates |
 | Does `tool_result` fire before the transcript entry, and can a handler replace it? | yes, chained in load order; the replacement reaches the provider and the original does not |
 | Do tool-call id, role, and `isError` survive replacement? | yes |
 
-Because neither a throw nor an abort is a hard admission gate on its own, the child
-guard uses abort as the barrier **and** removes the oversized content from the
-outgoing message set. A Pi build that cannot provide the required guarantees causes
-`bg_delegate` to refuse to spawn with a typed `delegate_hook_contract_unsupported`.
+Because a throw is not a barrier and older supported Pi lines still enter the
+provider with an aborted signal, the child guard uses abort **and** removes the
+oversized content from the outgoing message set. A Pi build that cannot provide the
+required guarantees causes `bg_delegate` to refuse to spawn with a typed
+`delegate_hook_contract_unsupported`.
 
 Full interactive gate:
 

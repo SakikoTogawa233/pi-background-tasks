@@ -1,6 +1,6 @@
 import { spawn, spawnSync } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
-import { mkdir, mkdtemp, readFile, readdir, rm } from 'node:fs/promises';
+import { copyFile, mkdir, mkdtemp, readFile, readdir, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
@@ -9,13 +9,14 @@ import { parseJsonText } from '../src/core/common.js';
 import { isolatedTestEnv } from '../tests/helpers/normalize.js';
 import { installFusionFakePi, resolveRealPiCli } from '../tests/helpers/fusion-fake-pi.js';
 
-const requiredVersions = ['0.81.1', '0.82.1', '0.83.0'] as const;
+const requiredVersions = ['0.81.1', '0.82.1', '0.83.0', '0.84.0'] as const;
+type RequiredPiVersion = (typeof requiredVersions)[number];
 // `URL.pathname` yields `/D:/...` on Windows, which then joins into `D:\D:\...`.
 const root = fileURLToPath(new URL('../', import.meta.url));
 
 /**
- * TypeBox APIs removed in the 1.3.x line bundled by Pi 0.83.0. The package must
- * not reference these in source or in the packed tarball bytes.
+ * TypeBox APIs removed in the 1.3.x line bundled by Pi 0.83.0 and 0.84.0. The
+ * package must not reference these in source or in the packed tarball bytes.
  */
 const REMOVED_TYPEBOX_APIS = [
   'Type.Base',
@@ -40,8 +41,14 @@ function verifyTypeBoxPeerPosture(): void {
   }
   for (const key of ['@earendil-works/pi-coding-agent', '@earendil-works/pi-tui']) {
     const range = peers[key];
-    if (typeof range !== 'string' || !range.includes('0.83'))
-      throw new Error(`${key} peer range must declare Pi 0.83 support, saw ${String(range)}`);
+    if (typeof range !== 'string') {
+      throw new Error(`${key} peer range must be a string, saw ${String(range)}`);
+    }
+    for (const version of requiredVersions) {
+      if (!range.includes(version)) {
+        throw new Error(`${key} peer range must declare Pi ${version} support, saw ${range}`);
+      }
+    }
   }
   const deps = manifest['dependencies'];
   if (isRecord(deps) && deps['typebox'] !== undefined)
@@ -429,14 +436,137 @@ function assertAnthropicCacheAdapterSupport(temp: string, version: string): void
   }
 }
 
-/** Pi 0.83.0 bundles TypeBox 1.3.7; older supported Pi lines bundle the 1.1.x line. */
-function expectedTypeBoxLine(version: string): { spec: string; prefix: string } {
-  return version.startsWith('0.83')
-    ? { spec: 'typebox@1.3.7', prefix: '1.3.' }
-    : { spec: 'typebox@~1.1.38', prefix: '1.1.' };
+/** Exact TypeBox line bundled by each supported Pi release. */
+const TYPEBOX_BY_PI_VERSION: Record<
+  RequiredPiVersion,
+  { readonly spec: string; readonly prefix: string }
+> = {
+  '0.81.1': { spec: 'typebox@~1.1.38', prefix: '1.1.' },
+  '0.82.1': { spec: 'typebox@~1.1.38', prefix: '1.1.' },
+  '0.83.0': { spec: 'typebox@1.3.7', prefix: '1.3.' },
+  '0.84.0': { spec: 'typebox@1.3.7', prefix: '1.3.' },
+};
+
+function expectedTypeBoxLine(
+  version: RequiredPiVersion,
+): (typeof TYPEBOX_BY_PI_VERSION)[RequiredPiVersion] {
+  return TYPEBOX_BY_PI_VERSION[version];
 }
 
-async function smokeVersion(version: string, tarballPath: string): Promise<void> {
+const HOOK_CONTRACT_PROBE_FILES = [
+  'hook-contract-provider.ts',
+  'hook-probe-extension.ts',
+  'hook-probe-a.ts',
+  'hook-probe-b.ts',
+] as const;
+
+type ContextAbortMode = 'stream_skipped' | 'aborted_signal';
+
+interface ProviderCallProbeRecord {
+  readonly hook: 'provider_call';
+  readonly signalAborted?: unknown;
+}
+
+function isProviderCallProbeRecord(value: unknown): value is ProviderCallProbeRecord {
+  return isRecord(value) && value['hook'] === 'provider_call';
+}
+
+/** Pin the transport-blocking context-abort behavior of every supported Pi line. */
+async function assertDelegateContextAbortSupport(
+  temp: string,
+  cli: string,
+  version: RequiredPiVersion,
+  env: NodeJS.ProcessEnv,
+): Promise<void> {
+  const probeDir = join(temp, 'hook-contract-probe');
+  await mkdir(probeDir, { recursive: true });
+  await Promise.all(
+    HOOK_CONTRACT_PROBE_FILES.map((file) =>
+      copyFile(join(root, 'tests', 'scripted-provider', file), join(probeDir, file)),
+    ),
+  );
+  const logPath = join(temp, 'hook-contract-probe.jsonl');
+  const args = [
+    cli,
+    '--mode',
+    'text',
+    '--no-extensions',
+    '-e',
+    join(probeDir, 'hook-contract-provider.ts'),
+    '-e',
+    join(probeDir, 'hook-probe-a.ts'),
+    '-e',
+    join(probeDir, 'hook-probe-b.ts'),
+    '--offline',
+    '--no-tools',
+    '--no-session',
+    '--no-skills',
+    '--no-prompt-templates',
+    '--no-context-files',
+    '--provider',
+    'pi-bg-hook-contract',
+    '--model',
+    'hook-contract-model',
+    '-p',
+    'probe the context abort path',
+  ];
+  const result = spawnSync(process.execPath, args, {
+    cwd: temp,
+    encoding: 'utf8',
+    env: {
+      ...env,
+      PI_BG_HOOK_PROBE_MODE: 'context-abort',
+      PI_BG_HOOK_PROBE_LOG: logPath,
+      PI_BG_HOOK_PROBE_TOOL: '0',
+      PI_BG_HOOK_CONTRACT_API_KEY: 'hook-contract-api-key',
+    },
+  });
+  if (result.error !== undefined) {
+    throw new Error(`Pi ${version}: context-abort probe failed to spawn`, { cause: result.error });
+  }
+  const records = (await readFile(logPath, 'utf8'))
+    .split('\n')
+    .filter(Boolean)
+    .map((line) => parseJsonText(line));
+  if (
+    records.filter((record) => isRecord(record) && record['hook'] === 'context_aborting').length !==
+    1
+  ) {
+    throw new Error(`Pi ${version}: context-abort probe did not execute exactly once`);
+  }
+  const providerCalls = records.filter(isProviderCallProbeRecord);
+  let mode: ContextAbortMode;
+  if (providerCalls.length === 0) {
+    mode = 'stream_skipped';
+  } else if (providerCalls.length === 1 && providerCalls[0]?.signalAborted === true) {
+    mode = 'aborted_signal';
+  } else {
+    throw new Error(
+      `Pi ${version}: ctx.abort() neither skipped stream invocation nor produced exactly one already-aborted provider call`,
+    );
+  }
+  const expected: ContextAbortMode = version === '0.84.0' ? 'stream_skipped' : 'aborted_signal';
+  if (mode !== expected) {
+    throw new Error(`Pi ${version}: expected context-abort mode ${expected}, observed ${mode}`);
+  }
+  const expectedStatus = mode === 'stream_skipped' ? 1 : 0;
+  if (result.status !== expectedStatus) {
+    throw new Error(
+      `Pi ${version}: context-abort probe exited ${String(result.status)} instead of ${String(expectedStatus)} for ${mode}\n${result.stdout}\n${result.stderr}`,
+    );
+  }
+  if (
+    mode === 'stream_skipped' &&
+    !`${result.stdout}\n${result.stderr}`.toLowerCase().includes('aborted')
+  ) {
+    throw new Error(`Pi ${version}: skipped context-abort probe lacked an abort diagnostic`);
+  }
+  console.log(
+    `  Pi ${version}: context abort blocks transport via ${mode} (exit ${String(result.status)})`,
+  );
+}
+
+async function smokeVersion(version: RequiredPiVersion, tarballPath: string): Promise<void> {
   const temp = await mkdtemp(join(tmpdir(), `pi-bg-compat-${version}-`));
   const typebox = expectedTypeBoxLine(version);
   try {
@@ -491,6 +621,7 @@ async function smokeVersion(version: string, tarballPath: string): Promise<void>
       PI_BG_SCRIPTED_API_KEY: 'scripted-api-key',
       PI_BG_SCRIPTED_SCENARIO: 'display-only-bg',
     };
+    await assertDelegateContextAbortSupport(temp, cli, version, env);
     run(
       process.execPath,
       [
