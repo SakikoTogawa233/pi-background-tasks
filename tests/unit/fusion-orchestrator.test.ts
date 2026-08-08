@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { parseJsonText } from '../../src/core/common.js';
 import { FusionOrchestrator, type FusionChildRunner } from '../../src/core/fusion/orchestrator.js';
+import { FusionArtifactStore } from '../../src/core/fusion/artifacts.js';
 import { buildFusionCleanTaskCanonicalInput } from '../../src/core/fusion/clean-context.js';
 import { FUSION_RESEARCH_WORKFLOW } from '../../src/core/fusion/workflows.js';
 import { defaultFusionModelConfig } from '../../src/core/fusion/config.js';
@@ -365,6 +366,8 @@ async function failedManifest(root: string, runner: FusionChildRunner): Promise<
     await readFile(join(root, thrown.artifactDir, 'manifest.json'), 'utf8'),
   );
   assert.equal(field(manifest, 'state'), 'failed');
+  const artifacts = objectField(manifest, 'artifacts');
+  assert.ok(field(artifacts, 'failure-summary.json'), 'failed runs must bind one failure summary');
   return manifest;
 }
 
@@ -455,6 +458,8 @@ void describe('fusion orchestrator', () => {
       const manifestPath = join(root, result.details.artifact_dir, 'manifest.json');
       const manifest = parseObject(await readFile(manifestPath, 'utf8'));
       assert.equal(field(manifest, 'state'), 'completed');
+      const completedArtifacts = objectField(manifest, 'artifacts');
+      assert.equal(field(completedArtifacts, 'failure-summary.json'), undefined);
       const attempts = field(manifest, 'attempts');
       assert.ok(Array.isArray(attempts));
       assert.equal(attempts.length, 6);
@@ -612,6 +617,40 @@ void describe('fusion orchestrator', () => {
         /cancelled before launch/,
       );
       assert.equal(calls.length, 0);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  void it('writes one manifest-bound summary for a stored cancellation', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'pi-fusion-orchestrator-cancel-summary-'));
+    try {
+      const controller = new AbortController();
+      controller.abort();
+      const canonical = canonicalInput();
+      let thrown: unknown;
+      try {
+        await new FusionOrchestrator().run({
+          source: 'tool',
+          cwd: root,
+          canonicalInput: canonical,
+          canonicalInputSerialized: JSON.stringify(canonical),
+          contextLedger: ledger,
+          config: defaultFusionModelConfig(),
+          models: models(),
+          signal: controller.signal,
+        });
+      } catch (error) {
+        thrown = error;
+      }
+      assert.ok(thrown instanceof FusionError);
+      assert.equal(thrown.code, 'child_cancelled');
+      assert.ok(thrown.artifactDir);
+      const manifest = parseObject(
+        await readFile(join(root, thrown.artifactDir, 'manifest.json'), 'utf8'),
+      );
+      assert.equal(field(manifest, 'state'), 'cancelled');
+      assert.ok(field(objectField(manifest, 'artifacts'), 'failure-summary.json'));
     } finally {
       await rm(root, { recursive: true, force: true });
     }
@@ -990,6 +1029,108 @@ void describe('fusion orchestrator', () => {
       } finally {
         await rm(root, { recursive: true, force: true });
       }
+    }
+  });
+
+  void it('keeps terminal publication when one subordinate summary write fails', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'pi-fusion-summary-write-failure-'));
+    try {
+      let summaryWrites = 0;
+      let reported = '';
+      const orchestrator = new FusionOrchestrator({
+        childRunner: async (options) => {
+          throw new FusionError('candidate failed', {
+            code: 'child_exit_failed',
+            stage: 'candidate',
+            attempt: options.attempt,
+            childCreated: true,
+          });
+        },
+        createArtifactStore: async (options) => {
+          const store = await FusionArtifactStore.create(options);
+          store.writeFailureSummary = async () => {
+            summaryWrites += 1;
+            throw new Error('summary disk failure');
+          };
+          return store;
+        },
+      });
+      const canonical = canonicalInput();
+      let thrown: unknown;
+      try {
+        await orchestrator.run({
+          source: 'tool',
+          cwd: root,
+          canonicalInput: canonical,
+          canonicalInputSerialized: JSON.stringify(canonical),
+          contextLedger: ledger,
+          config: defaultFusionModelConfig(),
+          models: models(),
+          onProgress: (event) => {
+            if (event.type === 'failed') reported = event.error;
+          },
+        });
+      } catch (error) {
+        thrown = error;
+      }
+      assert.ok(thrown instanceof FusionError);
+      assert.equal(thrown.code, 'child_exit_failed');
+      assert.match(thrown.message, /failure-summary\.json unavailable after terminal publication/);
+      assert.equal(reported, thrown.message);
+      assert.equal(summaryWrites, 1);
+      assert.ok(thrown.artifactDir);
+      const manifest = parseObject(
+        await readFile(join(root, thrown.artifactDir, 'manifest.json'), 'utf8'),
+      );
+      assert.equal(field(manifest, 'state'), 'failed');
+      assert.equal(field(objectField(manifest, 'artifacts'), 'failure-summary.json'), undefined);
+      assert.doesNotMatch(stringField(manifest, 'error'), /failure-summary\.json unavailable/);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  void it('preserves writeError failure semantics and never attempts a summary afterward', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'pi-fusion-write-error-failure-'));
+    try {
+      let summaryWrites = 0;
+      const orchestrator = new FusionOrchestrator({
+        childRunner: async (options) => {
+          throw new FusionError('candidate failed', {
+            code: 'child_exit_failed',
+            stage: 'candidate',
+            attempt: options.attempt,
+            childCreated: true,
+          });
+        },
+        createArtifactStore: async (options) => {
+          const store = await FusionArtifactStore.create(options);
+          store.writeError = async () => {
+            throw new Error('writeError persistence failure');
+          };
+          store.writeFailureSummary = async () => {
+            summaryWrites += 1;
+            throw new Error('must not be called');
+          };
+          return store;
+        },
+      });
+      const canonical = canonicalInput();
+      await assert.rejects(
+        orchestrator.run({
+          source: 'tool',
+          cwd: root,
+          canonicalInput: canonical,
+          canonicalInputSerialized: JSON.stringify(canonical),
+          contextLedger: ledger,
+          config: defaultFusionModelConfig(),
+          models: models(),
+        }),
+        /candidate failed; additionally failed to write terminal fusion artifacts: writeError persistence failure/,
+      );
+      assert.equal(summaryWrites, 0);
+    } finally {
+      await rm(root, { recursive: true, force: true });
     }
   });
 

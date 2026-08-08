@@ -11,7 +11,7 @@ covers_sources: []
 
 <!-- pi-docs:begin name="tool-contract-bg_delegate" generator="scripts/docs/generate.mjs" -->
 - Label: **Background Delegate**
-- Source: `src/delegate-extension.ts:292`
+- Source: `src/delegate-extension.ts:307`
 - Description: Launch one background Pi agent seeded with a frozen projection of the current conversation, then return a launch receipt immediately. The child has its own session, a route pinned at launch that is never substituted, and read-only tools. Retrieve its verified answer with bg_result.
 - Root schema: `object`; additionalProperties: `false`
 

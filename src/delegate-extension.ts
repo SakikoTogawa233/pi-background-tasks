@@ -11,8 +11,13 @@ import { Type, type Static } from 'typebox';
 import type { BgTask, BgTaskSnapshot, StartDelegateTaskOptions } from './core/common.js';
 import { truncateChars } from './core/common.js';
 import { sha256Buffer } from './core/attested-pi-run.js';
-import { readFusionCommittedResult } from './core/fusion/result-package.js';
-import { cloneFusionUsage, type FusionUsage, type FusionWorkflowId } from './core/fusion/types.js';
+import { readFusionCommittedResult, readFusionFailureResult } from './core/fusion/result-package.js';
+import {
+  cloneFusionUsage,
+  type FusionFailureResultView,
+  type FusionUsage,
+  type FusionWorkflowId,
+} from './core/fusion/types.js';
 import {
   DELEGATE_AUTO_DELIVER_MODES,
   DELEGATE_CAPABILITIES,
@@ -161,6 +166,16 @@ export interface FusionBackgroundResultDetails {
   answer_bytes?: number | undefined;
   answer_sha256?: string | undefined;
   usage_delivered?: boolean | undefined;
+  answer?: { present: false; reason: 'run_did_not_commit' } | undefined;
+  summary_status?: FusionFailureResultView['summary_status'] | undefined;
+  failure_summary_ref?: FusionFailureResultView['failure_summary_ref'] | undefined;
+  failure?: FusionFailureResultView['failure'] | undefined;
+  progress?: FusionFailureResultView['progress'] | undefined;
+  usage_so_far?: FusionFailureResultView['usage_so_far'] | undefined;
+  attempts?: FusionFailureResultView['attempts'] | undefined;
+  evidence_artifacts?: FusionFailureResultView['evidence_artifacts'] | undefined;
+  remediation_ids?: FusionFailureResultView['remediation_ids'] | undefined;
+  summary_unavailable_reason?: FusionFailureResultView['summary_unavailable_reason'] | undefined;
 }
 
 export type BackgroundResultDetails = DelegateResultDetails | FusionBackgroundResultDetails;
@@ -508,9 +523,48 @@ export function registerDelegateExtension(
           };
         }
         if (task.status !== 'completed' || fusion.outcome?.status !== 'committed') {
-          throw new Error(
-            `Fusion ${task.id} did not commit a result (${task.status}): ${fusion.outcome?.error ?? task.error ?? 'no terminal detail'}`,
-          );
+          const terminal = await readFusionFailureResult({
+            artifactDirAbs: fusion.artifactDirAbs,
+            artifactDir: fusion.artifactDir,
+            runId: fusion.runId,
+            workflow: fusion.workflow,
+          });
+          const state =
+            fusion.outcome?.status === 'cancelled' || task.status === 'killed'
+              ? 'cancelled'
+              : 'failed';
+          const details: FusionBackgroundResultDetails = {
+            schema_version: 'pi-background-tasks.fusion-result-view.v1',
+            task_id: task.id,
+            state,
+            delivery: 'none',
+            workflow: fusion.workflow,
+            artifact_dir: fusion.artifactDir,
+            answer: terminal.answer,
+            summary_status: terminal.summary_status,
+            ...(terminal.failure_summary_ref === undefined
+              ? {}
+              : { failure_summary_ref: terminal.failure_summary_ref }),
+            ...(terminal.failure === undefined ? {} : { failure: terminal.failure }),
+            ...(terminal.progress === undefined ? {} : { progress: terminal.progress }),
+            ...(terminal.usage_so_far === undefined ? {} : { usage_so_far: terminal.usage_so_far }),
+            ...(terminal.attempts === undefined ? {} : { attempts: terminal.attempts }),
+            ...(terminal.evidence_artifacts === undefined
+              ? {}
+              : { evidence_artifacts: terminal.evidence_artifacts }),
+            ...(terminal.remediation_ids === undefined
+              ? {}
+              : { remediation_ids: terminal.remediation_ids }),
+            ...(terminal.summary_unavailable_reason === undefined
+              ? {}
+              : { summary_unavailable_reason: terminal.summary_unavailable_reason }),
+          };
+          return {
+            content: textContent(
+              `Fusion ${task.id} ${state}; no answer was committed. Terminal evidence status: ${terminal.summary_status}. Delivery is none; use only the manifest-bound artifact references in details.`,
+            ),
+            details,
+          };
         }
         const verified = await readFusionCommittedResult({
           artifactDirAbs: fusion.artifactDirAbs,
@@ -673,6 +727,13 @@ export function registerDelegateExtension(
           0,
           0,
         );
+      if (fusion && (details.state === 'failed' || details.state === 'cancelled')) {
+        return new Text(
+          theme.fg('warning', `${details.state} fusion; no committed answer · ${details.summary_status ?? 'unavailable'}`),
+          0,
+          0,
+        );
+      }
       return new Text(
         `${theme.fg('success', fusion ? '✓ fusion answer' : '✓ delegate answer')} ${theme.fg('dim', `${String(details.answer_bytes ?? 0)}B · ${details.delivery}`)}`,
         0,

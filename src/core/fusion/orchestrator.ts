@@ -5,6 +5,8 @@ import { FUSION_BUDGET_POLICY, FusionBudget } from './budget.js';
 import { assertChildOutputWithinContract } from './output-contract.js';
 import {
   FusionArtifactStore,
+  buildFusionFailureSummary,
+  buildFusionRunProgress as deriveFusionRunProgress,
   type CreateFusionArtifactStoreOptions,
   type RecordFusionFailedAttemptInput,
 } from './artifacts.js';
@@ -40,9 +42,7 @@ import {
   FUSION_VALIDATE_CANDIDATE_SCHEMA_VERSION,
   FusionError,
   addFusionUsage,
-  cloneFusionUsage,
   createEmptyFusionUsage,
-  type FusionArtifactManifest,
   type FusionCalibrationViolation,
   type FusionCapability,
   type FusionCanonicalInputV3,
@@ -176,58 +176,7 @@ function asFusionError(error: unknown, artifactDir: string, messageOverride?: st
   });
 }
 
-function fusionStageProgress(
-  manifest: FusionArtifactManifest,
-  stage: FusionStage,
-): FusionRunProgress['candidates'] {
-  const attempts = manifest.attempts.filter((attempt) => attempt.stage === stage);
-  const created = attempts.filter((attempt) => attempt.child_created).length;
-  const completed = attempts.filter(
-    (attempt) => attempt.child_created && attempt.status === 'completed',
-  ).length;
-  const failed = attempts.filter(
-    (attempt) => attempt.child_created && attempt.status === 'failed',
-  ).length;
-  const cancelled = attempts.filter(
-    (attempt) => attempt.child_created && attempt.status === 'cancelled',
-  ).length;
-  const completedByState =
-    stage === 'candidate'
-      ? completed >= 3
-      : stage === 'evaluation'
-        ? manifest.artifacts['evaluation.json'] !== undefined ||
-          manifest.state === 'evaluation_complete' ||
-          manifest.state === 'merging' ||
-          manifest.state === 'completed'
-        : manifest.artifacts['merged.md'] !== undefined || manifest.state === 'completed';
-  const progress: FusionRunProgress['candidates'] = {
-    status: completedByState ? 'completed' : created === 0 ? 'not_started' : 'incomplete',
-    attempts_recorded: attempts.length,
-    children_created: created,
-    children_completed: completed,
-    children_failed: failed,
-    children_cancelled: cancelled,
-  };
-  if (stage === 'candidate') {
-    const createdSlots = new Set(
-      attempts.flatMap((attempt) =>
-        attempt.child_created && attempt.slot !== undefined ? [attempt.slot] : [],
-      ),
-    );
-    progress.not_started_slots = 3 - createdSlots.size;
-  }
-  return progress;
-}
-
-export function buildFusionRunProgress(manifest: FusionArtifactManifest): FusionRunProgress {
-  return {
-    manifest_state: manifest.state,
-    candidates: fusionStageProgress(manifest, 'candidate'),
-    evaluation: fusionStageProgress(manifest, 'evaluation'),
-    merge: fusionStageProgress(manifest, 'merge'),
-    usage_so_far: cloneFusionUsage(manifest.usage),
-  };
-}
+export { buildFusionRunProgress } from './artifacts.js';
 
 function formatFusionRunStage(name: string, stage: FusionRunProgress['candidates']): string {
   const notStarted =
@@ -237,7 +186,31 @@ function formatFusionRunStage(name: string, stage: FusionRunProgress['candidates
   return `${name}=${stage.status} (${String(stage.children_created)} created, ${String(stage.children_completed)} completed, ${String(stage.children_failed)} failed, ${String(stage.children_cancelled)} cancelled${notStarted})`;
 }
 
-export function formatFusionRunProgress(progress: FusionRunProgress): string {
+export function summaryUnavailableNote(error: unknown): string {
+  const detail = errorText(error);
+  const detailBytes = Buffer.from(detail, 'utf8');
+  if (detailBytes.length > 1024) {
+    return 'failure-summary.json unavailable after terminal publication; write failure detail omitted because it exceeds the 1024-byte diagnostic cap.';
+  }
+  return `failure-summary.json unavailable after terminal publication: ${detail}`;
+}
+
+function withSummaryUnavailableNote(error: FusionError, summaryError: unknown): FusionError {
+  const details: FusionErrorDetails = {
+    code: error.code,
+    transient: error.transient,
+    childCreated: error.childCreated,
+  };
+  if (error.artifactDir !== undefined) details.artifactDir = error.artifactDir;
+  if (error.stage !== undefined) details.stage = error.stage;
+  if (error.slot !== undefined) details.slot = error.slot;
+  if (error.attempt !== undefined) details.attempt = error.attempt;
+  if (error.budget !== undefined) details.budget = error.budget;
+  if (error.runProgress !== undefined) details.runProgress = error.runProgress;
+  return new FusionError(`${error.message}\n${summaryUnavailableNote(summaryError)}`, details);
+}
+
+function formatFusionRunProgress(progress: FusionRunProgress): string {
   const usage = progress.usage_so_far;
   const optionalUsage = [
     usage.cacheWrite1h === undefined ? undefined : `cacheWrite1h=${String(usage.cacheWrite1h)}`,
@@ -962,9 +935,26 @@ export class FusionOrchestrator {
         terminalError = withRunProgress(
           error,
           store.artifactDir,
-          buildFusionRunProgress(store.snapshot()),
+          deriveFusionRunProgress(store.snapshot()),
         );
-        await store.writeError(cancelled ? 'cancelled' : 'failed', terminalError.message);
+        const terminalState = cancelled ? 'cancelled' : 'failed';
+        await store.writeError(terminalState, terminalError.message);
+        // The terminal manifest/error are authoritative. Summary persistence is
+        // subordinate and intentionally attempted once from that fresh snapshot.
+        try {
+          const terminalManifest = store.snapshot();
+          await store.writeFailureSummary(
+            buildFusionFailureSummary({
+              manifest: terminalManifest,
+              terminalError,
+              progress: deriveFusionRunProgress(terminalManifest),
+              terminalState,
+              createdAt: terminalManifest.updated_at,
+            }),
+          );
+        } catch (summaryError) {
+          terminalError = withSummaryUnavailableNote(terminalError, summaryError);
+        }
       } catch (artifactError) {
         throw withTerminalArtifactFailure(error, store.artifactDir, artifactError);
       }

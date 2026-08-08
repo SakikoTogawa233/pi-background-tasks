@@ -26,7 +26,7 @@
 | Fact | Value |
 | --- | --- |
 | Package | `pi-background-tasks` |
-| Version | `2.1.3` |
+| Version | `2.1.4` |
 | Node engine | `>=22.19.0` |
 | Pi entrypoint | `./extensions/background-tasks.ts` |
 | Package image | [logo.png](https://raw.githubusercontent.com/ismailsaleekh/pi-background-tasks/main/logo.png) |
@@ -294,7 +294,7 @@ Agent tasks launched through `pi -p ...` or `pi --mode json ...` and marked `isA
 - Claude Fusion children load the package-owned Claude Code OAuth attribution provider shared with the repo spawn path, request `ttl: "1h"` on system/tool/conversation cache breakpoints before serialization, and preserve provider-reported `cacheWrite1h` evidence. Set `PI_CACHE_RETENTION=short|none|long` to choose explicitly; malformed attribution, policy, or cache evidence fails before transport. Provider usage is preserved verbatim, but subscription OAuth can report `cacheWrite1h = 0` even when a unique cache remains readable beyond five minutes; treat positive `cacheWrite1h` as definitive and zero as inconclusive on that channel. Anthropic budgeting follows the provider's 200K subscription policy.
 - Fusion research fetches only caller-supplied public `http(s)` URLs with bounded retrieval. It is not web search and not a secret-exfiltration boundary.
 - Attestation sidecars are local, unsigned, same-user-writable evidence. They are useful for downstream local gates, but not cryptographic proof against local compromise, a compromised Pi binary, or a compromised provider.
-- Metadata, attestations, delegate/Fusion artifacts, and configuration replacements use write/fsync/rename durability patterns. Ordinary task output is closed and drained before terminal publication but is not explicitly fsynced. POSIX directory entries are fsynced after atomic replacement; Windows lacks the same portable directory-entry crash-durability guarantee.
+- Metadata, attestations, delegate/Fusion artifacts, and configuration replacements use write/fsync/rename durability patterns. Failed/cancelled stored Fusion runs also have a manifest-bound `failure-summary.json` containing bounded no-answer evidence metadata and artifact refs only; `bg_result` returns it as an answer-free typed terminal view after integrity checks. Ordinary task output is closed and drained before terminal publication but is not explicitly fsynced. POSIX directory entries are fsynced after atomic replacement; Windows lacks the same portable directory-entry crash-durability guarantee.
 
 Detailed operations: [Configuration](docs/operations/configuration.md).
 

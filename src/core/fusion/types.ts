@@ -30,6 +30,8 @@ export const FUSION_CALIBRATION_VIOLATION_SCHEMA_VERSION =
 export const FUSION_VALIDATE_CANDIDATE_CONTRACT_EVENT_SCHEMA_VERSION =
   'pi-background-tasks.fusion-validation-candidate-contract-event.v1';
 export const FUSION_TOOL_CALL_LOG_SCHEMA_VERSION = 'pi-background-tasks.fusion-tool-call.v1';
+export const FUSION_FAILURE_SUMMARY_SCHEMA_VERSION =
+  'pi-background-tasks.fusion-failure-summary.v1';
 
 /**
  * Conversation-projection transform shared by every Fusion entry point.
@@ -875,6 +877,91 @@ export interface FusionArtifactRef {
   path: string;
   byte_length: number;
   sha256: string;
+}
+
+export type FusionFailureArtifactClassification =
+  | 'complete_stage_output'
+  | 'partial_stage_output'
+  | 'oversized_original'
+  | 'empty_rejected_output'
+  | 'evidence_only';
+
+export interface FusionFailureEvidenceArtifact {
+  name: string;
+  classification: FusionFailureArtifactClassification;
+  ref: FusionArtifactRef;
+}
+
+export interface FusionFailureAttemptMetadata {
+  stage: FusionStage;
+  slot?: 1 | 2 | 3 | undefined;
+  attempt: number;
+  status: 'completed' | 'failed' | 'cancelled';
+  child_created: boolean;
+}
+
+export interface FusionFailureList<T> {
+  listed: readonly T[];
+  omitted_count: number;
+}
+
+export interface FusionFailureMessageMetadata {
+  byte_length: number;
+  sha256: string;
+  inline_message?: string | undefined;
+  omission_reason?: 'exceeds_inline_message_bytes_cap' | 'result_view_byte_budget' | undefined;
+}
+
+export interface FusionFailureSummaryV1 {
+  schema_version: typeof FUSION_FAILURE_SUMMARY_SCHEMA_VERSION;
+  run_id: string;
+  workflow: FusionWorkflowId;
+  source: FusionSource;
+  terminal_state: Exclude<FusionTerminalState, 'completed'>;
+  created_at: string;
+  answer: { present: false; reason: 'run_did_not_commit' };
+  failure: {
+    code: FusionErrorCode | null;
+    stage?: FusionStage | undefined;
+    slot?: 1 | 2 | 3 | undefined;
+    attempt?: number | undefined;
+    child_created: boolean;
+    message: FusionFailureMessageMetadata;
+  };
+  progress: FusionRunProgress;
+  usage_so_far: FusionUsage;
+  attempts: FusionFailureList<FusionFailureAttemptMetadata>;
+  evidence_artifacts: FusionFailureList<FusionFailureEvidenceArtifact>;
+  remediation_ids: readonly (
+    | 'inspect_manifest_bound_evidence'
+    | 'inspect_terminal_error'
+    | 'split_or_reduce_work'
+    | 'retry_same_route_after_operator_review'
+  )[];
+}
+
+export interface FusionFailureViewFailure {
+  code?: FusionErrorCode | null | undefined;
+  stage?: FusionStage | undefined;
+  slot?: 1 | 2 | 3 | undefined;
+  attempt?: number | undefined;
+  child_created?: boolean | undefined;
+  message: FusionFailureMessageMetadata;
+}
+
+export interface FusionFailureResultView {
+  schema_version: typeof FUSION_FAILURE_SUMMARY_SCHEMA_VERSION;
+  summary_status: 'verified' | 'legacy_manifest_only' | 'unavailable' | 'integrity_failed';
+  terminal_state: Exclude<FusionTerminalState, 'completed'>;
+  answer: { present: false; reason: 'run_did_not_commit' };
+  failure?: FusionFailureViewFailure | undefined;
+  progress?: FusionRunProgress | undefined;
+  usage_so_far?: FusionUsage | undefined;
+  attempts?: FusionFailureList<FusionFailureAttemptMetadata> | undefined;
+  evidence_artifacts?: FusionFailureList<FusionFailureEvidenceArtifact> | undefined;
+  remediation_ids?: FusionFailureSummaryV1['remediation_ids'] | undefined;
+  failure_summary_ref?: FusionArtifactRef | undefined;
+  summary_unavailable_reason?: 'no_durable_summary' | 'manifest_untrusted' | 'summary_integrity_failed' | undefined;
 }
 
 export interface FusionArtifactManifest {

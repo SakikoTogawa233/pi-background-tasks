@@ -11,7 +11,7 @@ covers_sources: []
 
 <!-- pi-docs:begin name="tool-contract-bg_result" generator="scripts/docs/generate.mjs" -->
 - Label: **Background Result**
-- Source: `src/delegate-extension.ts:453`
+- Source: `src/delegate-extension.ts:468`
 - Description: Retrieve a hash-verified result from a bg_delegate or background Fusion task. Never blocks: a running task returns a typed not-ready result. Oversized answers are never truncated.
 - Root schema: `object`; additionalProperties: `false`
 
@@ -94,6 +94,12 @@ The returned text is decoded from the same aggregate buffer that was hashed. Cor
 
 A completed Fusion task is accepted only when `manifest.json` is terminal `completed`, its `result.json` and `merged.md` fixed references match, both files match manifest-bound byte lengths and SHA-256 values, run/workflow/artifact identity matches the task, result details carry the current schema, usage is complete, and merged bytes are well-formed UTF-8. The first successful retrieval attaches complete Fusion usage exactly once; later retrievals omit usage to prevent double-counting.
 
+## Fusion failed/cancelled terminal view
+
+A failed or cancelled Fusion task returns successfully as an answer-free typed terminal view rather than exposing partial output or throwing a plain failure string. It always has `state:"failed" | "cancelled"`, `delivery:"none"`, and `answer:{present:false,reason:"run_did_not_commit"}`; a requested inline or artifact delivery cannot override this. It includes workflow/artifact location where known, bounded progress/failure/count metadata, and manifest-bound evidence references only. It never includes merged text, partial response text, answer bytes/hash, or delivered-answer usage, and it never claims Fusion usage for these views.
+
+For current runs, `summary_status:"verified"` means `failure-summary.json` was manifest-bound and its exact bytes/hash, UTF-8, closed schema, identity/state, no-answer assertion, and surfaced evidence refs were checked. Referenced stage-output bodies are never read; refs are honestly manifest-bound rather than freshly rehashed. `legacy_manifest_only` describes a validated historical terminal manifest with no summary and never backfills it. `integrity_failed` exposes no summary-derived metadata; `unavailable` exposes no untrusted refs. Failure rendering is bounded to the diagnostics-scale 8 KiB budget by deterministically dropping whole optional rows with exact omission counts, never cutting strings.
+
 ## Inline/artifact delivery and no truncation
 
 `bg_result` never truncates an answer.
@@ -116,6 +122,7 @@ Common delegate retrieval outcomes:
 - `seed_hash_mismatch`, `answer_hash_mismatch`, `child_result_invalid`, `child_result_encoding_invalid` — integrity or encoding failure.
 - `artifact_read_failed`, `artifact_spill_failed`, `artifact_error` — artifact I/O failure.
 - `result_too_large_for_inline` — explicit inline request exceeded the inline cap.
+- Fusion `summary_status:"integrity_failed"` — a terminal summary or its manifest binding failed verification; no summary metadata is trusted.
 
 Delegate errors include whether a child process was created, preserved artifact hints when known, and remediation text. Usage missing from the provider is reported as `unavailable`, not synthesized as zero. Fusion retrieval additionally fails on non-completed manifests, identity/schema drift, malformed usage/details, invalid UTF-8, or any manifest/result/merged hash or byte-length mismatch; failed/cancelled runs return their preserved terminal error rather than partial output.
 

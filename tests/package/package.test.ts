@@ -1032,12 +1032,37 @@ void describe('package', () => {
     const fusionFacade = await text('src/fusion-extension.ts');
     assert.match(artifacts, /manifest\.artifacts\['result\.json'\]/);
     assert.match(artifacts, /writeCommittedResult/);
+    assert.match(artifacts, /async writeFailureSummary/);
+    assert.match(artifacts, /failure summary is already bound in the manifest/);
+    assert.match(resultPackage, /FUSION_FAILURE_SUMMARY_MAX_BYTES/);
+    assert.match(resultPackage, /failure evidence ref diverges from manifest/);
+    assert.match(resultPackage, /failure summary exceeds its bounded artifact size/);
+    assert.match(resultPackage, /TextDecoder\('utf-8', \{ fatal: true \}\)/);
+    assert.doesNotMatch(resultPackage, /readUtf8\([^\n]*response\.(?:md|txt)/);
     assert.match(resultPackage, /sha256Buffer\(resultFile\.bytes\)/);
     assert.match(resultPackage, /sha256Buffer\(mergedFile\.bytes\)/);
     assert.match(resultPackage, /TextDecoder\('utf-8', \{ fatal: true \}\)/);
     assert.doesNotMatch(resultPackage, /\.slice\(|\.substring\(/);
+    assert.match(resultExtension, /await readFusionFailureResult/);
+    assert.match(resultExtension, /delivery: 'none'/);
     assert.match(resultExtension, /await readFusionCommittedResult/);
     assert.match(resultExtension, /await deps\.claimFusionUsage\(task\)/);
+    const orchestrator = await text('src/core/fusion/orchestrator.ts');
+    assert.ok(
+      orchestrator.indexOf('await store.writeError') <
+        orchestrator.indexOf('await store.writeFailureSummary'),
+      'terminal error publication must precede the one summary attempt',
+    );
+    assert.equal(
+      (orchestrator.match(/await store\.writeFailureSummary/g) ?? []).length,
+      1,
+      'summary persistence must have exactly one orchestrator call site',
+    );
+    assert.ok(
+      resultExtension.indexOf('await readFusionFailureResult') <
+        resultExtension.indexOf('await deps.claimFusionUsage(task)'),
+      'failed retrieval must return before committed-result usage can be claimed',
+    );
     assert.ok(
       resultExtension.indexOf('await readFusionCommittedResult') <
         resultExtension.indexOf('await deps.claimFusionUsage(task)'),

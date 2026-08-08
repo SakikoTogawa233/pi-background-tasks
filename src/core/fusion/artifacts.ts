@@ -7,12 +7,18 @@ import { replaceFileDurable } from '../durable-fs.js';
 import {
   EMPTY_FUSION_USAGE,
   FUSION_COMMITTED_RESULT_SCHEMA_VERSION,
+  FUSION_FAILURE_SUMMARY_SCHEMA_VERSION,
   FUSION_MANIFEST_SCHEMA_VERSION,
   FUSION_VALIDATE_CANDIDATE_CONTRACT_EVENT_SCHEMA_VERSION,
   FusionError,
   cloneFusionUsage,
   type FusionArtifactManifest,
   type FusionArtifactRef,
+  type FusionFailureArtifactClassification,
+  type FusionFailureAttemptMetadata,
+  type FusionFailureEvidenceArtifact,
+  type FusionFailureSummaryV1,
+  type FusionRunProgress,
   type FusionAttemptArtifactRecord,
   type FusionBudgetPlanV1,
   type FusionCalibrationViolation,
@@ -318,6 +324,210 @@ function artifactRefSha256Hex(value: string): string {
   return hex;
 }
 
+/** A manifest artifact reference is always one safe basename below its run directory. */
+export function assertFusionArtifactBasename(name: string): string {
+  if (
+    name.length === 0 ||
+    name !== basename(name) ||
+    name.includes('/') ||
+    name.includes('\\') ||
+    name === '.' ||
+    name === '..' ||
+    Buffer.byteLength(name, 'utf8') > 255
+  ) {
+    throw errorForArtifact(`invalid fusion artifact name: ${name}`);
+  }
+  return name;
+}
+
+export const FUSION_FAILURE_SUMMARY_INLINE_MESSAGE_BYTES = 1024;
+export const FUSION_FAILURE_SUMMARY_ATTEMPT_CAP = 12;
+export const FUSION_FAILURE_SUMMARY_EVIDENCE_CAP = 24;
+export const FUSION_FAILURE_SUMMARY_MAX_BYTES = 32 * 1024;
+
+function compareArtifactText(left: string, right: string): number {
+  return left < right ? -1 : left > right ? 1 : 0;
+}
+
+interface FusionProgressManifest {
+  state: FusionState;
+  artifacts: Readonly<Record<string, FusionArtifactRef>>;
+  attempts: readonly {
+    stage: FusionStage;
+    slot?: 1 | 2 | 3 | undefined;
+    status: 'completed' | 'failed' | 'cancelled';
+    child_created: boolean;
+  }[];
+  usage: FusionUsage;
+}
+
+function failureStageProgress(
+  manifest: FusionProgressManifest,
+  stage: FusionStage,
+): FusionRunProgress['candidates'] {
+  const attempts = manifest.attempts.filter((attempt) => attempt.stage === stage);
+  const created = attempts.filter((attempt) => attempt.child_created).length;
+  const completed = attempts.filter(
+    (attempt) => attempt.child_created && attempt.status === 'completed',
+  ).length;
+  const failed = attempts.filter(
+    (attempt) => attempt.child_created && attempt.status === 'failed',
+  ).length;
+  const cancelled = attempts.filter(
+    (attempt) => attempt.child_created && attempt.status === 'cancelled',
+  ).length;
+  const completedByState =
+    stage === 'candidate'
+      ? completed >= 3
+      : stage === 'evaluation'
+        ? manifest.artifacts['evaluation.json'] !== undefined ||
+          manifest.state === 'evaluation_complete' ||
+          manifest.state === 'merging' ||
+          manifest.state === 'completed'
+        : manifest.artifacts['merged.md'] !== undefined || manifest.state === 'completed';
+  const progress: FusionRunProgress['candidates'] = {
+    status: completedByState ? 'completed' : created === 0 ? 'not_started' : 'incomplete',
+    attempts_recorded: attempts.length,
+    children_created: created,
+    children_completed: completed,
+    children_failed: failed,
+    children_cancelled: cancelled,
+  };
+  if (stage === 'candidate') {
+    const createdSlots = new Set(
+      attempts.flatMap((attempt) =>
+        attempt.child_created && attempt.slot !== undefined ? [attempt.slot] : [],
+      ),
+    );
+    progress.not_started_slots = 3 - createdSlots.size;
+  }
+  return progress;
+}
+
+/** Derive terminal progress solely from the durable manifest. */
+export function buildFusionRunProgress(manifest: FusionProgressManifest): FusionRunProgress {
+  return {
+    manifest_state: manifest.state,
+    candidates: failureStageProgress(manifest, 'candidate'),
+    evaluation: failureStageProgress(manifest, 'evaluation'),
+    merge: failureStageProgress(manifest, 'merge'),
+    usage_so_far: cloneFusionUsage(manifest.usage),
+  };
+}
+
+function terminalMessageMetadata(message: string): FusionFailureSummaryV1['failure']['message'] {
+  const bytes = Buffer.from(message, 'utf8');
+  return {
+    byte_length: bytes.length,
+    sha256: sha256Buffer(bytes),
+    ...(bytes.length <= FUSION_FAILURE_SUMMARY_INLINE_MESSAGE_BYTES
+      ? { inline_message: message }
+      : { omission_reason: 'exceeds_inline_message_bytes_cap' as const }),
+  };
+}
+
+function failureArtifactClassification(
+  name: string,
+  ref: FusionArtifactRef,
+  manifest: FusionArtifactManifest,
+): FusionFailureArtifactClassification {
+  for (const attempt of manifest.attempts) {
+    if (attempt.response_path === name) {
+      return ref.byte_length === 0 && attempt.status !== 'completed'
+        ? 'empty_rejected_output'
+        : 'complete_stage_output';
+    }
+    if (attempt.partial_response_path === name) return 'partial_stage_output';
+    if (attempt.output_recovery?.original_response_path === name) return 'oversized_original';
+  }
+  return 'evidence_only';
+}
+
+function failureAttemptMetadata(manifest: FusionArtifactManifest): readonly FusionFailureAttemptMetadata[] {
+  return manifest.attempts
+    .map((attempt) => ({
+      stage: attempt.stage,
+      ...(attempt.slot === undefined ? {} : { slot: attempt.slot }),
+      attempt: attempt.attempt,
+      status: attempt.status,
+      child_created: attempt.child_created,
+    }))
+    .sort((left, right) =>
+      compareArtifactText(left.stage, right.stage) ||
+      (left.slot ?? 0) - (right.slot ?? 0) ||
+      left.attempt - right.attempt,
+    );
+}
+
+export function buildFusionFailureSummary(input: {
+  manifest: FusionArtifactManifest;
+  terminalError: FusionError;
+  progress: FusionRunProgress;
+  terminalState: Exclude<FusionTerminalState, 'completed'>;
+  createdAt: string;
+}): FusionFailureSummaryV1 {
+  if (
+    (input.terminalState !== 'failed' && input.terminalState !== 'cancelled') ||
+    input.manifest.state !== input.terminalState
+  ) {
+    throw errorForArtifact('failure summary requires a matching failed/cancelled terminal manifest');
+  }
+  if (input.manifest.error !== input.terminalError.message) {
+    throw errorForArtifact('failure summary terminal error does not match the durable manifest');
+  }
+  if (canonicalJson(input.progress) !== canonicalJson(buildFusionRunProgress(input.manifest))) {
+    throw errorForArtifact('failure summary progress does not match the durable terminal manifest');
+  }
+  if (input.manifest.artifacts['failure-summary.json'] !== undefined) {
+    throw errorForArtifact('failure summary already exists in the terminal manifest');
+  }
+  const attempts = failureAttemptMetadata(input.manifest);
+  const evidence: FusionFailureEvidenceArtifact[] = Object.entries(input.manifest.artifacts)
+    .map(([name, ref]) => ({
+      name: assertFusionArtifactBasename(name),
+      classification: failureArtifactClassification(name, ref, input.manifest),
+      ref: { ...ref },
+    }))
+    .sort((left, right) => compareArtifactText(left.name, right.name));
+  return {
+    schema_version: FUSION_FAILURE_SUMMARY_SCHEMA_VERSION,
+    run_id: input.manifest.run_id,
+    workflow: input.manifest.workflow,
+    source: input.manifest.source,
+    terminal_state: input.terminalState,
+    created_at: input.createdAt,
+    answer: { present: false, reason: 'run_did_not_commit' },
+    failure: {
+      code: input.terminalError.code,
+      ...(input.terminalError.stage === undefined ? {} : { stage: input.terminalError.stage }),
+      ...(input.terminalError.slot === undefined ? {} : { slot: input.terminalError.slot }),
+      ...(input.terminalError.attempt === undefined
+        ? {}
+        : { attempt: input.terminalError.attempt }),
+      child_created: input.terminalError.childCreated,
+      message: terminalMessageMetadata(input.terminalError.message),
+    },
+    progress: input.progress,
+    usage_so_far: cloneFusionUsage(input.manifest.usage),
+    attempts: {
+      listed: attempts.filter((_attempt, index) => index < FUSION_FAILURE_SUMMARY_ATTEMPT_CAP),
+      omitted_count:
+        attempts.length - Math.min(attempts.length, FUSION_FAILURE_SUMMARY_ATTEMPT_CAP),
+    },
+    evidence_artifacts: {
+      listed: evidence.filter((_artifact, index) => index < FUSION_FAILURE_SUMMARY_EVIDENCE_CAP),
+      omitted_count:
+        evidence.length - Math.min(evidence.length, FUSION_FAILURE_SUMMARY_EVIDENCE_CAP),
+    },
+    remediation_ids: [
+      'inspect_manifest_bound_evidence',
+      'inspect_terminal_error',
+      'split_or_reduce_work',
+      'retry_same_route_after_operator_review',
+    ],
+  };
+}
+
 export class FusionArtifactStore {
   private readonly runDirAbs: string;
   private readonly runDirDisplay: string;
@@ -534,6 +744,59 @@ export class FusionArtifactStore {
     });
   }
 
+  /**
+   * Writes the terminal evidence summary exactly once after writeError has made
+   * the manifest terminal. The summary deliberately contains refs only, never
+   * stage-output bodies.
+   */
+  async writeFailureSummary(summary: FusionFailureSummaryV1): Promise<FusionArtifactRef> {
+    if (
+      this.manifest.state !== 'failed' &&
+      this.manifest.state !== 'cancelled'
+    ) {
+      throw errorForArtifact('failure summary requires a failed/cancelled terminal manifest');
+    }
+    if (summary.terminal_state !== this.manifest.state) {
+      throw errorForArtifact('failure summary terminal state does not match the manifest');
+    }
+    if (
+      summary.run_id !== this.manifest.run_id ||
+      summary.workflow !== this.manifest.workflow ||
+      summary.source !== this.manifest.source
+    ) {
+      throw errorForArtifact('failure summary identity does not match the terminal manifest');
+    }
+    if (
+      summary.answer?.present !== false ||
+      summary.answer.reason !== 'run_did_not_commit'
+    ) {
+      throw errorForArtifact('failure summary must assert that no answer was committed');
+    }
+    if (this.manifest.error === undefined || this.manifest.artifacts['error.json'] === undefined) {
+      throw errorForArtifact('failure summary requires durable terminal error evidence');
+    }
+    if (
+      canonicalJson(summary.failure.message) !==
+      canonicalJson(terminalMessageMetadata(this.manifest.error))
+    ) {
+      throw errorForArtifact('failure summary terminal error metadata does not match the manifest');
+    }
+    if (canonicalJson(summary.progress) !== canonicalJson(buildFusionRunProgress(this.snapshot()))) {
+      throw errorForArtifact('failure summary progress does not match the terminal manifest');
+    }
+    if (canonicalJson(summary.usage_so_far) !== canonicalJson(this.manifest.usage)) {
+      throw errorForArtifact('failure summary usage does not match the terminal manifest');
+    }
+    if (this.manifest.artifacts['failure-summary.json'] !== undefined) {
+      throw errorForArtifact('failure summary is already bound in the manifest');
+    }
+    const bytes = Buffer.from(`${canonicalJson(summary)}\n`, 'utf8');
+    if (bytes.length > FUSION_FAILURE_SUMMARY_MAX_BYTES) {
+      throw errorForArtifact('failure summary exceeds its bounded diagnostics artifact limit');
+    }
+    return this.writeArtifact('failure-summary.json', bytes);
+  }
+
   async recordChildAttempt(input: RecordFusionChildAttemptInput): Promise<void> {
     const prefix = attemptPrefix(input.result.stage, input.result.slot, input.result.attempt);
     await this.writeArtifact(`${prefix}.system-prompt.txt`, input.systemPrompt);
@@ -664,6 +927,7 @@ export class FusionArtifactStore {
     });
   }
 
+  /** Writes a durable artifact then binds its exact bytes in the manifest. */
   private async writeArtifact(name: string, data: Buffer | string): Promise<FusionArtifactRef> {
     const absPath = this.artifactPath(name);
     const ref = await writePrivateFile(absPath, data);
@@ -674,9 +938,7 @@ export class FusionArtifactStore {
   }
 
   private artifactPath(name: string): string {
-    if (name.length === 0 || name.includes('/') || name.includes('\\')) {
-      throw errorForArtifact(`invalid fusion artifact name: ${name}`);
-    }
+    assertFusionArtifactBasename(name);
     const absPath = join(this.runDirAbs, name);
     if (!pathInside(this.runDirAbs, absPath)) {
       throw errorForArtifact(`fusion artifact path escapes run directory: ${name}`);

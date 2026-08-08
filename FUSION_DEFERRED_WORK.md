@@ -1,8 +1,8 @@
 # Fusion Deferred Work
 
-Issues 3–9 below are intentionally deferred: no implementation is currently
-authorized for any of them. Issues 1–2 were implemented separately and are
-intentionally excluded from this deferred-work ledger.
+Issues 3–7 and 9 below are intentionally deferred: no implementation is currently
+authorized for any of them. Issues 1–2 were implemented separately; Issue 8 is
+implemented and retained below as a closed record.
 
 ## Issue 3: Per-child caps
 
@@ -55,15 +55,16 @@ intentionally excluded from this deferred-work ledger.
   scope/source partitions.
 - **Invariant:** Never truncate silently.
 
-## Issue 8: Failure artifacts and reporting
+## Issue 8: Failure artifacts and reporting — implemented
 
-- **Current behavior (verified):** Failed runs preserve artifacts but lack a
-  `failure-summary.json` and `bg_result` partial-artifact metadata.
-- **Risk:** Callers may mistake partial artifacts for a complete, trustworthy
-  answer.
-- **Future direction:** Add failure-summary generation and partial-artifact
-  metadata surfaced through `bg_result`.
-- **Invariant:** Partial artifacts must never be presented as final answers.
+- **Implemented behavior:** Failed/cancelled stored runs write the manifest-bound
+  `pi-background-tasks.fusion-failure-summary.v1` after durable `error.json` and
+  terminal manifest publication. `bg_result` returns a bounded typed no-answer
+  terminal view with verified evidence refs only.
+- **Guarantee:** Partial artifacts are never presented as final answers, never
+  inlined, and never used to claim delivered-answer usage.
+- **Boundary:** Provider-failure classification remains Issue 4 work and is not
+  inferred by the summary.
 
 ## Issue 9: `/fusion-models` topology warnings
 

@@ -951,17 +951,40 @@ void describe('fusion SDK integration', { concurrency: false }, () => {
       await waitForFusionTerminal(h.session, taskId);
       const resultTool = h.session.getToolDefinition('bg_result');
       assert.ok(resultTool);
-      await assert.rejects(
-        () =>
-          resultTool.execute(
-            'result-failure-diagnostics',
-            { taskId },
-            undefined,
-            undefined,
-            h.session.extensionRunner.createContext(),
-          ),
-        /Fusion failed \(stage=candidate, slot=[123], attempt=1\):.*exited with code 42.*Artifacts: \.pi\/fusion\//s,
+      const terminal = await resultTool.execute(
+        'result-failure-diagnostics',
+        { taskId, delivery: 'inline' },
+        undefined,
+        undefined,
+        h.session.extensionRunner.createContext(),
       );
+      assert.ok(isRecord(terminal.details));
+      assert.equal(terminal.details['state'], 'failed');
+      assert.equal(terminal.details['delivery'], 'none');
+      assert.deepEqual(terminal.details['answer'], { present: false, reason: 'run_did_not_commit' });
+      assert.equal(terminal.details['summary_status'], 'verified');
+      assert.equal(terminal.details['answer_bytes'], undefined);
+      assert.equal(terminal.details['answer_sha256'], undefined);
+      assert.ok(isRecord(terminal.details['failure']));
+      assert.equal(terminal.details['failure']['stage'], 'candidate');
+      assert.equal('usage' in terminal, false);
+      for (const delivery of [undefined, 'artifact'] as const) {
+        const repeat = await resultTool.execute(
+          `result-failure-${delivery ?? 'default'}`,
+          delivery === undefined ? { taskId } : { taskId, delivery },
+          undefined,
+          undefined,
+          h.session.extensionRunner.createContext(),
+        );
+        assert.ok(isRecord(repeat.details));
+        assert.equal(repeat.details['state'], 'failed');
+        assert.equal(repeat.details['delivery'], 'none');
+        assert.deepEqual(repeat.details['answer'], {
+          present: false,
+          reason: 'run_did_not_commit',
+        });
+        assert.equal('usage' in repeat, false);
+      }
     } finally {
       await disposeHarness(h);
     }
@@ -994,17 +1017,37 @@ void describe('fusion SDK integration', { concurrency: false }, () => {
       await h.session.extensionRunner.emit({ type: 'session_shutdown', reason: 'reload' });
       const resultTool = h.session.getToolDefinition('bg_result');
       assert.ok(resultTool);
-      await assert.rejects(
-        () =>
-          resultTool.execute(
-            'result-shutdown',
-            { taskId },
-            undefined,
-            undefined,
-            h.session.extensionRunner.createContext(),
-          ),
-        /cancelled|killed|SIGTERM|exited/i,
+      const terminal = await resultTool.execute(
+        'result-shutdown',
+        { taskId, delivery: 'artifact' },
+        undefined,
+        undefined,
+        h.session.extensionRunner.createContext(),
       );
+      assert.ok(isRecord(terminal.details));
+      assert.equal(terminal.details['state'], 'cancelled');
+      assert.equal(terminal.details['delivery'], 'none');
+      assert.deepEqual(terminal.details['answer'], { present: false, reason: 'run_did_not_commit' });
+      assert.equal(terminal.details['summary_status'], 'verified');
+      assert.equal(terminal.details['usage_delivered'], undefined);
+      assert.equal('usage' in terminal, false);
+      for (const delivery of [undefined, 'inline'] as const) {
+        const repeat = await resultTool.execute(
+          `result-shutdown-${delivery ?? 'default'}`,
+          delivery === undefined ? { taskId } : { taskId, delivery },
+          undefined,
+          undefined,
+          h.session.extensionRunner.createContext(),
+        );
+        assert.ok(isRecord(repeat.details));
+        assert.equal(repeat.details['state'], 'cancelled');
+        assert.equal(repeat.details['delivery'], 'none');
+        assert.deepEqual(repeat.details['answer'], {
+          present: false,
+          reason: 'run_did_not_commit',
+        });
+        assert.equal('usage' in repeat, false);
+      }
       h.session.dispose();
       disposed = true;
     } finally {
