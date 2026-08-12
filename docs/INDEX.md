@@ -139,10 +139,10 @@ Generated navigation for every package-local documentation page. This index inte
 | command | `kill` | `command:kill` | `src/extension.ts:649` |
 | command | `logs` | `command:logs` | `src/extension.ts:618` |
 | command | `tasks` | `command:tasks` | `src/extension.ts:543` |
-| tool | `bg_delegate` | `tool:bg_delegate` | `src/delegate-extension.ts:307` |
+| tool | `bg_delegate` | `tool:bg_delegate` | `src/delegate-extension.ts:340` |
 | tool | `bg_kill` | `tool:bg_kill` | `src/extension.ts:908` |
 | tool | `bg_logs` | `tool:bg_logs` | `src/extension.ts:863` |
-| tool | `bg_result` | `tool:bg_result` | `src/delegate-extension.ts:468` |
+| tool | `bg_result` | `tool:bg_result` | `src/delegate-extension.ts:515` |
 | tool | `bg_run` | `tool:bg_run` | `src/extension.ts:682` |
 | tool | `bg_run_pi_attested` | `tool:bg_run_pi_attested` | `src/extension.ts:767` |
 | tool | `bg_status` | `tool:bg_status` | `src/extension.ts:832` |

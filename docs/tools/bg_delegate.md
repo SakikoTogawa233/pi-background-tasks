@@ -11,14 +11,15 @@ covers_sources: []
 
 <!-- pi-docs:begin name="tool-contract-bg_delegate" generator="scripts/docs/generate.mjs" -->
 - Label: **Background Delegate**
-- Source: `src/delegate-extension.ts:307`
-- Description: Launch one background Pi agent seeded with a frozen projection of the current conversation, then return a launch receipt immediately. The child has its own session, a route pinned at launch that is never substituted, and read-only tools. Retrieve its verified answer with bg_result.
+- Source: `src/delegate-extension.ts:340`
+- Description: Launch one background Pi agent seeded with a frozen projection of the current conversation, then return a launch receipt immediately. The child has its own session, a route pinned at launch that is never substituted, and read-only tools. Extension discovery is isolated by default; ambient mode supports extension-registered providers but executes arbitrary discovered extension code. Retrieve its verified answer with bg_result.
 - Root schema: `object`; additionalProperties: `false`
 
 | Field | Required | Type | Description | Constraints |
 | --- | --- | --- | --- | --- |
 | `autoDeliver` | no | `string` | Whether the completion notification carries the answer: never \| when_small \| always. Default never; retrieve with bg_result. |  |
 | `capability` | no | `string` | Capability profile. Only "inspect" (read/search/list, no shell, no writes, no network, no recursion) is supported. |  |
+| `extensionMode` | no | `string` | Extension discovery: isolated \| ambient. Default isolated. Ambient is for extension-registered providers and executes arbitrary discovered extension code, weakening process isolation. |  |
 | `maxToolCalls` | no | `number` | Maximum tool calls. Default 120. |  |
 | `maxTurns` | no | `number` | Maximum agent turns. Default 24. |  |
 | `name` | yes | `string` | Short human-readable task name shown in the bg footer dock. Use 2-6 words. |  |
@@ -44,6 +45,10 @@ covers_sources: []
     },
     "capability": {
       "description": "Capability profile. Only \"inspect\" (read/search/list, no shell, no writes, no network, no recursion) is supported.",
+      "type": "string"
+    },
+    "extensionMode": {
+      "description": "Extension discovery: isolated | ambient. Default isolated. Ambient is for extension-registered providers and executes arbitrary discovered extension code, weakening process isolation.",
       "type": "string"
     },
     "maxToolCalls": {
@@ -118,6 +123,7 @@ Optional:
 
 - `route: {provider: string, model: string}` — exact route pin. If omitted, the parent session's current `ctx.model.provider` and `ctx.model.id` are used.
 - `capability: "inspect"` — default `"inspect"`; this is the only v1 capability.
+- `extensionMode: "isolated" | "ambient"` — default `"isolated"`. Use `"ambient"` only when the pinned provider is implemented by an auto-discovered user/project extension. Ambient mode executes arbitrary discovered extension code and weakens process isolation.
 - `maxTurns: positive integer` — default `24`.
 - `maxToolCalls: positive integer` — default `120`.
 - `timeoutSeconds: positive integer` — default `1200`.
@@ -153,17 +159,23 @@ Route resolution is pin-only:
 - routes with no declared context window are refused before child creation;
 - the child records provider/model attestations for assistant messages, and a mismatch prevents a successful result commit.
 
-## Inspect-only tool boundary
+## Inspect-only tool boundary and extension modes
 
-The v1 capability is enforced by child argv and Pi's tool registry, not merely by prompt text:
+The v1 model-visible capability is enforced by child argv and Pi's tool registry, not merely by prompt text:
 
 - enabled tools: `read`, `grep`, `find`, `ls`, `delegate_read_artifact`;
 - `--no-builtin-tools` is used with the explicit allowlist;
 - forbidden tools include shell/write/background/delegate/Fusion surfaces (`bash`, `edit`, `write`, `bg_run`, `bg_delegate`, `bg_result`, `bg_run_pi_attested`, Fusion tools, etc.);
-- ambient discovery is disabled with `--no-extensions`, `--no-skills`, `--no-prompt-templates`, `--no-themes`, `--no-context-files`;
-- the package-owned delegate guard is loaded explicitly; Anthropic routes first load the package attribution/sanitization extension.
+- skills, prompt templates, themes, and context files remain disabled in both extension modes;
+- the package-owned delegate guard is loaded explicitly in both modes; Anthropic routes first load the package attribution/sanitization extension.
 
-There is no shell, edit/write, network tool, recursive delegation, Fusion, or ambient project resource loading in the child tool set.
+`extensionMode:"isolated"` adds `--no-extensions` and is the default. Use it for built-in providers and whenever ambient provider code is unnecessary.
+
+`extensionMode:"ambient"` omits only `--no-extensions`, allowing Pi to discover trusted-location user/project extensions so a fresh child can resolve an extension-registered provider. It does **not** accept extension paths from the tool call, alter the pinned route, or provide fallback/substitution.
+
+Ambient extensions execute arbitrary code in the child process with Node privileges. The read-only tool allowlist constrains tools exposed to the model; it does not sandbox extension initialization or event handlers. Therefore ambient mode weakens the inspect-only process-isolation guarantee even though the model-visible tool registry remains inspect-only.
+
+There is no shell, edit/write, network tool, recursive delegation, or Fusion in the child tool set. That claim applies to registered model tools, not to arbitrary code loaded by ambient extensions.
 
 ## Admission, budgets, and artifacts
 
@@ -190,4 +202,4 @@ Inside the child, `delegate_read_artifact({artifact, offset, length})` reads an 
 
 ## Completion
 
-`bg_delegate` returns a receipt with task id, route, child session id, artifact dir, seed hash/size, budget source, limits, auto-deliver setting, and notification/wake settings. With default notification settings, the parent receives the generic durable `background-task-notification` after terminal state and may then call `bg_result`. Do not poll solely to wait.
+`bg_delegate` returns a receipt with task id, route, child session id, artifact dir, seed hash/size, budget source, extension mode, limits, auto-deliver setting, and notification/wake settings. Ambient receipts include an explicit arbitrary-code/isolation warning. The mode is also hash-bound in `seed.json` and persisted in task facts and `manifest.json`. With default notification settings, the parent receives the generic durable `background-task-notification` after terminal state and may then call `bg_result`. Do not poll solely to wait.

@@ -49,6 +49,7 @@ async function makeStore(taskId = TASK_ID) {
     sessionId: 'unit-session',
     childSessionId: 'delegate-child-session',
     childSessionDir: '',
+    extensionMode: 'isolated',
     route: ROUTE,
     limits: LIMITS,
     seedSha256: SEED_SHA,
@@ -65,6 +66,7 @@ void describe('delegate artifact store', () => {
     const { store } = await makeStore();
     assert.ok(existsSync(store.artifactDirAbs));
     assert.ok(existsSync(store.spillDirAbs));
+    assert.equal(store.snapshot().extension_mode, 'isolated');
     if (process.platform !== 'win32') {
       const stats = await stat(store.artifactDirAbs);
       assert.equal(stats.mode & 0o777, 0o700, 'artifact directory must be private');
@@ -81,6 +83,7 @@ void describe('delegate artifact store', () => {
         sessionId: 'unit-session',
         childSessionId: 'x',
         childSessionDir: '',
+        extensionMode: 'isolated',
         route: ROUTE,
         limits: LIMITS,
         seedSha256: SEED_SHA,
@@ -98,6 +101,7 @@ void describe('delegate artifact store', () => {
       sessionId: 'unit-session',
       childSessionId: 'x',
       childSessionDir: '',
+      extensionMode: 'ambient',
       route: ROUTE,
       limits: LIMITS,
       seedSha256: SEED_SHA,
@@ -109,7 +113,7 @@ void describe('delegate artifact store', () => {
 
   void it('persists the seed bytes exactly as given', async () => {
     const { store } = await makeStore();
-    const seed = '{"schema_version":"pi-background-tasks.delegate-seed.v1","x":"\u2028\u2029👩"}';
+    const seed = '{"schema_version":"pi-background-tasks.delegate-seed.v2","x":"\u2028\u2029👩"}';
     const ref = await store.writeSeed(seed);
     const onDisk = await readFile(join(store.artifactDirAbs, 'seed.json'), 'utf8');
     assert.equal(onDisk, seed, 'persisted seed bytes must equal the bytes handed to the child');

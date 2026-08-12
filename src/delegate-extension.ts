@@ -21,6 +21,7 @@ import {
 import {
   DELEGATE_AUTO_DELIVER_MODES,
   DELEGATE_CAPABILITIES,
+  DELEGATE_EXTENSION_MODES,
   DELEGATE_RESULT_TOOL_NAME,
   DELEGATE_TOOL_NAME,
   DelegateError,
@@ -28,6 +29,7 @@ import {
   type DelegateCapability,
   type DelegateDeliveryMode,
   type DelegateBudgetRouteSource,
+  type DelegateExtensionMode,
   type DelegateRoute,
 } from './core/delegate/types.js';
 import {
@@ -67,7 +69,7 @@ const HOOK_EVIDENCE_PATH = fileURLToPath(
   new URL('./core/delegate/hook-contract-evidence.json', import.meta.url),
 );
 
-const DelegateParams = Type.Object(
+export const DelegateParams = Type.Object(
   {
     name: Type.String({
       description: 'Short human-readable task name shown in the bg footer dock. Use 2-6 words.',
@@ -91,6 +93,12 @@ const DelegateParams = Type.Object(
     capability: Type.Optional(
       Type.String({
         description: `Capability profile. Only "inspect" (read/search/list, no shell, no writes, no network, no recursion) is supported.`,
+      }),
+    ),
+    extensionMode: Type.Optional(
+      Type.String({
+        description:
+          'Extension discovery: isolated | ambient. Default isolated. Ambient is for extension-registered providers and executes arbitrary discovered extension code, weakening process isolation.',
       }),
     ),
     maxTurns: Type.Optional(
@@ -142,6 +150,20 @@ const ResultParams = Type.Object(
 type DelegateParamsValue = Static<typeof DelegateParams>;
 type ResultParamsValue = Static<typeof ResultParams>;
 
+const DELEGATE_PARAM_KEYS = new Set([
+  'name',
+  'prompt',
+  'route',
+  'capability',
+  'extensionMode',
+  'maxTurns',
+  'maxToolCalls',
+  'timeoutSeconds',
+  'autoDeliver',
+  'notifyOnCompletion',
+  'triggerOnCompletion',
+]);
+
 export interface DelegateLaunchDetails {
   schema_version: 'pi-background-tasks.delegate-launch.v1';
   task: BgTaskSnapshot;
@@ -151,6 +173,7 @@ export interface DelegateLaunchDetails {
   seed_sha256: string;
   seed_utf8_bytes: number;
   budget: DelegateBudgetRouteSource;
+  extension_mode: DelegateExtensionMode;
   auto_deliver: DelegateAutoDeliverMode;
   notify_on_completion: boolean;
   trigger_on_completion: boolean;
@@ -187,6 +210,7 @@ export interface DelegateResultDetails {
   delivery: DelegateDeliveryMode | 'none';
   route?: { provider: string; model: string } | undefined;
   budget?: DelegateBudgetRouteSource | undefined;
+  extension_mode?: DelegateExtensionMode | undefined;
   answer_bytes?: number | undefined;
   answer_sha256?: string | undefined;
   turns?: number | undefined;
@@ -209,6 +233,15 @@ function requireCapability(value: unknown): DelegateCapability {
   if (value === 'inspect') return 'inspect';
   throw new DelegateError(
     `bg_delegate capability must be one of ${DELEGATE_CAPABILITIES.join(', ')}. Writable profiles are deliberately out of scope in this version.`,
+    { code: 'invalid_arguments', childCreated: false },
+  );
+}
+
+function requireExtensionMode(value: unknown): DelegateExtensionMode {
+  if (value === undefined) return 'isolated';
+  if (value === 'isolated' || value === 'ambient') return value;
+  throw new DelegateError(
+    `bg_delegate extensionMode must be one of ${DELEGATE_EXTENSION_MODES.join(', ')}`,
     { code: 'invalid_arguments', childCreated: false },
   );
 }
@@ -308,13 +341,15 @@ export function registerDelegateExtension(
     name: DELEGATE_TOOL_NAME,
     label: 'Background Delegate',
     description:
-      'Launch one background Pi agent seeded with a frozen projection of the current conversation, then return a launch receipt immediately. The child has its own session, a route pinned at launch that is never substituted, and read-only tools. Retrieve its verified answer with bg_result.',
+      'Launch one background Pi agent seeded with a frozen projection of the current conversation, then return a launch receipt immediately. The child has its own session, a route pinned at launch that is never substituted, and read-only tools. Extension discovery is isolated by default; ambient mode supports extension-registered providers but executes arbitrary discovered extension code. Retrieve its verified answer with bg_result.',
     promptSnippet:
       'Delegate an investigation to a background agent that already has this conversation as context',
     promptGuidelines: [
       'Use bg_delegate when work should continue in the background and the worker needs what you already know: it is seeded with a projection of this conversation.',
       'The prompt is authoritative. State exactly what you want investigated and what the answer should contain.',
-      'The delegate is inspect-only: it can read, search, and list files, but cannot run shell commands, edit or write files, use the network, or delegate further.',
+      'The delegate is inspect-only at the model-visible tool boundary: it can read, search, and list files, but cannot run shell commands, edit or write files, use the network, or delegate further.',
+      'Extension discovery is isolated by default. Use extensionMode:"ambient" only when the pinned provider is registered by an ambient user/project extension.',
+      'Ambient mode executes arbitrary discovered extension code in the child process. Tool allowlists do not sandbox extension code, so ambient mode weakens inspect-only process isolation.',
       'Facts that exist only inside omitted tool output are not available to the delegate. Restate such findings in the prompt.',
       'bg_delegate returns immediately. Do not poll; retrieve the answer with bg_result after the terminal notification arrives.',
     ],
@@ -325,6 +360,13 @@ export function registerDelegateExtension(
           code: 'invalid_arguments',
           childCreated: false,
         });
+      const unknownKeys = Object.keys(args).filter((key) => !DELEGATE_PARAM_KEYS.has(key));
+      if (unknownKeys.length > 0) {
+        throw new DelegateError(
+          `bg_delegate contains unsupported key(s): ${unknownKeys.sort().join(', ')}`,
+          { code: 'invalid_arguments', childCreated: false },
+        );
+      }
       const name = args['name'];
       const prompt = args['prompt'];
       if (typeof name !== 'string' || name.trim().length === 0)
@@ -341,6 +383,7 @@ export function registerDelegateExtension(
       const route = requireRoute(args['route']);
       if (route !== undefined) prepared.route = route;
       prepared.capability = requireCapability(args['capability']);
+      prepared.extensionMode = requireExtensionMode(args['extensionMode']);
       prepared.autoDeliver = requireAutoDeliver(args['autoDeliver']);
       const maxTurns = optionalPositiveInteger(args['maxTurns'], 'maxTurns');
       if (maxTurns !== undefined) prepared.maxTurns = maxTurns;
@@ -356,6 +399,7 @@ export function registerDelegateExtension(
     },
     async execute(toolCallId, params, _signal, _onUpdate, ctx) {
       const capability = requireCapability(params.capability);
+      const extensionMode = requireExtensionMode(params.extensionMode);
       const autoDeliver = requireAutoDeliver(params.autoDeliver);
       const hookEvidence = await loadEvidence();
       const route = resolveDelegateRoute({
@@ -385,6 +429,7 @@ export function registerDelegateExtension(
         toolCallId,
         prompt: params.prompt,
         capability,
+        extensionMode,
         route,
         limitOverrides: {
           maxTurns: params.maxTurns,
@@ -423,6 +468,7 @@ export function registerDelegateExtension(
         seed_sha256: prepared.facts.seedSha256,
         seed_utf8_bytes: prepared.preflight.plan.seed_utf8_bytes,
         budget: prepared.facts.budget,
+        extension_mode: extensionMode,
         auto_deliver: autoDeliver,
         notify_on_completion: launchOptions.notifyOnCompletion,
         trigger_on_completion: launchOptions.triggerOnCompletion,
@@ -437,6 +483,7 @@ export function registerDelegateExtension(
             `Seed: ${String(prepared.preflight.plan.seed_utf8_bytes)} bytes, sha256 ${prepared.facts.seedSha256}`,
             `Estimator: family ${prepared.facts.budget.family}, source ${prepared.facts.budget.rate_source.source}, rate ${String(prepared.facts.budget.rate_source.effective_rate_bytes_per_token_x100)}/100 B/tok + ${String(prepared.facts.budget.rate_source.affine_f_tokens)} tokens${prepared.facts.budget.rate_source.warning === null ? '' : `; warning: ${prepared.facts.budget.rate_source.warning}`}`,
             `Capability: ${capability} (read/search/list only)`,
+            `Extension mode: ${extensionMode}${extensionMode === 'ambient' ? ' — WARNING: arbitrary discovered extension code executes in the child; the tool allowlist does not sandbox it, so inspect-only process isolation is weakened.' : ' (ambient extension discovery disabled)'}`,
             `Limits: ${String(prepared.preflight.limits.max_turns)} turns, ${String(prepared.preflight.limits.max_tool_calls)} tool calls, ${String(prepared.preflight.limits.timeout_seconds)}s`,
             `Auto-deliver: ${autoDeliver}`,
             launchOptions.notifyOnCompletion
@@ -458,7 +505,7 @@ export function registerDelegateExtension(
     renderResult(result, _options, theme) {
       const details = result.details;
       return new Text(
-        `${theme.fg('success', '✓ delegated')} ${theme.fg('accent', details.task.id)}\n${theme.fg('dim', `route ${details.route.qualified_id} · seed ${String(details.seed_utf8_bytes)}B · ${details.artifact_dir}`)}`,
+        `${theme.fg('success', '✓ delegated')} ${theme.fg('accent', details.task.id)}\n${theme.fg('dim', `route ${details.route.qualified_id} · extensions ${details.extension_mode} · seed ${String(details.seed_utf8_bytes)}B · ${details.artifact_dir}`)}`,
         0,
         0,
       );
@@ -633,6 +680,7 @@ export function registerDelegateExtension(
           delivery: 'none',
           artifact_dir: facts.artifactDir,
           budget: facts.budget,
+          extension_mode: facts.extensionMode,
         };
         return {
           content: textContent(
@@ -686,6 +734,7 @@ export function registerDelegateExtension(
         delivery: decision.mode,
         route: verified.package.route,
         budget: facts.budget,
+        extension_mode: facts.extensionMode,
         answer_bytes: verified.package.answer.byte_length,
         answer_sha256: verified.package.answer.sha256,
         turns: verified.package.turns,

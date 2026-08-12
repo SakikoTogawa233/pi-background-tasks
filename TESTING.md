@@ -122,18 +122,23 @@ Two unit gates protect Fusion's persisted artifact bytes, which are a frozen for
 - `tests/unit/delegate-artifacts.test.ts` — spill/receipt coordinates under
   out-of-order completion, aggregate caps, exact bounded range reads, and terminal
   evaluation including a zero-exit child that never committed.
-- `tests/unit/delegate-launch.test.ts` — route pinning without substitution, argv-level
-  isolation, the hook-contract gate, and the property that a refused launch creates
-  **zero** children and **zero** artifacts.
+- `tests/unit/delegate-launch.test.ts` — route pinning without substitution, isolated
+  versus ambient extension argv, invariant inspect-tool/resource restrictions, the
+  hook-contract gate, and the property that a refused launch creates **zero** children
+  and **zero** artifacts.
+- `tests/scripted-provider/delegate-ambient-provider.test.ts` — a fresh real Pi child
+  with a provider available only through temp-agent ambient extension discovery:
+  isolated mode fails with an unknown provider and no result, while ambient mode
+  resolves the exact pinned provider, retains the package guard, and commits.
 - `tests/scripted-provider/delegate-child-guard.test.ts` — the child guard inside a
   real Pi agent loop: a 2 MB tool result spilled to a hashed artifact with the payload
   kept out of the transcript, a blocked over-budget model call, exact bounded range
   reads, route-drift refusal, and turn-limit enforcement.
 - `tests/sdk/delegate-sdk.test.ts` — the full public loop through the shipped
   entrypoint with a fake child `pi`: launch receipt, projected context actually
-  reaching the child, child session isolation, not-ready retrieval, corruption
-  detection, and oversized answers degrading to an artifact reference without
-  truncation.
+  reaching the child, default isolated argv, explicit ambient argv/warning/metadata,
+  child session isolation, not-ready retrieval, corruption detection, and oversized
+  answers degrading to an artifact reference without truncation.
 - `tests/package/delegate-mutation-guard.test.ts` — fails if silent truncation, a
   silent fallback, a route substitution, an unbounded inline answer, a dropped
   preflight, a synthesized zero usage, a fail-open guard hook, or an undelivered

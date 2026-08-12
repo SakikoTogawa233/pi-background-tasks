@@ -63,6 +63,7 @@ function buildFromSession(
       toolCallId: 'delegate-call-1',
       directive: 'investigate the failing gate',
       capability: 'inspect',
+      extensionMode: 'isolated',
       route: ROUTE,
       limits: LIMITS,
       ...overrides,
@@ -280,6 +281,7 @@ void describe('delegate seed receive-side verification', () => {
       launchNonce: built.seed.launch_nonce,
     });
     assert.equal(seed.directive.text, built.seed.directive.text);
+    assert.equal(seed.extension_mode, 'isolated');
     assert.equal(seed.route.qualified_id, ROUTE.qualified_id);
     assert.equal(seed.limits.allowed_input_tokens, LIMITS.allowed_input_tokens);
   });
@@ -337,6 +339,28 @@ void describe('delegate seed receive-side verification', () => {
     const directive = tampered['directive'];
     assert.ok(typeof directive === 'object' && directive !== null);
     Reflect.set(directive, 'text', 'a different directive entirely');
+    const serialized = JSON.stringify(tampered);
+    assert.throws(
+      () =>
+        verifyDelegateSeedBytes(serialized, {
+          sha256: sha256(serialized),
+          taskId: built.seed.task_id,
+          launchNonce: built.seed.launch_nonce,
+        }),
+      (error: unknown) => error instanceof DelegateError && error.code === 'seed_hash_mismatch',
+    );
+  });
+
+  void it('binds the selected extension mode into the verified seed', () => {
+    const built = build(CONVERSATION, { extensionMode: 'ambient' });
+    assert.equal(built.seed.extension_mode, 'ambient');
+    assert.match(built.serialized, /"extension_mode":"ambient"/);
+  });
+
+  void it('rejects an unknown extension mode even when its hash matches', () => {
+    const built = build(CONVERSATION);
+    const tampered = JSON.parse(built.serialized) as Record<string, unknown>;
+    tampered['extension_mode'] = 'custom-path';
     const serialized = JSON.stringify(tampered);
     assert.throws(
       () =>

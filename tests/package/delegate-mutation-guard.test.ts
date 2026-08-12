@@ -196,10 +196,14 @@ void describe('delegate mutation resistance', () => {
     assert.match(child, /fsyncSync\(dirHandle\)/);
   });
 
-  void it('enforces inspect-only isolation by argv rather than by prompt text', async () => {
+  void it('enforces the tool boundary by argv and keeps ambient discovery explicit', async () => {
     const launch = codeOnly(await source('src/core/delegate/launch.ts'));
+    assert.match(
+      launch,
+      /input\.extensionMode === 'isolated' \? \['--no-extensions'\] : \[\]/,
+      'only explicit ambient mode may omit --no-extensions',
+    );
     for (const flag of [
-      "'--no-extensions'",
       "'--no-skills'",
       "'--no-prompt-templates'",
       "'--no-context-files'",
@@ -211,6 +215,14 @@ void describe('delegate mutation resistance', () => {
     ]) {
       assert.ok(launch.includes(flag), `child argv must set ${flag}`);
     }
+    const delegateExtension = codeOnly(await source('src/delegate-extension.ts'));
+    assert.match(delegateExtension, /extensionMode: Type\.Optional/);
+    assert.match(delegateExtension, /requireExtensionMode/);
+    assert.doesNotMatch(
+      delegateExtension,
+      /extensionPaths?|additionalExtensions?/,
+      'the public delegate schema must not accept caller-supplied extension paths',
+    );
     for (const forbidden of ['bash', 'edit', 'write', 'bg_delegate', 'fusion_brainstorm']) {
       assert.ok(
         launch.includes(`'${forbidden}'`),

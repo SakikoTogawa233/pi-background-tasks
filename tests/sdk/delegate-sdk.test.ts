@@ -88,6 +88,7 @@ fs.writeFileSync(path.join(dir, 'child-seed-observed.json'), JSON.stringify({
   directive: seed.directive.text,
   entries: seed.conversation_projection.entries,
   route: seed.route,
+  extension_mode: seed.extension_mode,
 }, null, 2));
 
 if (scenario === 'no-commit') { process.exit(0); }
@@ -366,7 +367,14 @@ void describe('bg_delegate and bg_result public surface', { concurrency: false }
         assert.match(launch.text, /never substituted/);
         assert.match(launch.text, /Child session: delegate-/);
         assert.match(launch.text, /Capability: inspect/);
+        assert.match(launch.text, /Extension mode: isolated/);
         assert.match(launch.text, /Auto-deliver: never/);
+        assert.equal(detail(launch.details, 'extension_mode'), 'isolated');
+        assert.equal(detail(detail(launch.details, 'task'), 'delegate') instanceof Object, true);
+        assert.equal(
+          detail(detail(detail(launch.details, 'task'), 'delegate'), 'extensionMode'),
+          'isolated',
+        );
         assert.equal(detail(launch.details, 'auto_deliver'), 'never');
 
         await waitForTerminal(h, String(taskId));
@@ -390,6 +398,11 @@ void describe('bg_delegate and bg_result public surface', { concurrency: false }
           'the child must actually receive the projected parent context',
         );
         assert.equal(observed['directive'], 'find the root cause');
+        assert.equal(observed['extension_mode'], 'isolated');
+        const manifest = JSON.parse(
+          await readFile(join(artifactDir, 'manifest.json'), 'utf8'),
+        ) as Record<string, unknown>;
+        assert.equal(manifest['extension_mode'], 'isolated');
 
         const result = await runTool(h, 'bg_result', { taskId });
         assert.match(result.text, /DELEGATE ANSWER: find the root cause/);
@@ -433,6 +446,56 @@ void describe('bg_delegate and bg_result public surface', { concurrency: false }
         ) as Record<string, unknown>;
         assert.equal(env['PI_SESSION_ID'], null);
         assert.equal(env['PI_SESSION_FILE'], null);
+      } finally {
+        await dispose(h);
+      }
+    },
+  );
+
+  void it(
+    'enables ambient extension discovery explicitly while retaining all other child restrictions',
+    { timeout: 30_000 },
+    async () => {
+      const h = await harness('commit');
+      try {
+        const launch = await runTool(h, 'bg_delegate', {
+          name: 'Custom provider',
+          prompt: 'check ambient mode',
+          extensionMode: 'ambient',
+        });
+        const task = detail(launch.details, 'task');
+        await waitForTerminal(h, String(detail(task, 'id')));
+        assert.equal(detail(launch.details, 'extension_mode'), 'ambient');
+        assert.equal(detail(detail(task, 'delegate'), 'extensionMode'), 'ambient');
+        assert.match(launch.text, /Extension mode: ambient/);
+        assert.match(launch.text, /WARNING: arbitrary discovered extension code executes/);
+        assert.match(launch.text, /inspect-only process isolation is weakened/);
+
+        const artifactDir = await artifactDirOf(h);
+        const argv = JSON.parse(
+          await readFile(join(artifactDir, 'child-argv.json'), 'utf8'),
+        ) as string[];
+        assert.ok(!argv.includes('--no-extensions'));
+        for (const flag of [
+          '--no-skills',
+          '--no-prompt-templates',
+          '--no-themes',
+          '--no-context-files',
+          '--no-builtin-tools',
+          '--tools',
+          '--exclude-tools',
+        ]) {
+          assert.ok(argv.includes(flag), `${flag} must remain set`);
+        }
+        const extensionPaths = argv.flatMap((entry, index) =>
+          entry === '--extension' ? [argv[index + 1] ?? ''] : [],
+        );
+        assert.equal(extensionPaths.length, 1);
+        assert.match(extensionPaths[0] ?? '', /extensions\/delegate-child\.(?:ts|js)$/);
+        const manifest = JSON.parse(
+          await readFile(join(artifactDir, 'manifest.json'), 'utf8'),
+        ) as Record<string, unknown>;
+        assert.equal(manifest['extension_mode'], 'ambient');
       } finally {
         await dispose(h);
       }
@@ -591,6 +654,19 @@ void describe('bg_delegate and bg_result public surface', { concurrency: false }
       assert.throws(() => tool.prepareArguments?.({ name: 'x', prompt: 'y', capability: 'write' }));
       assert.throws(() =>
         tool.prepareArguments?.({ name: 'x', prompt: 'y', autoDeliver: 'sometimes' }),
+      );
+      assert.deepEqual(
+        tool.prepareArguments?.({ name: 'x', prompt: 'y' }),
+        { name: 'x', prompt: 'y', capability: 'inspect', extensionMode: 'isolated', autoDeliver: 'never' },
+      );
+      assert.throws(() =>
+        tool.prepareArguments?.({ name: 'x', prompt: 'y', extensionMode: 'custom-path' }),
+      );
+      assert.throws(() =>
+        tool.prepareArguments?.({ name: 'x', prompt: 'y', extensions: ['/tmp/provider.ts'] }),
+      );
+      assert.throws(() =>
+        tool.prepareArguments?.({ name: 'x', prompt: 'y', extensionPaths: ['/tmp/provider.ts'] }),
       );
       assert.throws(() => tool.prepareArguments?.({ name: 'x', prompt: 'y', maxTurns: 0 }));
       assert.throws(() => tool.prepareArguments?.({ name: 'x', prompt: 'y', maxTurns: 1.5 }));

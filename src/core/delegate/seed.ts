@@ -22,6 +22,7 @@ import {
   type DelegateContextPolicyDescriptor,
   type DelegateConversationProjection,
   type DelegateLedgerV1,
+  type DelegateExtensionMode,
   type DelegateLimits,
   type DelegatePinnedRoute,
   type DelegateSeedV1,
@@ -34,6 +35,7 @@ export interface BuildDelegateSeedOptions {
   toolCallId: string | undefined;
   directive: string;
   capability: DelegateCapability;
+  extensionMode: DelegateExtensionMode;
   route: DelegatePinnedRoute;
   limits: DelegateLimits;
 }
@@ -167,6 +169,7 @@ export function buildDelegateSeed(
     launch_nonce: options.launchNonce,
     cwd: ctx.cwd,
     capability: options.capability,
+    extension_mode: options.extensionMode,
     route: options.route,
     parent_system_prompt: ctx.getSystemPrompt(),
     parent_leaf_id: snapshot.leafId,
@@ -296,6 +299,14 @@ function rebuildSeed(record: Record<PropertyKey, unknown>, taskId: string): Dele
       taskId,
     });
   }
+  const extensionMode = requireString(record, 'extension_mode', taskId);
+  if (extensionMode !== 'isolated' && extensionMode !== 'ambient') {
+    throw new DelegateError(`delegate seed extension mode ${extensionMode} is not recognised`, {
+      code: 'seed_hash_mismatch',
+      childCreated: true,
+      taskId,
+    });
+  }
   const routeRecord = requireRecord(record, 'route', taskId);
   const routeOrigin = requireString(routeRecord, 'origin', taskId);
   if (routeOrigin !== 'parent_current' && routeOrigin !== 'explicit') {
@@ -378,6 +389,7 @@ function rebuildSeed(record: Record<PropertyKey, unknown>, taskId: string): Dele
     launch_nonce: requireString(record, 'launch_nonce', taskId),
     cwd: requireString(record, 'cwd', taskId),
     capability,
+    extension_mode: extensionMode,
     route,
     parent_system_prompt: requireString(record, 'parent_system_prompt', taskId),
     parent_leaf_id: parentLeafId,

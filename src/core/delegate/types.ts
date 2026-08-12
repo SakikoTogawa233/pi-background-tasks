@@ -12,14 +12,14 @@ import type {
   ProjectionEntry,
 } from '../context/visible-conversation-v2.js';
 
-export const DELEGATE_SEED_SCHEMA_VERSION = 'pi-background-tasks.delegate-seed.v1' as const;
+export const DELEGATE_SEED_SCHEMA_VERSION = 'pi-background-tasks.delegate-seed.v2' as const;
 export const DELEGATE_LEDGER_SCHEMA_VERSION = 'pi-background-tasks.delegate-ledger.v1' as const;
 export const DELEGATE_RESULT_PACKAGE_SCHEMA_VERSION =
   'pi-background-tasks.delegate-result.v1' as const;
 export const DELEGATE_RECEIPT_SCHEMA_VERSION = 'pi-background-tasks.delegate-receipt.v1' as const;
 export const DELEGATE_BUDGET_PLAN_SCHEMA_VERSION =
   'pi-background-tasks.delegate-budget-plan.v2' as const;
-export const DELEGATE_MANIFEST_SCHEMA_VERSION = 'pi-background-tasks.delegate-manifest.v1' as const;
+export const DELEGATE_MANIFEST_SCHEMA_VERSION = 'pi-background-tasks.delegate-manifest.v2' as const;
 
 /**
  * Delegate's own context policy id. It shares the frozen
@@ -34,6 +34,13 @@ export const DELEGATE_RESULT_TOOL_NAME = 'bg_result';
 
 export const DELEGATE_CAPABILITIES = ['inspect'] as const;
 export type DelegateCapability = (typeof DELEGATE_CAPABILITIES)[number];
+
+/**
+ * Controls only Pi's ambient extension discovery for delegate children.
+ * Tool and project-resource restrictions remain independently enforced.
+ */
+export const DELEGATE_EXTENSION_MODES = ['isolated', 'ambient'] as const;
+export type DelegateExtensionMode = (typeof DELEGATE_EXTENSION_MODES)[number];
 
 export const DELEGATE_AUTO_DELIVER_MODES = ['never', 'when_small', 'always'] as const;
 export type DelegateAutoDeliverMode = (typeof DELEGATE_AUTO_DELIVER_MODES)[number];
@@ -110,6 +117,7 @@ export interface DelegateSeedV1 {
   launch_nonce: string;
   cwd: string;
   capability: DelegateCapability;
+  extension_mode: DelegateExtensionMode;
   route: DelegatePinnedRoute;
   parent_system_prompt: string;
   parent_leaf_id: string | null;

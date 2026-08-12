@@ -27,7 +27,7 @@
 | Fact | Value |
 | --- | --- |
 | Package | `pi-background-tasks` |
-| Version | `2.2.1` |
+| Version | `2.3.0` |
 | Node engine | `>=22.19.0` |
 | Pi entrypoints | `./extensions/anthropic-attribution.ts`, `./extensions/background-tasks.ts` |
 | Package image | [logo.png](https://raw.githubusercontent.com/ismailsaleekh/pi-background-tasks/main/logo.png) |
@@ -59,7 +59,7 @@ Full owner map and generated contracts live in [docs/INDEX.md](docs/INDEX.md).
 |---|---|
 | Start a dev server, watch build, migration dry run, or long check | `bg_run` and `/bg` return immediately, write durable output files, show a footer dock, and notify on terminal state. |
 | Let Pi keep working instead of sleeping or polling | Default `bg_run` completion delivery sends a durable terminal notification and can wake a follow-up turn. |
-| Ask a second agent to inspect the repo with the current conversation as context | `bg_delegate` starts one isolated child with read/search/list tools only; `bg_result` verifies the committed result before returning it. |
+| Ask a second agent to inspect the repo with the current conversation as context | `bg_delegate` starts one read/search/list child, isolated from ambient extensions by default; `bg_result` verifies the committed result before returning it. |
 | Compare model perspectives without exposing arbitrary parent context | Fusion children receive only the workflow input and fixed tool policy; no silent route substitution or fallback is used on delegate/Fusion paths. |
 | Produce local evidence for a direct Pi run | `bg_run_pi_attested` records local same-user-writable artifacts and hashes after a successful structured child Pi task. |
 | Use Anthropic subscription OAuth consistently | The globally loaded provider applies attribution and exact-match sanitization; `/claude-cache` shows or changes session cache retention. |
@@ -175,6 +175,7 @@ If `bg_run` starts an Anthropic child `pi`, keep normal extension discovery enab
   "name": "Route audit",
   "prompt": "Inspect the package source and identify where delegate route pinning is enforced. Return file paths, function names, and a short explanation. If a fact exists only in omitted parent tool output, say it is unavailable rather than guessing.",
   "capability": "inspect",
+  "extensionMode": "isolated",
   "autoDeliver": "never"
 }
 ```
@@ -189,6 +190,8 @@ Then retrieve:
 ```
 
 Expected: `bg_delegate` returns a launch receipt immediately. `bg_result` returns a typed not-ready result while running; after commit it verifies package identity, seed hash, route, block hashes, and aggregate hash before returning bytes. Oversized answers become explicit artifact references, not truncated inline text.
+
+`extensionMode` defaults to `"isolated"`, which disables ambient extension discovery. If the pinned provider exists only because a user/project Pi extension registers it, opt into `"ambient"`. Ambient mode still loads the delegate guard and keeps the inspect tool allowlist plus skill/template/theme/context restrictions, but it executes arbitrary discovered extension code. Tool allowlists do not sandbox that code, so ambient mode weakens inspect-only process isolation. The call never accepts extension paths and never substitutes the pinned route.
 
 ### `bg_run_pi_attested`: local evidence for one Pi child
 

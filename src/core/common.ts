@@ -3,7 +3,7 @@ import { open } from 'node:fs/promises';
 import { extname, isAbsolute, join, win32 } from 'node:path';
 import { DEFAULT_MAX_BYTES } from '@earendil-works/pi-coding-agent';
 import type { BackgroundTaskChildProcess } from './registry.js';
-import type { DelegateBudgetRouteSource } from './delegate/types.js';
+import type { DelegateBudgetRouteSource, DelegateExtensionMode } from './delegate/types.js';
 import type { FusionResultDetails, FusionUsage, FusionWorkflowId } from './fusion/types.js';
 
 export const TASK_STATUS_VALUES = ['running', 'completed', 'failed', 'killed'] as const;
@@ -87,6 +87,7 @@ export interface DelegateTaskFacts {
   childSessionId: string;
   route: { provider: string; model: string; qualifiedId: string };
   budget: DelegateBudgetRouteSource;
+  extensionMode: DelegateExtensionMode;
   autoDeliver: 'never' | 'when_small' | 'always';
   /** Set once the run reaches a terminal state and its result has been evaluated. */
   outcome?: DelegateTaskOutcome | undefined;

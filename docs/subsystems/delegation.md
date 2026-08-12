@@ -32,7 +32,7 @@ The design deliberately separates:
 
 ## Seed and context policy
 
-The seed schema is `pi-background-tasks.delegate-seed.v1`. It wraps the frozen `visible-conversation-ledger-v2` projection under delegate policy id `delegate-inspect-v1`; it never emits Fusion input schemas or claims Fusion provenance.
+The seed schema is `pi-background-tasks.delegate-seed.v2`. It wraps the frozen `visible-conversation-ledger-v2` projection under delegate policy id `delegate-inspect-v1`; it never emits Fusion input schemas or claims Fusion provenance. The exact selected `extension_mode` is hash-bound into the seed, and is also recorded in launch details, task facts, and `manifest.json`.
 
 Projection behavior:
 
@@ -62,17 +62,22 @@ The child launch:
 - separate random `--session-id`;
 - task-owned `--session-dir` under the artifact directory;
 - parent session/provider/model/reasoning env keys stripped;
-- ambient extension/skill/template/theme/context discovery disabled;
-- non-Anthropic children explicitly load only the package-owned child guard;
-- Anthropic children explicitly load package attribution/sanitization first, then the child guard.
+- skill/template/theme/context discovery always disabled;
+- extension discovery disabled by default in `extensionMode:"isolated"`;
+- extension discovery deliberately enabled only by `extensionMode:"ambient"`;
+- non-Anthropic children explicitly load the package-owned child guard in both modes;
+- Anthropic children explicitly load package attribution/sanitization first, then the child guard, in both modes.
 
-The only v1 capability is `inspect`. Allowed tools are exactly `read`, `grep`, `find`, `ls`, and `delegate_read_artifact`; forbidden tools deny shell, writes, background task controls, recursive delegation, attested Pi launch, and Fusion. The boundary is argv/tool-registry enforced. Missing Anthropic attribution bytes are a pre-artifact `delegate_isolation_unsupported` refusal; no un-attributed child or alternate route is launched.
+Ambient mode exists for providers registered by user/project Pi extensions. It omits only `--no-extensions`; it accepts no caller-supplied extension paths and performs no provider fallback or route substitution. Ambient discovery executes arbitrary trusted-location extension code in the child process. That code has Node process privileges and is not sandboxed by Pi's model-visible tool allowlist, so ambient mode deliberately weakens the inspect-only process-isolation guarantee. It must not be described as safe or equivalent to isolated mode.
+
+The only v1 capability is `inspect`. Allowed model-visible tools are exactly `read`, `grep`, `find`, `ls`, and `delegate_read_artifact`; forbidden tools deny shell, writes, background task controls, recursive delegation, attested Pi launch, and Fusion. This tool boundary remains argv/tool-registry enforced in both extension modes, but it is not a sandbox for ambient extension initialization or handlers. Missing Anthropic attribution bytes are a pre-artifact `delegate_isolation_unsupported` refusal; no un-attributed child or alternate route is launched.
 
 ## Route and budget
 
 Routes are pinned once:
 
 - omitted route → parent current model;
+- extension-only routes still must be visible in the parent registry and require explicit `extensionMode:"ambient"` so the fresh child can load their implementing extension;
 - explicit route → exact registry entry;
 - unavailable/unknown-capacity routes fail;
 - no substitution, fallback, or retry on a different route.
@@ -130,6 +135,8 @@ It reads the whole artifact file, verifies the requested range is in bounds, and
 Default delivery inlines answers up to `48 KiB`; larger answers return artifact metadata. Explicit oversized inline requests fail with `result_too_large_for_inline`. Answers are never truncated.
 
 Current `autoDeliver` status: `bg_delegate` accepts and records `never | when_small | always` and includes it in launch facts/details. The registry's generic terminal notification currently does not evaluate delegate results or include answer text, so `bg_result` remains the retrieval path.
+
+`extensionMode` accepts only `isolated | ambient`, defaults to `isolated`, and is surfaced in receipt text and durable metadata. Ambient receipts include an explicit arbitrary-code/isolation warning.
 
 ## User-oriented failure taxonomy
 

@@ -8,6 +8,7 @@ import {
   DELEGATE_MANIFEST_SCHEMA_VERSION,
   DELEGATE_RECEIPT_SCHEMA_VERSION,
   DelegateError,
+  type DelegateExtensionMode,
   type DelegateLimits,
   type DelegatePinnedRoute,
   type DelegateSpillReceipt,
@@ -67,6 +68,7 @@ export interface DelegateManifestV1 {
   cwd: string;
   child_session_id: string;
   child_session_dir: string;
+  extension_mode: DelegateExtensionMode;
   route: DelegatePinnedRoute;
   limits: DelegateLimits;
   seed_sha256: string;
@@ -111,6 +113,7 @@ export interface CreateDelegateArtifactStoreOptions {
   sessionId?: string | undefined;
   childSessionId: string;
   childSessionDir: string;
+  extensionMode: DelegateExtensionMode;
   route: DelegatePinnedRoute;
   limits: DelegateLimits;
   seedSha256: string;
@@ -175,6 +178,7 @@ export class DelegateArtifactStore {
       cwd: options.cwd,
       child_session_id: options.childSessionId,
       child_session_dir: options.childSessionDir,
+      extension_mode: options.extensionMode,
       route: options.route,
       limits: options.limits,
       seed_sha256: options.seedSha256,

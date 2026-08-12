@@ -21,6 +21,7 @@ import { verifyDelegateResultPackage, type VerifiedDelegateResult } from './resu
 import {
   DelegateError,
   type DelegateAutoDeliverMode,
+  type DelegateExtensionMode,
   type DelegateResultPackageV1,
 } from './types.js';
 import type { DelegateTaskFacts, DelegateTaskOutcome } from '../common.js';
@@ -49,6 +50,7 @@ export interface PrepareDelegateLaunchInput extends DelegatePreflightInput {
   cwd: string;
   sessionId: string | undefined;
   autoDeliver: DelegateAutoDeliverMode;
+  extensionMode: DelegateExtensionMode;
   childExtensionPath?: string | undefined;
   attributionExtensionPath?: string | undefined;
   env?: NodeJS.ProcessEnv | undefined;
@@ -96,6 +98,7 @@ export async function prepareDelegateLaunch(
     sessionId: input.sessionId,
     childSessionId: preflight.childSessionId,
     childSessionDir: '',
+    extensionMode: input.extensionMode,
     route: input.route,
     limits: preflight.limits,
     seedSha256: preflight.seed.sha256,
@@ -125,6 +128,7 @@ export async function prepareDelegateLaunch(
     const argv = buildDelegateChildArgv({
       route: input.route,
       capability: input.capability,
+      extensionMode: input.extensionMode,
       childSessionId: preflight.childSessionId,
       childSessionDir: childSessionDirAbs,
       childExtensionPath,
@@ -157,6 +161,7 @@ export async function prepareDelegateLaunch(
         family: preflight.plan.route.family,
         rate_source: preflight.plan.route.rate_source,
       },
+      extensionMode: input.extensionMode,
       autoDeliver: input.autoDeliver,
     };
     const stdinBytes = Buffer.from(preflight.childPrompt, 'utf8');

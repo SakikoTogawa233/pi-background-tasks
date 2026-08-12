@@ -133,6 +133,7 @@ void describe('delegate child isolation', () => {
       origin: 'parent_current',
     },
     capability: 'inspect',
+    extensionMode: 'isolated',
     childSessionId: 'delegate-child-1',
     childSessionDir: '/tmp/task/child-session',
     childExtensionPath: '/pkg/extensions/delegate-child.ts',
@@ -189,6 +190,7 @@ void describe('delegate child isolation', () => {
   void it('keeps non-Anthropic argv at one explicit guard and requires attribution for Anthropic', () => {
     const common = {
       capability: 'inspect' as const,
+      extensionMode: 'isolated' as const,
       childSessionId: 'delegate-child-2',
       childSessionDir: '/tmp/task/child-session-2',
       childExtensionPath: '/pkg/extensions/delegate-child.ts',
@@ -226,6 +228,73 @@ void describe('delegate child isolation', () => {
         }),
       (error: unknown) =>
         error instanceof DelegateError && error.code === 'delegate_isolation_unsupported',
+    );
+  });
+
+  void it('ambient mode enables extension discovery but preserves every other boundary', () => {
+    const ambient = buildDelegateChildArgv({
+      route: {
+        provider: 'anthropic',
+        model: 'claude-test',
+        qualified_id: 'anthropic/claude-test',
+        context_window_tokens: 200_000,
+        thinking_level: 'medium',
+        origin: 'explicit',
+      },
+      capability: 'inspect',
+      extensionMode: 'ambient',
+      childSessionId: 'delegate-ambient',
+      childSessionDir: '/tmp/task/ambient-session',
+      childExtensionPath: '/pkg/extensions/delegate-child.ts',
+      attributionExtensionPath: '/pkg/extensions/anthropic-attribution.ts',
+      systemPrompt: 'child system prompt',
+    });
+    assert.ok(!ambient.includes('--no-extensions'));
+    for (const flag of [
+      '--no-skills',
+      '--no-prompt-templates',
+      '--no-themes',
+      '--no-context-files',
+      '--no-builtin-tools',
+      '--tools',
+      '--exclude-tools',
+    ]) {
+      assert.ok(ambient.includes(flag), `${flag} must remain set in ambient mode`);
+    }
+    assert.deepEqual(
+      ambient.flatMap((entry, index) =>
+        entry === '--extension' ? [ambient[index + 1] ?? ''] : [],
+      ),
+      ['/pkg/extensions/anthropic-attribution.ts', '/pkg/extensions/delegate-child.ts'],
+    );
+    assert.equal(ambient[ambient.indexOf('--provider') + 1], 'anthropic');
+    assert.equal(ambient[ambient.indexOf('--model') + 1], 'claude-test');
+    assert.deepEqual(ambient[ambient.indexOf('--tools') + 1]?.split(','), [
+      ...DELEGATE_INSPECT_TOOLS,
+    ]);
+  });
+
+  void it('refuses an unknown extension mode', () => {
+    assert.throws(
+      () =>
+        buildDelegateChildArgv({
+          route: {
+            provider: 'openai-codex',
+            model: 'gpt-test',
+            qualified_id: 'openai-codex/gpt-test',
+            context_window_tokens: 200_000,
+            thinking_level: 'medium',
+            origin: 'explicit',
+          },
+          capability: 'inspect',
+          extensionMode: 'custom-path' as never,
+          childSessionId: 'delegate-invalid',
+          childSessionDir: '/tmp/task/invalid-session',
+          childExtensionPath: '/pkg/extensions/delegate-child.ts',
+          systemPrompt: 'child system prompt',
+        }),
+      (error: unknown) =>
+        error instanceof DelegateError && error.code === 'invalid_arguments',
     );
   });
 
@@ -395,6 +464,7 @@ void describe('delegate preflight ordering', () => {
           toolCallId: 'call-1',
           prompt: 'investigate',
           capability: 'inspect',
+          extensionMode: 'isolated',
           route: baseRoute,
           limitOverrides: {},
           hookEvidence: weakened,
@@ -410,6 +480,7 @@ void describe('delegate preflight ordering', () => {
       toolCallId: 'call-1',
       prompt: 'investigate the regression',
       capability: 'inspect',
+      extensionMode: 'isolated',
       route: baseRoute,
       limitOverrides: { maxTurns: 5, maxToolCalls: 10, timeoutSeconds: 60 },
       hookEvidence: OBSERVED_EVIDENCE,
@@ -431,6 +502,7 @@ void describe('delegate preflight ordering', () => {
           toolCallId: 'call-1',
           prompt: 'investigate',
           capability: 'inspect',
+          extensionMode: 'isolated',
           route: { ...baseRoute, context_window_tokens: 1000 },
           limitOverrides: {},
           hookEvidence: OBSERVED_EVIDENCE,
@@ -456,6 +528,7 @@ void describe('delegate launch preparation creates nothing on refusal', () => {
       toolCallId: 'call-1',
       prompt: 'investigate',
       capability: 'inspect' as const,
+      extensionMode: 'isolated' as const,
       route: {
         provider: 'anthropic',
         model: 'claude-test',
@@ -568,6 +641,12 @@ void describe('delegate launch preparation creates nothing on refusal', () => {
     assert.equal(prepared.env['PI_BG_DELEGATE_TASK_ID'], prepared.preflight.taskId);
     assert.ok(existsSync(join(prepared.store.artifactDirAbs, 'budget-plan.json')));
     assert.ok(existsSync(join(prepared.store.artifactDirAbs, 'context-omission-ledger.json')));
+    const manifest = JSON.parse(
+      await readFile(join(prepared.store.artifactDirAbs, 'manifest.json'), 'utf8'),
+    ) as Record<string, unknown>;
+    assert.equal(manifest['extension_mode'], 'isolated');
+    assert.equal(prepared.facts.extensionMode, 'isolated');
+    assert.equal(prepared.preflight.seed.seed.extension_mode, 'isolated');
     assert.ok(existsSync(prepared.childSessionDirAbs));
     assert.ok(prepared.childSessionDirAbs.startsWith(prepared.store.artifactDirAbs));
     assert.equal(await delegateDirEntries(root).then((entries) => entries.length), 1);

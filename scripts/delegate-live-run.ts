@@ -169,6 +169,7 @@ async function main(): Promise<void> {
     prompt:
       'Read alpha.ts, beta.ts, and gamma.ts in the working directory. Report the exact numeric retry budget each subsystem uses and which subsystems share one. Then state, in one sentence, which subsystem is the deviation the audit was hunting, using what the conversation already established. Answer in under 120 words.',
     capability: 'inspect',
+    extensionMode: 'isolated',
     route,
     limitOverrides: { maxTurns: 12, maxToolCalls: 20, timeoutSeconds: 300 },
     hookEvidence: evidence,

@@ -82,6 +82,7 @@ Use `bg_delegate` when the worker needs the current conversation as background b
   "name": "Config audit",
   "prompt": "Inspect package configuration and report where background-task output limits are defined. Include file paths and concise evidence.",
   "capability": "inspect",
+  "extensionMode": "isolated",
   "autoDeliver": "never"
 }
 ```
@@ -89,6 +90,8 @@ Use `bg_delegate` when the worker needs the current conversation as background b
 The child receives a frozen visible-conversation projection, its own session id/session directory, and read/search/list tools only. It has no shell, no write/edit tools, no network, no recursive delegate, and no Fusion.
 
 After the completion notification, retrieve the committed answer:
+
+`extensionMode:"isolated"` is the default and disables ambient extension discovery. If the pinned provider is registered only by a user/project extension, use `extensionMode:"ambient"` explicitly. Ambient mode executes arbitrary discovered extension code; the inspect tool allowlist does not sandbox it, so process isolation is weakened. No caller-supplied extension path or route fallback is supported.
 
 ```json
 {

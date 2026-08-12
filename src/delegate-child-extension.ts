@@ -7,6 +7,7 @@ import type { ExtensionAPI } from '@earendil-works/pi-coding-agent';
 import type { Usage } from '@earendil-works/pi-ai';
 import {
   DELEGATE_RECEIPT_SCHEMA_VERSION,
+  DELEGATE_CAPABILITIES,
   type DelegateRouteAttestation,
   type DelegateSeedV1,
   type DelegateSpillReceipt,
@@ -23,8 +24,9 @@ import {
 /**
  * Package-owned delegate child extension.
  *
- * This runs inside every delegate child Pi process and is the only child guard
- * it loads. Anthropic routes may load attribution first; this guard remains
+ * This runs inside every delegate child Pi process and is the package-owned
+ * child guard. Anthropic routes load attribution first, and ambient mode may
+ * also execute discovered extensions; this guard remains
  * responsible for every isolation guarantee that cannot be enforced from the
  * parent:
  *
@@ -289,6 +291,10 @@ export default function delegateChildExtension(pi: ExtensionAPI): void {
     taskId: expectedTaskId,
     launchNonce: expectedNonce,
   });
+
+  if (!DELEGATE_CAPABILITIES.includes(seed.capability)) {
+    throw new Error(`delegate child cannot enforce capability ${seed.capability}`);
+  }
 
   const state: GuardState = {
     seed,

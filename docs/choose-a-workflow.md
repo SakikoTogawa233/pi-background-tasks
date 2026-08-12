@@ -24,7 +24,7 @@ covers_sources: []
 | Foreground work | Synchronous | Current session | Depends on active tools | Depends on active tools | Depends on active tools | Current session route | You need live interaction. |
 | `/bg` | Async | None by package | Command decides | Command decides | Command decides | Not a model route unless command invokes one | You manually start a long local command. |
 | `bg_run` | Async | None by package | Command decides | Command decides | Command decides | Not a model route unless command invokes one | Pi should launch a long command and resume later. |
-| `bg_delegate` + `bg_result` | Async launch, point-in-time retrieval | Frozen visible conversation projection | Yes, inspect-only | No | No | Pinned at launch; no substitution | Context-aware read-only investigation. |
+| `bg_delegate` + `bg_result` | Async launch, point-in-time retrieval | Frozen visible conversation projection | Yes, inspect-only model tools; ambient extension code is not sandboxed | No | No | Pinned at launch; no substitution | Context-aware read-only investigation; isolated extension discovery by default. |
 | `bg_run_pi_attested` | Async | Prompt only | Child Pi decides from prompt/tools | Child Pi route/tools decide | Report path requested | Structured provider/model; OAuth observed for supported subscription routes | Local evidence-producing Pi run. |
 | `fusion_reason` / `/fusion` | Async launch, point-in-time `bg_result` retrieval | Versioned conversation projection plus prompt | No | No | No | Configured Fusion slots; no silent fallback | Self-contained reasoning/synthesis. |
 | `fusion_investigate` | Async launch, point-in-time `bg_result` retrieval | Clean task input only | Candidate read-only tools | No | No | Configured Fusion slots; no silent fallback | Independent repository investigation. |
@@ -53,6 +53,8 @@ Defaults are `notifyOnCompletion:true` and `triggerOnCompletion:true`. With thos
 
 `bg_delegate` supports only `capability:"inspect"`. The child is seeded with a deterministic visible-conversation projection, but omitted parent tool payloads are not available. Restate any needed facts in the delegate prompt.
 
+Extension discovery defaults to `extensionMode:"isolated"`. Select `"ambient"` only for a provider registered by an ambient user/project extension. Ambient mode executes arbitrary extension code, so its process is not inspect-only sandboxed even though its model-visible tools remain read/search/list only. It accepts no extension paths and never substitutes the route.
+
 Use `bg_result` for retrieval. It verifies hashes before returning content and reports oversized answers as artifacts instead of silently truncating.
 
 ### Fusion boundaries
@@ -80,7 +82,8 @@ Fusion is a fixed workflow, not a free-form mode switch:
 {
   "name": "Docs locator",
   "prompt": "Find the docs that explain shell selection and update checks. Return exact file paths and a concise summary.",
-  "capability": "inspect"
+  "capability": "inspect",
+  "extensionMode": "isolated"
 }
 ```
 

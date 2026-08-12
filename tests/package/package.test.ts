@@ -478,6 +478,7 @@ void describe('package', () => {
       '/claude-cache',
       'bg_run',
       'bg_delegate',
+      'extensionMode',
       'bg_result',
       'bg_run_pi_attested',
       'bg_status',

@@ -17,6 +17,7 @@ import {
   DELEGATE_TOOL_NAME,
   DelegateError,
   type DelegateCapability,
+  type DelegateExtensionMode,
   type DelegateLimits,
   type DelegatePinnedRoute,
   type DelegateRoute,
@@ -239,9 +240,19 @@ export function delegateToolsFor(capability: DelegateCapability): readonly strin
   });
 }
 
+function assertDelegateExtensionMode(mode: DelegateExtensionMode): void {
+  if (mode === 'isolated' || mode === 'ambient') return;
+  throw new DelegateError(`bg_delegate extension mode ${String(mode)} is not supported`, {
+    code: 'invalid_arguments',
+    childCreated: false,
+    remediation: ['Use extensionMode "isolated" or "ambient".'],
+  });
+}
+
 export interface DelegateChildArgvInput {
   route: DelegatePinnedRoute;
   capability: DelegateCapability;
+  extensionMode: DelegateExtensionMode;
   childSessionId: string;
   childSessionDir: string;
   childExtensionPath: string;
@@ -253,12 +264,15 @@ export interface DelegateChildArgvInput {
  * Build the child argv.
  *
  * The child gets its own `--session-id` and a task-owned `--session-dir`, so it
- * is structurally incapable of opening or mutating the parent session. Discovery
- * of ambient extensions, skills, prompt templates, themes, and context files is
- * disabled. The package guard is always explicit; Anthropic routes first load
- * the package attribution/sanitization extension.
+ * is structurally incapable of opening or mutating the parent session. Skills,
+ * prompt templates, themes, and context files are always disabled. Extension
+ * discovery is disabled in isolated mode and deliberately enabled in ambient
+ * mode; ambient extensions execute arbitrary code and are not sandboxed by the
+ * model-visible tool allowlist. The package guard is always explicit; Anthropic
+ * routes first load the package attribution/sanitization extension.
  */
 export function buildDelegateChildArgv(input: DelegateChildArgvInput): string[] {
+  assertDelegateExtensionMode(input.extensionMode);
   const tools = delegateToolsFor(input.capability);
   for (const forbidden of DELEGATE_FORBIDDEN_TOOLS) {
     if (tools.includes(forbidden)) {
@@ -295,7 +309,7 @@ export function buildDelegateChildArgv(input: DelegateChildArgvInput): string[] 
     tools.join(','),
     '--exclude-tools',
     DELEGATE_FORBIDDEN_TOOLS.join(','),
-    '--no-extensions',
+    ...(input.extensionMode === 'isolated' ? ['--no-extensions'] : []),
     '--no-skills',
     '--no-prompt-templates',
     '--no-themes',
@@ -377,6 +391,7 @@ export interface DelegatePreflightInput {
   toolCallId: string | undefined;
   prompt: string;
   capability: DelegateCapability;
+  extensionMode: DelegateExtensionMode;
   route: DelegatePinnedRoute;
   limitOverrides: DelegateLimitOverrides;
   hookEvidence: DelegateHookContractEvidence;
@@ -428,6 +443,7 @@ export function buildDelegateChildPrompt(seedSerialized: string, directive: stri
  */
 export function preflightDelegateLaunch(input: DelegatePreflightInput): DelegatePreflightResult {
   assertDelegateHookContract(input.hookEvidence);
+  assertDelegateExtensionMode(input.extensionMode);
   // Validates the capability and proves the tool set contains nothing forbidden.
   delegateToolsFor(input.capability);
   const limits = resolveDelegateLimits(input.route, input.limitOverrides);
@@ -440,6 +456,7 @@ export function preflightDelegateLaunch(input: DelegatePreflightInput): Delegate
     toolCallId: input.toolCallId,
     directive: input.prompt,
     capability: input.capability,
+    extensionMode: input.extensionMode,
     route: input.route,
     limits,
   });

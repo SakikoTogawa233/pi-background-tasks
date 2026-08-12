@@ -116,7 +116,18 @@ void describe('TypeBox compatibility', () => {
     assert.deepEqual(violations, []);
   });
 
-  void it('compiles the exact shipped Fusion v1 public schemas under TypeBox 1.3', async () => {
+  void it('compiles the exact shipped delegate and Fusion public schemas under TypeBox 1.3', async () => {
+    const { DelegateParams } = await import('../../src/delegate-extension.js');
+    const delegate = Compile(DelegateParams);
+    assert.equal(delegate.Check({ name: 'inspect', prompt: 'find it' }), true);
+    assert.equal(
+      delegate.Check({ name: 'inspect', prompt: 'find it', extensionMode: 'ambient' }),
+      true,
+    );
+    assert.equal(
+      delegate.Check({ name: 'inspect', prompt: 'find it', extensionPaths: ['/tmp/x.ts'] }),
+      false,
+    );
     const {
       FusionInvestigateParams,
       FusionReasonParams,

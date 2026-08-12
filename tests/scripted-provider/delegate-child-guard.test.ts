@@ -102,6 +102,7 @@ async function harness(options: HarnessOptions): Promise<Harness> {
       toolCallId: 'delegate-call-1',
       directive: options.directive ?? 'investigate the thing',
       capability: 'inspect',
+      extensionMode: 'isolated',
       route,
       limits: options.limits ?? limits(),
     },

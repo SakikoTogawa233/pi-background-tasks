@@ -101,6 +101,7 @@ export function buildDeterministicFixtureSeed(): BuiltDelegateSeed {
       toolCallId: 'delegate-call-1',
       directive: 'investigate the failing gate',
       capability: 'inspect',
+      extensionMode: 'isolated',
       route: ROUTE,
       limits: LIMITS,
     },

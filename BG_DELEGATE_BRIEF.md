@@ -150,7 +150,7 @@ must reuse it **without destabilising Fusion**.
   changes as a result of extraction, the extraction is wrong.**
 - `bg_delegate` must **not** import `buildFusionCanonicalInput()` and must not
   emit `fusion-input.v3`. It gets its own versioned seed schema
-  (e.g. `pi-background-tasks.delegate-seed.v1`) wrapping the shared projection.
+  (e.g. `pi-background-tasks.delegate-seed.v2`) wrapping the shared projection.
 - Decide what genuinely needs extracting versus what can be called as-is.
   Prefer the smallest seam that works.
 
