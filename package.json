@@ -1,6 +1,6 @@
 {
   "name": "pi-background-tasks",
-  "version": "2.1.4",
+  "version": "2.2.0",
   "description": "Pi extension for durable background shell tasks, read-only delegated agents, local attested Pi runs, and fixed-purpose Fusion workflows through child Pi processes.",
   "type": "module",
   "license": "ISC",
@@ -42,6 +42,7 @@
     "TEST_PLAN.md",
     "PUBLISHING.md",
     "LICENSE",
+    "THIRD_PARTY_NOTICES.md",
     "docs/",
     "BACKGROUND-TASKS-INSTRUCTIONS.md",
     "logo.png"
@@ -65,6 +66,7 @@
     "lint": "cd ../.. && npm run quality:ts:lint",
     "format:check": "cd ../.. && npm run quality:ts:format",
     "test:compat": "tsx scripts/test-compat.ts",
+    "test:pnpm-pack": "node scripts/test-pnpm-pack-install.mjs",
     "test:hook-contract": "tsx --test --test-concurrency=1 tests/scripted-provider/pi-hook-contract.test.ts",
     "docs:generate": "node scripts/docs/generate.mjs",
     "docs:verify": "node scripts/docs/verify.mjs",
@@ -79,6 +81,7 @@
   "pi": {
     "image": "https://raw.githubusercontent.com/ismailsaleekh/pi-background-tasks/main/logo.png",
     "extensions": [
+      "./extensions/anthropic-attribution.ts",
       "./extensions/background-tasks.ts"
     ]
   },
@@ -101,7 +104,6 @@
     "node": ">=22.19.0"
   },
   "dependencies": {
-    "@ravshansbox/pi-anthropic-sps": "https://codeload.github.com/ravshansbox/pi-anthropic-sps/tar.gz/17409b5615f0ec0625776bc5434f92f2c55e3fd0",
     "turndown": "7.2.4"
   }
 }

@@ -64,13 +64,17 @@ const AUDIT_ENV = 'PIPELINE_ANTHROPIC_ATTRIBUTION_AUDIT_PATH';
 const CACHE_RETENTION_ENV = 'PI_CACHE_RETENTION';
 export const ANTHROPIC_CACHE_RETENTION_ENTRY = 'pipeline-anthropic-cache-retention';
 const ANTHROPIC_CACHE_RETENTION_SCHEMA = 'pipeline.anthropic_cache_retention.v1';
+export const ANTHROPIC_ATTRIBUTION_CLAIM_CHANNEL = 'pi-anthropic-attribution:claim:v1';
+const ANTHROPIC_ATTRIBUTION_CLAIM_SCHEMA = 'pi-anthropic-attribution.claim.v1';
 const NATIVE_ATTESTATION_PLACEHOLDER = '00000';
 const ANTHROPIC_CACHE_CONTROL_BREAKPOINT_LIMIT = 4;
 
-// Source: ravshansbox/pi-anthropic-sps. Keep exact-match semantics so the
-// repo-local attribution shim is idempotent with the global sanitizer.
+// Sanitization behavior derived from the MIT-licensed ravshansbox/pi-anthropic-sps
+// extension at commit 17409b5615f0ec0625776bc5434f92f2c55e3fd0. Keep exact-match
+// semantics and all known Pi prompt variants; unrelated system text is preserved.
 const ANTHROPIC_SYSTEM_PROMPT_BAD_LINES = new Set([
   '- When asked about: extensions (docs/extensions.md, examples/extensions/), themes (docs/themes.md), skills (docs/skills.md), prompt templates (docs/prompt-templates.md), TUI components (docs/tui.md), keybindings (docs/keybindings.md), SDK integrations (docs/sdk.md), custom providers (docs/custom-provider.md), adding models (docs/models.md), pi packages (docs/packages.md)',
+  '- When asked about: extensions (docs/extensions.md, examples/extensions/), themes (docs/themes.md), skills (docs/skills.md), prompt templates (docs/prompt-templates.md), TUI components (docs/tui.md), keybindings (docs/keybindings.md), SDK integrations (docs/sdk.md), custom providers (docs/custom-provider.md), adding models (docs/models.md), pi packages (docs/packages.md), environment variables (docs/environment-variables.md)',
   '- When working on pi topics, read the docs and examples, and follow .md cross-references before implementing',
 ]);
 
@@ -329,7 +333,13 @@ interface PiCommandConfigLike {
   readonly handler: (args: string, ctx: PiContextLike) => Promise<void> | void;
 }
 
+interface PiEventBusLike {
+  emit(channel: string, data: unknown): void;
+  on(channel: string, handler: (data: unknown) => void): () => void;
+}
+
 export interface PiExtensionHost extends PiProviderRegistrationHost {
+  readonly events: PiEventBusLike;
   on(
     eventName: 'session_start' | 'session_shutdown' | 'session_tree' | 'before_agent_start',
     handler: (event: unknown, ctx: PiContextLike) => void,
@@ -1867,10 +1877,53 @@ function cacheRetentionLabel(retention: CacheRetention): string {
   }
 }
 
+interface AnthropicAttributionClaimProbe {
+  readonly schema_version: typeof ANTHROPIC_ATTRIBUTION_CLAIM_SCHEMA;
+  readonly acknowledge: () => void;
+}
+
+function isAnthropicAttributionClaimProbe(value: unknown): value is AnthropicAttributionClaimProbe {
+  return (
+    isPlainObject(value) &&
+    value['schema_version'] === ANTHROPIC_ATTRIBUTION_CLAIM_SCHEMA &&
+    typeof value['acknowledge'] === 'function'
+  );
+}
+
+/**
+ * Prevent two independently installed copies from registering duplicate provider
+ * hooks and `/claude-cache` commands in one Pi runtime. Pi loads extension factories
+ * sequentially and its EventBus dispatches listeners synchronously, so an existing
+ * owner acknowledges this probe before emit() returns. The winning extension only
+ * publishes ownership after every registration below succeeds; a factory that throws
+ * cannot strand a false claim that suppresses a healthy later copy.
+ */
 export default function spawnAnthropicAttribution(pi: PiExtensionHost): void {
+  const acknowledgements: true[] = [];
+  const probe: AnthropicAttributionClaimProbe = {
+    schema_version: ANTHROPIC_ATTRIBUTION_CLAIM_SCHEMA,
+    acknowledge: () => {
+      acknowledgements.push(true);
+    },
+  };
+  pi.events.emit(ANTHROPIC_ATTRIBUTION_CLAIM_CHANNEL, probe);
+  if (acknowledgements.length > 0) return;
+
   let sessionCacheRetention: Exclude<CacheRetention, 'none'> | undefined;
   const getSessionOverride = (): Exclude<CacheRetention, 'none'> | undefined =>
     sessionCacheRetention;
+
+  // Registration is global but route-scoped by provider name. Keeping it at
+  // factory scope avoids lifecycle-dependent provider availability; the custom
+  // transport derives session/model headers from the attributed payload.
+  pi.registerProvider('anthropic', {
+    api: 'anthropic-messages',
+    streamSimple: (model, context, options) =>
+      streamAnthropicViaBetaMessages(model, context, {
+        ...(options ?? {}),
+        cacheRetention: resolveCacheRetentionPreference(options, getSessionOverride()),
+      }),
+  });
 
   pi.registerCommand('claude-cache', {
     description: 'Show or set Claude cache retention for this session (short, long, default)',
@@ -1902,7 +1955,6 @@ export default function spawnAnthropicAttribution(pi: PiExtensionHost): void {
 
   pi.on('session_start', (_event, ctx) => {
     sessionCacheRetention = restoreAnthropicSessionCacheRetention(ctx.sessionManager.getBranch());
-    registerAnthropicAttributionProvider(pi, ctx, getSessionOverride);
   });
 
   pi.on('session_shutdown', () => {
@@ -1913,18 +1965,19 @@ export default function spawnAnthropicAttribution(pi: PiExtensionHost): void {
     sessionCacheRetention = restoreAnthropicSessionCacheRetention(ctx.sessionManager.getBranch());
   });
 
-  pi.on('before_agent_start', (_event, ctx) => {
-    registerAnthropicAttributionProvider(pi, ctx, getSessionOverride);
-  });
-
   pi.on('before_provider_request', (event, ctx) => {
     if (!isAnthropicContext(ctx)) return undefined;
-    registerAnthropicAttributionProvider(pi, ctx, getSessionOverride);
     return rewriteAnthropicRequestPayload({
       payload: event.payload,
       ctx,
       account: loadClaudeAttributionAccount(),
       headerRegistered: true,
     });
+  });
+
+  // Publish ownership last. Extension loading is sequential, so later independent
+  // copies probe this responder and become inert instead of registering duplicates.
+  pi.events.on(ANTHROPIC_ATTRIBUTION_CLAIM_CHANNEL, (value) => {
+    if (isAnthropicAttributionClaimProbe(value)) value.acknowledge();
   });
 }

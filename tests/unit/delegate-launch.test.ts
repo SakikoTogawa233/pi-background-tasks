@@ -136,6 +136,7 @@ void describe('delegate child isolation', () => {
     childSessionId: 'delegate-child-1',
     childSessionDir: '/tmp/task/child-session',
     childExtensionPath: '/pkg/extensions/delegate-child.ts',
+    attributionExtensionPath: '/pkg/extensions/anthropic-attribution.ts',
     systemPrompt: 'child system prompt',
   });
 
@@ -166,7 +167,7 @@ void describe('delegate child isolation', () => {
     }
   });
 
-  void it('disables ambient discovery and loads only the package guard extension', () => {
+  void it('disables ambient discovery and loads attribution before the package guard', () => {
     for (const flag of [
       '--no-extensions',
       '--no-skills',
@@ -176,8 +177,56 @@ void describe('delegate child isolation', () => {
     ]) {
       assert.ok(argv.includes(flag), `${flag} must be set`);
     }
-    assert.equal(argv.filter((entry) => entry === '--extension').length, 1);
-    assert.equal(argv[argv.indexOf('--extension') + 1], '/pkg/extensions/delegate-child.ts');
+    const extensionPaths = argv.flatMap((entry, index) =>
+      entry === '--extension' ? [argv[index + 1] ?? ''] : [],
+    );
+    assert.deepEqual(extensionPaths, [
+      '/pkg/extensions/anthropic-attribution.ts',
+      '/pkg/extensions/delegate-child.ts',
+    ]);
+  });
+
+  void it('keeps non-Anthropic argv at one explicit guard and requires attribution for Anthropic', () => {
+    const common = {
+      capability: 'inspect' as const,
+      childSessionId: 'delegate-child-2',
+      childSessionDir: '/tmp/task/child-session-2',
+      childExtensionPath: '/pkg/extensions/delegate-child.ts',
+      systemPrompt: 'child system prompt',
+    };
+    const codexArgv = buildDelegateChildArgv({
+      ...common,
+      route: {
+        provider: 'openai-codex',
+        model: 'gpt-test',
+        qualified_id: 'openai-codex/gpt-test',
+        context_window_tokens: 200_000,
+        thinking_level: 'medium',
+        origin: 'explicit',
+      },
+    });
+    assert.deepEqual(
+      codexArgv.flatMap((entry, index) =>
+        entry === '--extension' ? [codexArgv[index + 1] ?? ''] : [],
+      ),
+      ['/pkg/extensions/delegate-child.ts'],
+    );
+    assert.throws(
+      () =>
+        buildDelegateChildArgv({
+          ...common,
+          route: {
+            provider: 'anthropic',
+            model: 'claude-test',
+            qualified_id: 'anthropic/claude-test',
+            context_window_tokens: 200_000,
+            thinking_level: 'medium',
+            origin: 'explicit',
+          },
+        }),
+      (error: unknown) =>
+        error instanceof DelegateError && error.code === 'delegate_isolation_unsupported',
+    );
   });
 
   void it('pins provider and model explicitly and passes no api key', () => {
@@ -263,9 +312,7 @@ void describe('delegate hook contract gate', () => {
 
   void it('does not require guarantees Pi 0.83 demonstrably lacks', () => {
     assert.ok(!DELEGATE_REQUIRED_HOOK_GUARANTEES.includes('context_throw_blocks_provider_call'));
-    assert.ok(
-      !DELEGATE_REQUIRED_HOOK_GUARANTEES.includes('context_abort_skips_stream_invocation'),
-    );
+    assert.ok(!DELEGATE_REQUIRED_HOOK_GUARANTEES.includes('context_abort_skips_stream_invocation'));
   });
 
   void it('refuses malformed or partial evidence rather than defaulting to allow', () => {

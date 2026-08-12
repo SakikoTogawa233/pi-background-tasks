@@ -1,8 +1,7 @@
 import { spawn as nodeSpawn, type SpawnOptions } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { constants, existsSync, readFileSync } from 'node:fs';
+import { constants, existsSync } from 'node:fs';
 import { open } from 'node:fs/promises';
-import { createRequire } from 'node:module';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
@@ -73,6 +72,7 @@ import {
   resolvePiLaunch,
   type PiLaunchDependencies,
 } from '../pi-launch.js';
+import { resolveAnthropicAttributionExtensionPath } from '../anthropic-attribution-path.js';
 
 // The response cap now applies to one final full answer, not cumulative Pi JSON events.
 export const FUSION_CHILD_STDOUT_LIMIT_BYTES = 32 * 1024 * 1024;
@@ -274,21 +274,6 @@ export function fusionPiChildEnv(
   return out;
 }
 
-export function resolveFusionAnthropicAttributionExtensionPath(
-  moduleUrl = import.meta.url,
-  pathExists: (path: string) => boolean = existsSync,
-): string {
-  const modulePath = fileURLToPath(moduleUrl);
-  const extension = modulePath.endsWith('.ts')
-    ? 'anthropic-attribution.ts'
-    : 'anthropic-attribution.js';
-  const candidate = resolve(dirname(modulePath), extension);
-  if (!pathExists(candidate)) {
-    throw new Error(`Fusion Anthropic attribution extension is missing: ${candidate}`);
-  }
-  return candidate;
-}
-
 export function resolveFusionChildExtensionPath(
   moduleUrl = import.meta.url,
   pathExists: (path: string) => boolean = existsSync,
@@ -303,109 +288,10 @@ export function resolveFusionChildExtensionPath(
 }
 
 /**
- * Provider whose children require the Anthropic system-prompt sanitizer.
- *
- * Pi's own system prompt contains documentation lines that Anthropic rejects, so a
- * Claude child launched without the sanitizer fails at the provider rather than
- * producing an answer. The parent session loads the sanitizer through ordinary
- * extension discovery, but Fusion children run with `--no-extensions` for
- * isolation and therefore inherit nothing; the sanitizer must be re-supplied
- * explicitly per child.
+ * Provider whose isolated children require the package-owned attribution and
+ * exact-match system-prompt sanitization extension.
  */
 export const FUSION_SANITIZED_PROVIDER = 'anthropic';
-export const FUSION_ANTHROPIC_SANITIZER_PACKAGE = '@ravshansbox/pi-anthropic-sps';
-const FUSION_ANTHROPIC_SANITIZER_MANIFEST = `${FUSION_ANTHROPIC_SANITIZER_PACKAGE}/package.json`;
-
-export interface FusionSanitizerDependencies {
-  resolvePackageJson?: ((specifier: string) => string) | undefined;
-  readManifest?: ((path: string) => string) | undefined;
-  pathExists?: ((path: string) => boolean) | undefined;
-}
-
-function manifestExtensionEntry(manifestText: string, manifestPath: string): string {
-  let parsed: unknown;
-  try {
-    parsed = parseJsonText(manifestText);
-  } catch (error) {
-    throw new FusionError(
-      `Anthropic sanitizer manifest ${manifestPath} is not valid JSON: ${error instanceof Error ? error.message : String(error)}`,
-      { code: 'orchestration_failed', childCreated: false },
-    );
-  }
-  if (!isJsonObject(parsed)) {
-    throw new FusionError(`Anthropic sanitizer manifest ${manifestPath} must be an object`, {
-      code: 'orchestration_failed',
-      childCreated: false,
-    });
-  }
-  const pi = parsed['pi'];
-  if (!isJsonObject(pi)) {
-    throw new FusionError(
-      `Anthropic sanitizer manifest ${manifestPath} has no "pi" section declaring its extension`,
-      { code: 'orchestration_failed', childCreated: false },
-    );
-  }
-  const extensions = pi['extensions'];
-  if (!Array.isArray(extensions) || extensions.length === 0) {
-    throw new FusionError(
-      `Anthropic sanitizer manifest ${manifestPath} declares no pi.extensions entries`,
-      { code: 'orchestration_failed', childCreated: false },
-    );
-  }
-  const [entry] = extensions;
-  if (typeof entry !== 'string' || entry.trim().length === 0) {
-    throw new FusionError(
-      `Anthropic sanitizer manifest ${manifestPath} pi.extensions[0] must be a non-blank string`,
-      { code: 'orchestration_failed', childCreated: false },
-    );
-  }
-  return entry;
-}
-
-/**
- * Resolve the sanitizer extension file shipped by the sanitizer package.
- *
- * The package intentionally publishes no `main`/`exports`, so the entry cannot be
- * required directly; its manifest is resolved and the declared `pi.extensions[0]`
- * path is joined against the package root. Every failure is loud: a Claude child
- * launched without the sanitizer would fail at the provider with a far less
- * actionable error, so silently omitting it is never correct.
- */
-export function resolveAnthropicSanitizerExtensionPath(
-  dependencies: FusionSanitizerDependencies = {},
-): string {
-  const resolvePackageJson =
-    dependencies.resolvePackageJson ?? createRequire(import.meta.url).resolve;
-  const readManifest = dependencies.readManifest ?? ((path: string) => readFileSync(path, 'utf8'));
-  const pathExists = dependencies.pathExists ?? existsSync;
-  let manifestPath: string;
-  try {
-    manifestPath = resolvePackageJson(FUSION_ANTHROPIC_SANITIZER_MANIFEST);
-  } catch (error) {
-    throw new FusionError(
-      `Anthropic sanitizer package ${FUSION_ANTHROPIC_SANITIZER_PACKAGE} could not be resolved: ${error instanceof Error ? error.message : String(error)}. Claude children cannot be launched without it.`,
-      { code: 'orchestration_failed', childCreated: false },
-    );
-  }
-  let manifestText: string;
-  try {
-    manifestText = readManifest(manifestPath);
-  } catch (error) {
-    throw new FusionError(
-      `Anthropic sanitizer manifest ${manifestPath} could not be read: ${error instanceof Error ? error.message : String(error)}`,
-      { code: 'orchestration_failed', childCreated: false },
-    );
-  }
-  const entry = manifestExtensionEntry(manifestText, manifestPath);
-  const extensionPath = resolve(dirname(manifestPath), entry);
-  if (!pathExists(extensionPath)) {
-    throw new FusionError(
-      `Anthropic sanitizer extension is missing: ${extensionPath} (declared by ${manifestPath})`,
-      { code: 'orchestration_failed', childCreated: false },
-    );
-  }
-  return extensionPath;
-}
 
 export function assertFusionToolPolicyDisjoint(
   allowlist: readonly string[] = FUSION_INSPECT_TOOLS,
@@ -468,11 +354,10 @@ function fusionToolArgv(capability: FusionCapability): string[] {
 export function fusionChildExtensionPaths(
   model: ResolvedFusionModel,
   childExtensionPath: string,
-  resolveSanitizer: () => string = resolveAnthropicSanitizerExtensionPath,
-  resolveAttribution: () => string = resolveFusionAnthropicAttributionExtensionPath,
+  resolveAttribution: () => string = resolveAnthropicAttributionExtensionPath,
 ): readonly string[] {
   if (model.provider !== FUSION_SANITIZED_PROVIDER) return [childExtensionPath];
-  return [resolveAttribution(), resolveSanitizer(), childExtensionPath];
+  return [resolveAttribution(), childExtensionPath];
 }
 
 export function buildFusionPiChildArgv(
@@ -480,13 +365,11 @@ export function buildFusionPiChildArgv(
   systemPrompt: string,
   childExtensionPath = resolveFusionChildExtensionPath(),
   capability: FusionCapability = FUSION_NO_TOOLS_CAPABILITY,
-  resolveSanitizer: () => string = resolveAnthropicSanitizerExtensionPath,
-  resolveAttribution: () => string = resolveFusionAnthropicAttributionExtensionPath,
+  resolveAttribution: () => string = resolveAnthropicAttributionExtensionPath,
 ): string[] {
   const extensionArgs = fusionChildExtensionPaths(
     model,
     childExtensionPath,
-    resolveSanitizer,
     resolveAttribution,
   ).flatMap((path) => ['--extension', path]);
   return [

@@ -150,9 +150,18 @@ export function attestedPiChildEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   return out;
 }
 
-export function buildAttestedPiArgv(input: StructuredPiLaunchRequest): string[] {
+export function buildAttestedPiArgv(
+  input: StructuredPiLaunchRequest,
+  attributionExtensionPath?: string,
+): string[] {
   validateStructuredPiLaunchRequest(input);
   const args = ['pi', '--mode', 'json', '--provider', input.provider, '--model', input.model];
+  if (input.provider === 'anthropic') {
+    if (!attributionExtensionPath?.trim()) {
+      throw new Error('Anthropic attested Pi tasks require the package attribution extension');
+    }
+    args.push('--extension', attributionExtensionPath);
+  }
   if (input.thinking?.trim()) args.push('--thinking', input.thinking.trim());
   args.push(...(input.extraPiArgs ?? []), input.prompt);
   return args;

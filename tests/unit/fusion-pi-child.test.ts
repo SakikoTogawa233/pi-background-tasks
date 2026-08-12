@@ -20,14 +20,13 @@ import {
   parseFusionChildStderr,
   parseFusionRuntimeGuard,
   parseFusionToolCallLog,
-  resolveAnthropicSanitizerExtensionPath,
-  resolveFusionAnthropicAttributionExtensionPath,
   runPiChild,
   type FusionChildProcess,
   type FusionChildSpawn,
 } from '../../src/core/fusion/pi-child.js';
 import type { Usage } from '@earendil-works/pi-ai';
 import { isJsonObject } from '../../src/core/common.js';
+import { resolveAnthropicAttributionExtensionPath } from '../../src/core/anthropic-attribution-path.js';
 import {
   FUSION_FORBIDDEN_TOOLS,
   FUSION_INSPECT_TOOLS,
@@ -1070,39 +1069,26 @@ void describe('fusion Pi child runner', () => {
     ]);
   });
 
-  void it('loads Anthropic attribution, sanitizer, then runtime governor for Claude routes', () => {
-    // Pi's system prompt carries documentation lines Anthropic rejects. The parent gets
-    // the sanitizer through extension discovery, but children run --no-extensions and
-    // inherit nothing, so a Claude child without it fails at the provider.
-    const sanitizer = () => '/pkg/anthropic-sps/index.ts';
-    const attribution = () => '/pkg/pi-background-tasks/anthropic-attribution.ts';
+  void it('loads package-owned Anthropic attribution/sanitization before the runtime governor', () => {
+    const attribution = () => '/pkg/extensions/anthropic-attribution.ts';
     const claude = buildFusionPiChildArgv(
       resolvedModel('anthropic', 'claude-opus-5'),
       'system',
       'extension.js',
       'reason',
-      sanitizer,
       attribution,
     );
     const extensionArgs = claude.reduce<string[]>((acc, value, index) => {
       if (value === '--extension') acc.push(claude[index + 1] ?? '');
       return acc;
     }, []);
-    assert.deepEqual(extensionArgs, [
-      '/pkg/pi-background-tasks/anthropic-attribution.ts',
-      '/pkg/anthropic-sps/index.ts',
-      'extension.js',
-    ]);
-    // The private child extension must run its provider-request governor after the
-    // attribution provider and sanitizer so it measures the final payload that
-    // transport will receive.
+    assert.deepEqual(extensionArgs, ['/pkg/extensions/anthropic-attribution.ts', 'extension.js']);
     assert.equal(extensionArgs.at(-1), 'extension.js');
   });
 
-  void it('keeps non-Anthropic child argv byte-identical to the pre-sanitizer form', () => {
-    // Adding Claude support must not move a single argv byte on other providers.
-    const sanitizer = () => {
-      throw new Error('sanitizer must not be resolved for non-Anthropic routes');
+  void it('keeps non-Anthropic child argv byte-identical and never resolves attribution', () => {
+    const attribution = () => {
+      throw new Error('attribution must not be resolved for non-Anthropic routes');
     };
     for (const provider of ['openai-codex', 'openai', 'google', 'unknown-provider']) {
       const argv = buildFusionPiChildArgv(
@@ -1110,77 +1096,20 @@ void describe('fusion Pi child runner', () => {
         'system',
         'extension.js',
         'reason',
-        sanitizer,
+        attribution,
       );
       assert.equal(argv.filter((value) => value === '--extension').length, 1);
       assert.equal(argv[argv.indexOf('--extension') + 1], 'extension.js');
     }
   });
 
-  void it('resolves the package-owned attribution extension and installed sanitizer', () => {
-    const attribution = resolveFusionAnthropicAttributionExtensionPath();
-    assert.match(attribution.replaceAll('\\', '/'), /core\/fusion\/anthropic-attribution\.ts$/);
+  void it('resolves the package-owned global attribution extension and fails loudly if absent', () => {
+    const attribution = resolveAnthropicAttributionExtensionPath();
+    assert.match(attribution.replaceAll('\\', '/'), /extensions\/anthropic-attribution\.ts$/);
     assert.equal(existsSync(attribution), true);
-
-    // The sanitizer package publishes no main/exports, so it must be located through its
-    // manifest rather than a direct require. This pins that the real dependency resolves.
-    const resolved = resolveAnthropicSanitizerExtensionPath();
-    assert.match(resolved, /pi-anthropic-sps/);
-    assert.equal(existsSync(resolved), true);
-  });
-
-  void it('fails loudly when the sanitizer package or its extension is unusable', () => {
-    // Silently dropping the sanitizer would surface later as an opaque provider
-    // rejection, so every resolution failure must be explicit here instead.
     assert.throws(
-      () =>
-        resolveAnthropicSanitizerExtensionPath({
-          resolvePackageJson: () => {
-            throw new Error('not installed');
-          },
-        }),
-      /could not be resolved.*Claude children cannot be launched without it/s,
-    );
-    assert.throws(
-      () =>
-        resolveAnthropicSanitizerExtensionPath({
-          resolvePackageJson: () => '/pkg/package.json',
-          readManifest: () => '{not json',
-        }),
-      /is not valid JSON/,
-    );
-    assert.throws(
-      () =>
-        resolveAnthropicSanitizerExtensionPath({
-          resolvePackageJson: () => '/pkg/package.json',
-          readManifest: () => '{"name":"x"}',
-        }),
-      /has no "pi" section/,
-    );
-    assert.throws(
-      () =>
-        resolveAnthropicSanitizerExtensionPath({
-          resolvePackageJson: () => '/pkg/package.json',
-          readManifest: () => '{"pi":{"extensions":[]}}',
-        }),
-      /declares no pi.extensions entries/,
-    );
-    assert.throws(
-      () =>
-        resolveAnthropicSanitizerExtensionPath({
-          resolvePackageJson: () => '/pkg/package.json',
-          readManifest: () => '{"pi":{"extensions":["  "]}}',
-        }),
-      /must be a non-blank string/,
-    );
-    assert.throws(
-      () =>
-        resolveAnthropicSanitizerExtensionPath({
-          resolvePackageJson: () => '/pkg/package.json',
-          readManifest: () => '{"pi":{"extensions":["./index.ts"]}}',
-          pathExists: () => false,
-        }),
-      /Anthropic sanitizer extension is missing/,
+      () => resolveAnthropicAttributionExtensionPath(import.meta.url, () => false),
+      /Anthropic attribution extension is missing/,
     );
   });
 

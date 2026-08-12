@@ -4,7 +4,7 @@ import { Type } from 'typebox';
 import { streamSimple as streamSimpleAnthropic } from '@earendil-works/pi-ai/api/anthropic-messages';
 import type { Context, Model } from '@earendil-works/pi-ai';
 import { isJsonObject, type JsonObject } from '../../src/core/common.js';
-import { rewriteAnthropicRequestPayload } from '../../src/core/fusion/anthropic-attribution.js';
+import { rewriteAnthropicRequestPayload } from '../../src/core/anthropic-attribution.js';
 import {
   FUSION_CLAUDE_CACHE_BREAKPOINT_LIMIT,
   FUSION_CLAUDE_CACHE_OBSERVATION_SCHEMA_VERSION,

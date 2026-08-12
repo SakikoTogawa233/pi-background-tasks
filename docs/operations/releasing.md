@@ -34,6 +34,8 @@ npm run test:hook-contract
 npm run smoke
 npm run smoke:large-context
 npm run pack:dry-run
+# With pnpm 11.18.0 on PATH:
+npm run test:pnpm-pack
 npm run docs:verify
 npm run payload:check
 # On a tag ref only: GITHUB_REF_TYPE=tag GITHUB_REF_NAME=v$VERSION npm run release:check-version
@@ -49,11 +51,12 @@ Live evidence (`npx tsx scripts/delegate-live-run.ts`) is release-time and perfo
 
 Use `npm pack --dry-run --json` output as the payload source of truth. Verify at minimum:
 
-- `extensions/background-tasks.ts` is included as the Pi entrypoint;
-- runtime `src/` files needed by the entrypoint are included;
-- `docs/`, `README.md`, `TESTING.md`, `TEST_PLAN.md`, `PUBLISHING.md`, `BACKGROUND-TASKS-INSTRUCTIONS.md`, root `logo.png`, and `LICENSE` are included per current `package.json.files`;
+- `extensions/anthropic-attribution.ts` and `extensions/background-tasks.ts` are included as the ordered Pi entrypoints;
+- runtime `src/` files needed by both entrypoints are included;
+- `docs/`, `README.md`, `TESTING.md`, `TEST_PLAN.md`, `PUBLISHING.md`, `BACKGROUND-TASKS-INSTRUCTIONS.md`, `THIRD_PARTY_NOTICES.md`, root `logo.png`, and `LICENSE` are included per current `package.json.files`;
 - tests, scripts, node_modules, local `.pi/` artifacts, generated evidence not meant for runtime, and nested tarballs are excluded;
 - TypeBox remains a Pi-provided peer and no private/nested runtime TypeBox copy is bundled;
+- production dependencies use registry versions only; no exotic URL/git/file subdependency is shipped;
 - docs/assets/gateway/logo inclusion matches `package.json.files` exactly.
 
 ## Tag certification vs npm publishing

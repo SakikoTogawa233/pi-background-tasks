@@ -46,7 +46,7 @@ Current authored ownership map:
 - Fusion runtime: `.pi/fusion/<session-id>-<pid>/<run-id>/` under the active project cwd.
 - Delegate artifacts: task-owned artifact directories referenced from task metadata/result packages.
 - Fusion model config: `fusion-models.json` under Pi's agent directory (`getAgentDir()`), not the project `.pi/tasks` tree.
-- Package entrypoint: `extensions/background-tasks.ts` via `package.json.pi.extensions`.
+- Package entrypoints, in load order: `extensions/anthropic-attribution.ts`, then `extensions/background-tasks.ts`, via `package.json.pi.extensions`.
 
 ---
 

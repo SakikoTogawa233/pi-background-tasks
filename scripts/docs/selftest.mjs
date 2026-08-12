@@ -36,8 +36,8 @@ function mustThrow(name, fn, pattern) {
 const codeFacts = buildCodeFacts();
 const docsModel = loadDocsModel();
 
-assert.equal(docsModel.docs.length, 40, 'all docs/**/*.md are governed');
-assert.equal(codeFacts.public_surface_ids.length, 30, 'all command/tool/shortcut/renderer/EventBus/workflow surfaces are extracted');
+assert.equal(docsModel.docs.length, 42, 'all docs/**/*.md are governed');
+assert.equal(codeFacts.public_surface_ids.length, 31, 'all command/tool/shortcut/renderer/EventBus/workflow surfaces are extracted');
 assert.ok(codeFacts.public_surface_ids.includes('eventbus:background-task-v1'));
 assert.ok(codeFacts.public_surface_ids.includes('workflow:research'));
 assert.equal(docsModel.docs.find((doc) => doc.doc_id === 'INDEX').frontmatter.covers_surfaces.length, 0, 'INDEX must not own public surfaces');
@@ -127,6 +127,7 @@ mustThrow('destructured Pi parameter', () => assertRegistrationFixture("export d
 mustThrow('constructor receives Pi', () => assertRegistrationFixture("class Hidden { constructor(host: any) { host.registerCommand('hidden', {}); } } export default function x(pi){ new Hidden(pi); }"), /constructors must not receive or derive Pi registration hosts/);
 mustThrow('derived registration host alias', () => assertRegistrationFixture("export default function x(pi){ const host = { ...pi }; host.registerCommand('hidden', {}); }"), /aliasing the Pi registration host or registration wrapper/);
 mustThrow('unknown registration helper', () => assertRegistrationFixture("function hidden(host){} export default function x(pi){ hidden((pi as any)); }"), /unsupported helper invocation receives the Pi registration host/);
+assert.deepEqual(assertRegistrationFixture("export default function x(pi){ pi.registerProvider('internal', {}); pi.registerCommand('public', {}); }"), ['command:public'], 'non-public provider registration must be accepted without becoming a public surface');
 assert.deepEqual(
   assertRegistrationFixture("export default function x(pi){ (pi as any).registerCommand('normalized', {}); }"),
   ['command:normalized'],
@@ -228,8 +229,8 @@ mustThrow(
   /imported registration function .* is invoked more than once/,
 );
 
-mustThrow('mandatory gateway missing', () => checkPayloadFiles(['package.json', 'README.md', 'TESTING.md', 'TEST_PLAN.md', 'PUBLISHING.md', 'LICENSE', 'logo.png', 'extensions/background-tasks.ts', 'extensions/delegate-child.ts', 'extensions/fusion-child.ts']), /packed payload missing BACKGROUND-TASKS-INSTRUCTIONS\.md/);
-mustThrow('missing packed doc', () => checkPayloadFiles(['package.json', 'README.md', 'TESTING.md', 'TEST_PLAN.md', 'PUBLISHING.md', 'LICENSE', 'BACKGROUND-TASKS-INSTRUCTIONS.md', 'logo.png', 'extensions/background-tasks.ts', 'extensions/delegate-child.ts', 'extensions/fusion-child.ts']), /packed payload missing/);
+mustThrow('mandatory gateway missing', () => checkPayloadFiles(['package.json', 'README.md', 'TESTING.md', 'TEST_PLAN.md', 'PUBLISHING.md', 'LICENSE', 'THIRD_PARTY_NOTICES.md', 'logo.png', 'extensions/anthropic-attribution.ts', 'extensions/background-tasks.ts', 'extensions/delegate-child.ts', 'extensions/fusion-child.ts']), /packed payload missing BACKGROUND-TASKS-INSTRUCTIONS\.md/);
+mustThrow('missing packed doc', () => checkPayloadFiles(['package.json', 'README.md', 'TESTING.md', 'TEST_PLAN.md', 'PUBLISHING.md', 'LICENSE', 'THIRD_PARTY_NOTICES.md', 'BACKGROUND-TASKS-INSTRUCTIONS.md', 'logo.png', 'extensions/anthropic-attribution.ts', 'extensions/background-tasks.ts', 'extensions/delegate-child.ts', 'extensions/fusion-child.ts']), /packed payload missing/);
 
 mustThrow('release check requires explicit tag ref', () => checkReleaseVersion(process.cwd(), undefined, undefined), /requires an explicit tag ref/);
 

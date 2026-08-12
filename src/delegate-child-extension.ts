@@ -23,8 +23,9 @@ import {
 /**
  * Package-owned delegate child extension.
  *
- * This runs inside the delegate child Pi process and is the only extension it
- * loads. It is responsible for every guarantee that cannot be enforced from the
+ * This runs inside every delegate child Pi process and is the only child guard
+ * it loads. Anthropic routes may load attribution first; this guard remains
+ * responsible for every isolation guarantee that cannot be enforced from the
  * parent:
  *
  * - verifying the frozen seed bytes before the first model call;

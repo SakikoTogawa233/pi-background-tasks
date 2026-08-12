@@ -62,10 +62,11 @@ The child launch:
 - separate random `--session-id`;
 - task-owned `--session-dir` under the artifact directory;
 - parent session/provider/model/reasoning env keys stripped;
-- only package-owned child guard extension explicitly loaded;
-- ambient extension/skill/template/theme/context discovery disabled.
+- ambient extension/skill/template/theme/context discovery disabled;
+- non-Anthropic children explicitly load only the package-owned child guard;
+- Anthropic children explicitly load package attribution/sanitization first, then the child guard.
 
-The only v1 capability is `inspect`. Allowed tools are exactly `read`, `grep`, `find`, `ls`, and `delegate_read_artifact`; forbidden tools deny shell, writes, background task controls, recursive delegation, attested Pi launch, and Fusion. The boundary is argv/tool-registry enforced.
+The only v1 capability is `inspect`. Allowed tools are exactly `read`, `grep`, `find`, `ls`, and `delegate_read_artifact`; forbidden tools deny shell, writes, background task controls, recursive delegation, attested Pi launch, and Fusion. The boundary is argv/tool-registry enforced. Missing Anthropic attribution bytes are a pre-artifact `delegate_isolation_unsupported` refusal; no un-attributed child or alternate route is launched.
 
 ## Route and budget
 

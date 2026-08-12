@@ -15,9 +15,12 @@ Every production file under `src/**` and `extensions/**` has exactly one primary
 
 | Source | Primary behavioral owner |
 | --- | --- |
+| `extensions/anthropic-attribution.ts` | [subsystems/anthropic-attribution](./subsystems/anthropic-attribution.md) |
 | `extensions/background-tasks.ts` | [subsystems/host-ui-and-telemetry](./subsystems/host-ui-and-telemetry.md) |
 | `extensions/delegate-child.ts` | [subsystems/delegation](./subsystems/delegation.md) |
 | `extensions/fusion-child.ts` | [subsystems/fusion](./subsystems/fusion.md) |
+| `src/core/anthropic-attribution-path.ts` | [subsystems/anthropic-attribution](./subsystems/anthropic-attribution.md) |
+| `src/core/anthropic-attribution.ts` | [subsystems/anthropic-attribution](./subsystems/anthropic-attribution.md) |
 | `src/core/attested-pi-run.ts` | [subsystems/attested-pi-runs](./subsystems/attested-pi-runs.md) |
 | `src/core/common.ts` | [subsystems/background-task-runtime](./subsystems/background-task-runtime.md) |
 | `src/core/context/parent-snapshot.ts` | [concepts/context-projection-and-budgeting](./concepts/context-projection-and-budgeting.md) |
@@ -34,7 +37,6 @@ Every production file under `src/**` and `extensions/**` has exactly one primary
 | `src/core/delegate/types.ts` | [subsystems/delegation](./subsystems/delegation.md) |
 | `src/core/durable-fs.ts` | [subsystems/child-launch-durability-and-safety](./subsystems/child-launch-durability-and-safety.md) |
 | `src/core/extension-api.ts` | [api/eventbus-v1](./api/eventbus-v1.md) |
-| `src/core/fusion/anthropic-attribution.ts` | [subsystems/fusion](./subsystems/fusion.md) |
 | `src/core/fusion/artifacts.ts` | [subsystems/fusion](./subsystems/fusion.md) |
 | `src/core/fusion/budget.ts` | [subsystems/fusion](./subsystems/fusion.md) |
 | `src/core/fusion/child-protocol.ts` | [subsystems/fusion](./subsystems/fusion.md) |
@@ -70,6 +72,7 @@ Every production file under `src/**` and `extensions/**` has exactly one primary
 - `command:bg-clear`
 - `command:bg-tasks`
 - `command:bg-update`
+- `command:claude-cache`
 - `command:fusion`
 - `command:fusion-models`
 - `command:jobs`

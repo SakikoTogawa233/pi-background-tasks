@@ -46,5 +46,14 @@ jobs:
       - name: Payload closure
         run: npm run payload:check
 
+      - name: Set up pnpm 11.18.0
+        uses: pnpm/action-setup@v4
+        with:
+          version: 11.18.0
+          run_install: false
+
+      - name: Pnpm packed-install supply-chain regression
+        run: npm run test:pnpm-pack
+
       - name: Certification note
         run: echo "Release certification complete; this workflow never publishes."

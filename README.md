@@ -17,6 +17,7 @@
 - **Run long work without blocking**: start named shell jobs, keep talking to Pi, and get durable completion notifications when they finish.
 - **Delegate context-aware investigation**: launch one route-pinned, inspect-only child Pi agent seeded with a frozen projection of the current conversation, then retrieve a hash-verified result.
 - **Combine model perspectives through fixed-purpose Fusion**: run three candidate children, blind evaluation, optional bounded evaluator repair, and merger for reasoning, investigation, targeted URL research, or validation review.
+- **Keep Anthropic subscription traffic attributed and compatible**: globally apply the package-owned Claude Code OAuth attribution, cache policy, and exact-match prompt sanitization to Anthropic routes without an external sanitizer dependency.
 
 <p align="center">
   <img src="docs/assets/architecture.svg" alt="Architecture diagram showing Pi session, background task registry, delegated child agent, and Fusion candidate/evaluator/merger flow" width="760">
@@ -26,23 +27,23 @@
 | Fact | Value |
 | --- | --- |
 | Package | `pi-background-tasks` |
-| Version | `2.1.4` |
+| Version | `2.2.0` |
 | Node engine | `>=22.19.0` |
-| Pi entrypoint | `./extensions/background-tasks.ts` |
+| Pi entrypoints | `./extensions/anthropic-attribution.ts`, `./extensions/background-tasks.ts` |
 | Package image | [logo.png](https://raw.githubusercontent.com/ismailsaleekh/pi-background-tasks/main/logo.png) |
 <!-- pi-docs:end name="readme-package-facts" -->
 
 <!-- pi-docs:begin name="readme-public-surfaces" generator="scripts/docs/generate.mjs" -->
 | Surface kind | Count |
 | --- | --- |
-| command | 10 |
+| command | 11 |
 | tool | 11 |
 | shortcut | 2 |
 | renderer | 2 |
 | eventbus | 1 |
 | workflow | 4 |
 
-Public commands: `/bg`, `/bg-clear`, `/bg-tasks`, `/bg-update`, `/fusion`, `/fusion-models`, `/jobs`, `/kill`, `/logs`, `/tasks`.
+Public commands: `/bg`, `/bg-clear`, `/bg-tasks`, `/bg-update`, `/claude-cache`, `/fusion`, `/fusion-models`, `/jobs`, `/kill`, `/logs`, `/tasks`.
 
 Public tools: `bg_delegate`, `bg_kill`, `bg_logs`, `bg_result`, `bg_run`, `bg_run_pi_attested`, `bg_status`, `fusion_investigate`, `fusion_reason`, `fusion_research`, `fusion_validate`.
 
@@ -61,6 +62,7 @@ Full owner map and generated contracts live in [docs/INDEX.md](docs/INDEX.md).
 | Ask a second agent to inspect the repo with the current conversation as context | `bg_delegate` starts one isolated child with read/search/list tools only; `bg_result` verifies the committed result before returning it. |
 | Compare model perspectives without exposing arbitrary parent context | Fusion children receive only the workflow input and fixed tool policy; no silent route substitution or fallback is used on delegate/Fusion paths. |
 | Produce local evidence for a direct Pi run | `bg_run_pi_attested` records local same-user-writable artifacts and hashes after a successful structured child Pi task. |
+| Use Anthropic subscription OAuth consistently | The globally loaded provider applies attribution and exact-match sanitization; `/claude-cache` shows or changes session cache retention. |
 
 ## Install
 
@@ -291,7 +293,7 @@ Agent tasks launched through `pi -p ...` or `pi --mode json ...` and marked `isA
 - Shell jobs are tracked by the package, but they are not sandboxed. Treat commands as local processes with your permissions and credentials.
 - Delegate and Fusion child Pi processes are route-pinned where applicable; delegate/Fusion paths do not silently substitute routes.
 - Fusion uses direct child `pi --mode text` processes, not direct completion APIs. Frontier Fusion routes are admitted only through Pi Anthropic or Codex subscription OAuth; metered frontier API credentials are rejected before child creation.
-- Claude Fusion children load the package-owned Claude Code OAuth attribution provider shared with the repo spawn path, request `ttl: "1h"` on system/tool/conversation cache breakpoints before serialization, and preserve provider-reported `cacheWrite1h` evidence. Set `PI_CACHE_RETENTION=short|none|long` to choose explicitly; malformed attribution, policy, or cache evidence fails before transport. Provider usage is preserved verbatim, but subscription OAuth can report `cacheWrite1h = 0` even when a unique cache remains readable beyond five minutes; treat positive `cacheWrite1h` as definitive and zero as inconclusive on that channel. Anthropic budgeting follows the provider's 200K subscription policy.
+- Normal installations globally load the package-owned Claude Code OAuth attribution/sanitization provider for Anthropic sessions; non-Anthropic sessions are unchanged. Isolated Fusion, delegate, and attested Anthropic children load the same package entrypoint explicitly. It requests `ttl: "1h"` on system/tool/conversation cache breakpoints before serialization and preserves provider-reported `cacheWrite1h` evidence. Set `PI_CACHE_RETENTION=short|none|long` or use `/claude-cache` to choose explicitly; malformed attribution, policy, cache evidence, or non-OAuth credentials fail before transport. Provider usage is preserved verbatim, but subscription OAuth can report `cacheWrite1h = 0` even when a unique cache remains readable beyond five minutes; treat positive `cacheWrite1h` as definitive and zero as inconclusive on that channel. Anthropic budgeting follows the provider's 200K subscription policy.
 - Fusion research fetches only caller-supplied public `http(s)` URLs with bounded retrieval. It is not web search and not a secret-exfiltration boundary.
 - Attestation sidecars are local, unsigned, same-user-writable evidence. They are useful for downstream local gates, but not cryptographic proof against local compromise, a compromised Pi binary, or a compromised provider.
 - Metadata, attestations, delegate/Fusion artifacts, and configuration replacements use write/fsync/rename durability patterns. Failed/cancelled stored Fusion runs also have a manifest-bound `failure-summary.json` containing bounded no-answer evidence metadata and artifact refs only; `bg_result` returns it as an answer-free typed terminal view after integrity checks. Ordinary task output is closed and drained before terminal publication but is not explicitly fsynced. POSIX directory entries are fsynced after atomic replacement; Windows lacks the same portable directory-entry crash-durability guarantee.
@@ -319,7 +321,7 @@ Operations are `capabilities`, `run`, `status`, `logs`, and `kill`. This is the 
 | Environment variables, shells, output caps, model config, offline behavior | [Configuration](docs/operations/configuration.md) |
 | Package QA expectations | [TESTING.md](TESTING.md) and [TEST_PLAN.md](TEST_PLAN.md) |
 | Publishing notes | [PUBLISHING.md](PUBLISHING.md) |
-| License | [LICENSE](LICENSE) |
+| License and derived-rule notice | [LICENSE](LICENSE) and [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) |
 
 ## Contributing
 

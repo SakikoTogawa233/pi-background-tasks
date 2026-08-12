@@ -87,7 +87,7 @@ export function resolveDelegateRoute(input: DelegateRouteResolutionInput): Deleg
           childCreated: false,
           remediation: [
             'Name a provider/model pair that appears in the current model registry.',
-            'Omit the route argument to use the parent session\'s current model.',
+            "Omit the route argument to use the parent session's current model.",
           ],
         },
       );
@@ -245,6 +245,7 @@ export interface DelegateChildArgvInput {
   childSessionId: string;
   childSessionDir: string;
   childExtensionPath: string;
+  attributionExtensionPath?: string | undefined;
   systemPrompt: string;
 }
 
@@ -254,7 +255,8 @@ export interface DelegateChildArgvInput {
  * The child gets its own `--session-id` and a task-owned `--session-dir`, so it
  * is structurally incapable of opening or mutating the parent session. Discovery
  * of ambient extensions, skills, prompt templates, themes, and context files is
- * disabled; only the package's own guard extension is loaded explicitly.
+ * disabled. The package guard is always explicit; Anthropic routes first load
+ * the package attribution/sanitization extension.
  */
 export function buildDelegateChildArgv(input: DelegateChildArgvInput): string[] {
   const tools = delegateToolsFor(input.capability);
@@ -266,6 +268,20 @@ export function buildDelegateChildArgv(input: DelegateChildArgvInput): string[] 
       );
     }
   }
+  const extensionPaths =
+    input.route.provider === 'anthropic'
+      ? [
+          input.attributionExtensionPath ??
+            (() => {
+              throw new DelegateError(
+                'Anthropic delegate launch requires the package attribution extension',
+                { code: 'delegate_isolation_unsupported', childCreated: false },
+              );
+            })(),
+          input.childExtensionPath,
+        ]
+      : [input.childExtensionPath];
+
   return [
     '--mode',
     'text',
@@ -284,8 +300,7 @@ export function buildDelegateChildArgv(input: DelegateChildArgvInput): string[] 
     '--no-prompt-templates',
     '--no-themes',
     '--no-context-files',
-    '--extension',
-    input.childExtensionPath,
+    ...extensionPaths.flatMap((path) => ['--extension', path]),
     '--provider',
     input.route.provider,
     '--model',
@@ -411,9 +426,7 @@ export function buildDelegateChildPrompt(seedSerialized: string, directive: stri
  * one of these can refuse, and none of them has created a process, a session, or
  * an artifact by the time it does.
  */
-export function preflightDelegateLaunch(
-  input: DelegatePreflightInput,
-): DelegatePreflightResult {
+export function preflightDelegateLaunch(input: DelegatePreflightInput): DelegatePreflightResult {
   assertDelegateHookContract(input.hookEvidence);
   // Validates the capability and proves the tool set contains nothing forbidden.
   delegateToolsFor(input.capability);
@@ -430,7 +443,9 @@ export function preflightDelegateLaunch(
     route: input.route,
     limits,
   });
-  const childSystemPrompt = buildDelegateChildSystemPrompt('the task seed in your first user message');
+  const childSystemPrompt = buildDelegateChildSystemPrompt(
+    'the task seed in your first user message',
+  );
   const childPrompt = buildDelegateChildPrompt(seed.serialized, seed.seed.directive.text);
   const plan = planDelegateAdmission({
     route: input.route,
@@ -454,9 +469,7 @@ export function preflightDelegateLaunch(
 }
 
 /** Task-owned child session directory. Never the parent's session directory. */
-export async function ensureDelegateChildSessionDir(
-  artifactDirAbs: string,
-): Promise<string> {
+export async function ensureDelegateChildSessionDir(artifactDirAbs: string): Promise<string> {
   const dir = join(artifactDirAbs, 'child-session');
   await mkdir(dir, { recursive: true, mode: 0o700 });
   return dir;

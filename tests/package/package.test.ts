@@ -379,7 +379,10 @@ void describe('package', () => {
     assert.equal(p.type, 'module');
     assert.ok(p.keywords.includes('pi-package'));
     assert.ok(p.keywords.includes('pi-extension'));
-    assert.deepEqual(p.pi.extensions, ['./extensions/background-tasks.ts']);
+    assert.deepEqual(p.pi.extensions, [
+      './extensions/anthropic-attribution.ts',
+      './extensions/background-tasks.ts',
+    ]);
     assert.equal(
       p.pi.image,
       'https://raw.githubusercontent.com/ismailsaleekh/pi-background-tasks/main/logo.png',
@@ -387,10 +390,12 @@ void describe('package', () => {
     assert.match(p.scripts['test:agent-loop'] ?? '', /scripted-provider/);
     assert.match(p.scripts['test:full'] ?? '', /test:agent-loop/);
     assert.match(p.scripts['test:compat'] ?? '', /test-compat/);
+    assert.match(p.scripts['test:pnpm-pack'] ?? '', /test-pnpm-pack-install/);
     assert.ok(p.files.includes('extensions/'));
     assert.ok(p.files.includes('src/'));
     assert.ok(p.files.includes('docs/'));
     assert.ok(p.files.includes('BACKGROUND-TASKS-INSTRUCTIONS.md'));
+    assert.ok(p.files.includes('THIRD_PARTY_NOTICES.md'));
     assert.ok(p.files.includes('logo.png'));
     assert.ok(!p.files.includes('scripts/'));
     assert.equal(p.scripts['docs:generate'], 'node scripts/docs/generate.mjs');
@@ -408,6 +413,7 @@ void describe('package', () => {
       'TEST_PLAN.md',
       'PUBLISHING.md',
       'LICENSE',
+      'THIRD_PARTY_NOTICES.md',
       'src/extension.ts',
       'src/ui/background-tasks-manager.ts',
       'src/ui/fusion-model-selector.ts',
@@ -415,6 +421,8 @@ void describe('package', () => {
       'src/core/registry.ts',
       'src/core/extension-api.ts',
       'src/core/attested-pi-run.ts',
+      'src/core/anthropic-attribution.ts',
+      'src/core/anthropic-attribution-path.ts',
       'src/core/pi-launch.ts',
       'src/core/fusion/orchestrator.ts',
       'src/core/fusion/pi-child.ts',
@@ -439,6 +447,7 @@ void describe('package', () => {
       'src/core/delegate/hook-contract-evidence.json',
       'src/delegate-extension.ts',
       'src/delegate-child-extension.ts',
+      'extensions/anthropic-attribution.ts',
       'extensions/background-tasks.ts',
       'extensions/fusion-child.ts',
       'extensions/delegate-child.ts',
@@ -466,6 +475,7 @@ void describe('package', () => {
       '/bg-tasks',
       '/bg-clear',
       '/bg-update',
+      '/claude-cache',
       'bg_run',
       'bg_delegate',
       'bg_result',
@@ -829,38 +839,32 @@ void describe('package', () => {
     );
   });
 
-  void it('ships shared Anthropic attribution plus the sanitizer for Claude children', async () => {
+  void it('ships global package-owned Anthropic attribution with no exotic dependency', async () => {
     const p = await pkg();
-    const declared = p.dependencies?.['@ravshansbox/pi-anthropic-sps'];
-    assert.equal(
-      declared,
-      'https://codeload.github.com/ravshansbox/pi-anthropic-sps/tar.gz/17409b5615f0ec0625776bc5434f92f2c55e3fd0',
-      'the production sanitizer dependency must be pinned to the reviewed immutable archive',
-    );
-    assert.equal(
-      p.devDependencies?.['@ravshansbox/pi-anthropic-sps'],
-      undefined,
-      'runtime sanitizer must not be hidden in devDependencies',
-    );
-    const attribution = await text('src/core/fusion/anthropic-attribution.ts');
+    assert.equal(p.dependencies?.['@ravshansbox/pi-anthropic-sps'], undefined);
+    for (const [name, specifier] of Object.entries(p.dependencies ?? {})) {
+      assert.doesNotMatch(
+        specifier,
+        /^(?:https?:|git(?:\+|:)|github:|file:)/,
+        `production dependency ${name} must use a registry version`,
+      );
+    }
+    const attribution = await text('src/core/anthropic-attribution.ts');
     assert.match(attribution, /X-Claude-Code-Session-Id/);
     assert.match(attribution, /prompt-caching-scope-2026-01-05/);
     assert.match(attribution, /cacheWrite1h/);
     assert.match(attribution, /CLAUDE_CODE_200K_SUBSCRIPTION_CONTEXT_WINDOW/);
-    // Claude children run --no-extensions and inherit nothing from the parent, so
-    // attribution and sanitization must be resolved and passed explicitly.
+    assert.match(attribution, /environment variables \(docs\/environment-variables\.md\)/);
+    assert.match(attribution, /ANTHROPIC_ATTRIBUTION_CLAIM_CHANNEL/);
     const child = await text('src/core/fusion/pi-child.ts');
     assert.match(child, /FUSION_SANITIZED_PROVIDER\s*=\s*'anthropic'/);
-    assert.match(child, /@ravshansbox\/pi-anthropic-sps/);
-    assert.match(child, /resolveFusionAnthropicAttributionExtensionPath/);
-    assert.match(
-      child,
-      /return \[resolveAttribution\(\), resolveSanitizer\(\), childExtensionPath\]/,
-    );
+    assert.doesNotMatch(child, /pi-anthropic-sps/);
+    assert.match(child, /resolveAnthropicAttributionExtensionPath/);
+    assert.match(child, /return \[resolveAttribution\(\), childExtensionPath\]/);
     assert.match(
       child,
       /model\.provider !== FUSION_SANITIZED_PROVIDER/,
-      'the sanitizer must be gated on provider so other routes keep identical argv',
+      'attribution must be provider-gated so other routes keep identical argv',
     );
   });
 
@@ -1340,12 +1344,15 @@ void describe('package', () => {
     assert.ok(firstEntry, 'npm pack must return one entry');
     const files = firstEntry.files.map((file) => file.path).sort();
     for (const f of [
+      'extensions/anthropic-attribution.ts',
       'extensions/background-tasks.ts',
       'extensions/fusion-child.ts',
       'src/extension.ts',
       'src/fusion-child-extension.ts',
       'src/core/common.ts',
       'src/core/registry.ts',
+      'src/core/anthropic-attribution.ts',
+      'src/core/anthropic-attribution-path.ts',
       'src/core/extension-api.ts',
       'src/core/attested-pi-run.ts',
       'src/core/pi-launch.ts',
@@ -1372,6 +1379,7 @@ void describe('package', () => {
       'TEST_PLAN.md',
       'PUBLISHING.md',
       'LICENSE',
+      'THIRD_PARTY_NOTICES.md',
       'docs/INDEX.md',
       'docs/read-before-edit.md',
       'docs/manifest.json',
@@ -1427,9 +1435,10 @@ void describe('package', () => {
         },
       );
       assert.equal(install.status, 0, install.stderr);
-      assert.ok(
-        existsSync(join(temp, 'node_modules', '@ravshansbox', 'pi-anthropic-sps', 'package.json')),
-        'packed consumers must install the Anthropic sanitizer production dependency',
+      assert.equal(
+        existsSync(join(temp, 'node_modules', '@ravshansbox', 'pi-anthropic-sps')),
+        false,
+        'packed consumers must not install the retired URL-based sanitizer dependency',
       );
       assert.ok(
         existsSync(join(temp, 'node_modules', 'turndown', 'package.json')),
@@ -1438,6 +1447,7 @@ void describe('package', () => {
       for (const f of [
         'package.json',
         'BACKGROUND-TASKS-INSTRUCTIONS.md',
+        'THIRD_PARTY_NOTICES.md',
         'logo.png',
         'docs/INDEX.md',
         'docs/read-before-edit.md',
@@ -1446,12 +1456,15 @@ void describe('package', () => {
         'docs/assets/architecture.svg',
         'docs/assets/footer-dock.svg',
         'docs/assets/logo.svg',
+        'extensions/anthropic-attribution.ts',
         'extensions/background-tasks.ts',
         'extensions/fusion-child.ts',
         'src/extension.ts',
         'src/fusion-extension.ts',
         'src/fusion-child-extension.ts',
         'src/core/registry.ts',
+        'src/core/anthropic-attribution.ts',
+        'src/core/anthropic-attribution-path.ts',
         'src/core/extension-api.ts',
         'src/core/attested-pi-run.ts',
         'src/core/pi-launch.ts',

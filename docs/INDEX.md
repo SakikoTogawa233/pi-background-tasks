@@ -49,6 +49,7 @@ Generated navigation for every package-local documentation page. This index inte
 | [operations/testing](./operations/testing.md) | authored | contract | evolving |
 | [operations/troubleshooting](./operations/troubleshooting.md) | authored | contract | evolving |
 | [reference/runtime-contracts](./reference/runtime-contracts.md) | mixed | contract | evolving |
+| [subsystems/anthropic-attribution](./subsystems/anthropic-attribution.md) | authored | behavioral | evolving |
 | [subsystems/attested-pi-runs](./subsystems/attested-pi-runs.md) | authored | behavioral | evolving |
 | [subsystems/background-task-runtime](./subsystems/background-task-runtime.md) | authored | behavioral | stable |
 | [subsystems/child-launch-durability-and-safety](./subsystems/child-launch-durability-and-safety.md) | authored | behavioral | evolving |
@@ -65,6 +66,7 @@ Generated navigation for every package-local documentation page. This index inte
 | [commands/bg](./commands/bg.md) | mixed | contract | stable |
 | [commands/bg-clear](./commands/bg-clear.md) | mixed | contract | stable |
 | [commands/bg-update](./commands/bg-update.md) | mixed | contract | stable |
+| [commands/claude-cache](./commands/claude-cache.md) | mixed | contract | evolving |
 | [commands/fusion](./commands/fusion.md) | mixed | contract | stable |
 | [commands/fusion-models](./commands/fusion-models.md) | mixed | contract | stable |
 | [commands/jobs](./commands/jobs.md) | mixed | contract | stable |
@@ -78,12 +80,12 @@ Generated navigation for every package-local documentation page. This index inte
 ## Docs by category
 
 - **api**: [api/eventbus-v1](./api/eventbus-v1.md)
-- **commands**: [commands/bg](./commands/bg.md), [commands/bg-clear](./commands/bg-clear.md), [commands/bg-update](./commands/bg-update.md), [commands/fusion](./commands/fusion.md), [commands/fusion-models](./commands/fusion-models.md), [commands/jobs](./commands/jobs.md), [commands/kill](./commands/kill.md), [commands/logs](./commands/logs.md), [commands/task-manager](./commands/task-manager.md)
+- **commands**: [commands/bg](./commands/bg.md), [commands/bg-clear](./commands/bg-clear.md), [commands/bg-update](./commands/bg-update.md), [commands/claude-cache](./commands/claude-cache.md), [commands/fusion](./commands/fusion.md), [commands/fusion-models](./commands/fusion-models.md), [commands/jobs](./commands/jobs.md), [commands/kill](./commands/kill.md), [commands/logs](./commands/logs.md), [commands/task-manager](./commands/task-manager.md)
 - **concepts**: [concepts/completion-delivery](./concepts/completion-delivery.md), [concepts/context-projection-and-budgeting](./concepts/context-projection-and-budgeting.md)
 - **operations**: [operations/configuration](./operations/configuration.md), [operations/releasing](./operations/releasing.md), [operations/testing](./operations/testing.md), [operations/troubleshooting](./operations/troubleshooting.md)
 - **reference**: [reference/runtime-contracts](./reference/runtime-contracts.md), [reference/shortcuts-and-dock](./reference/shortcuts-and-dock.md)
 - **root**: [choose-a-workflow](./choose-a-workflow.md), [getting-started](./getting-started.md), [INDEX](./INDEX.md), [read-before-edit](./read-before-edit.md)
-- **subsystems**: [subsystems/attested-pi-runs](./subsystems/attested-pi-runs.md), [subsystems/background-task-runtime](./subsystems/background-task-runtime.md), [subsystems/child-launch-durability-and-safety](./subsystems/child-launch-durability-and-safety.md), [subsystems/delegation](./subsystems/delegation.md), [subsystems/docs-freshness-gate](./subsystems/docs-freshness-gate.md), [subsystems/fusion](./subsystems/fusion.md), [subsystems/host-ui-and-telemetry](./subsystems/host-ui-and-telemetry.md)
+- **subsystems**: [subsystems/anthropic-attribution](./subsystems/anthropic-attribution.md), [subsystems/attested-pi-runs](./subsystems/attested-pi-runs.md), [subsystems/background-task-runtime](./subsystems/background-task-runtime.md), [subsystems/child-launch-durability-and-safety](./subsystems/child-launch-durability-and-safety.md), [subsystems/delegation](./subsystems/delegation.md), [subsystems/docs-freshness-gate](./subsystems/docs-freshness-gate.md), [subsystems/fusion](./subsystems/fusion.md), [subsystems/host-ui-and-telemetry](./subsystems/host-ui-and-telemetry.md)
 - **tools**: [tools/bg_delegate](./tools/bg_delegate.md), [tools/bg_kill](./tools/bg_kill.md), [tools/bg_logs](./tools/bg_logs.md), [tools/bg_result](./tools/bg_result.md), [tools/bg_run](./tools/bg_run.md), [tools/bg_run_pi_attested](./tools/bg_run_pi_attested.md), [tools/bg_status](./tools/bg_status.md), [tools/fusion_investigate](./tools/fusion_investigate.md), [tools/fusion_reason](./tools/fusion_reason.md), [tools/fusion_research](./tools/fusion_research.md), [tools/fusion_validate](./tools/fusion_validate.md)
 
 ## Public surface owners
@@ -94,6 +96,7 @@ Generated navigation for every package-local documentation page. This index inte
 | `command:bg-clear` | [commands/bg-clear](./commands/bg-clear.md) |
 | `command:bg-tasks` | [commands/task-manager](./commands/task-manager.md) |
 | `command:bg-update` | [commands/bg-update](./commands/bg-update.md) |
+| `command:claude-cache` | [commands/claude-cache](./commands/claude-cache.md) |
 | `command:fusion` | [commands/fusion](./commands/fusion.md) |
 | `command:fusion-models` | [commands/fusion-models](./commands/fusion-models.md) |
 | `command:jobs` | [commands/jobs](./commands/jobs.md) |
@@ -129,6 +132,7 @@ Generated navigation for every package-local documentation page. This index inte
 | command | `bg-clear` | `command:bg-clear` | `src/extension.ts:559` |
 | command | `bg-tasks` | `command:bg-tasks` | `src/extension.ts:551` |
 | command | `bg-update` | `command:bg-update` | `src/extension.ts:567` |
+| command | `claude-cache` | `command:claude-cache` | `src/core/anthropic-attribution.ts:1928` |
 | command | `fusion` | `command:fusion` | `src/fusion-extension.ts:996` |
 | command | `fusion-models` | `command:fusion-models` | `src/fusion-extension.ts:1029` |
 | command | `jobs` | `command:jobs` | `src/extension.ts:605` |

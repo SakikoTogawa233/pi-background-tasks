@@ -576,6 +576,7 @@ const PUBLIC_REGISTRATION_METHODS = new Set([
   'registerMessageRenderer',
   'registerTool',
 ]);
+const NON_PUBLIC_REGISTRATION_METHODS = new Set(['registerProvider']);
 
 function collectRegistrationsInFunction(ts, root, rel, fn, piParamName, cache, regs, visitedFns) {
   const info = moduleInfo(ts, root, rel, cache);
@@ -1024,9 +1025,9 @@ function collectRegistrationsInFunction(ts, root, rel, fn, piParamName, cache, r
     if (ts.isPropertyAccessExpression(node) && isPiHostExpression(node.expression)) {
       const method = node.name.text;
       if (method.startsWith('register')) {
-        if (!PUBLIC_REGISTRATION_METHODS.has(method)) {
+        if (!PUBLIC_REGISTRATION_METHODS.has(method) && !NON_PUBLIC_REGISTRATION_METHODS.has(method)) {
           throw new DocsGateError(
-            `${lineOf(info.sf, node, ts)} unsupported public registration API ${method}`,
+            `${lineOf(info.sf, node, ts)} unsupported registration API ${method}`,
           );
         }
         if (!isDirectCallTarget(node)) {
@@ -1157,18 +1158,20 @@ function uniqueRegistrations(regs) {
 
 function extractEntrypoint(root, pkg, ts, cache) {
   const entries = pkg.pi?.extensions;
-  if (!Array.isArray(entries) || entries.length !== 1 || typeof entries[0] !== 'string') throw new DocsGateError('package.json pi.extensions must contain exactly one TypeScript entrypoint');
-  const entry = entries[0].replace(/^\.\//u, '');
-  const entryRel = entry.endsWith('.ts') ? entry : `${entry}.ts`;
-  if (!existsSync(packagePath(root, entryRel))) throw new DocsGateError(`package.json pi extension ${entry} does not exist`);
-  const target = findExportedFunction(ts, root, entryRel, 'default', cache);
-  moduleInfo(ts, root, target.rel, cache);
-  const piParameter = target.node.parameters[0]?.name;
-  if (!piParameter || !ts.isIdentifier(piParameter)) {
-    throw new DocsGateError(`${target.rel} default export must have an identifier Pi parameter`);
-  }
+  if (!Array.isArray(entries) || entries.length === 0 || entries.some((entry) => typeof entry !== 'string' || entry.trim().length === 0)) throw new DocsGateError('package.json pi.extensions must contain at least one non-blank TypeScript entrypoint');
   const regs = [];
-  collectRegistrationsInFunction(ts, root, target.rel, target.node, piParameter.text, cache, regs, new Set([`${target.rel}:default`]));
+  for (const declaredEntry of entries) {
+    const entry = declaredEntry.replace(/^\.\//u, '');
+    const entryRel = entry.endsWith('.ts') ? entry : `${entry}.ts`;
+    if (!existsSync(packagePath(root, entryRel))) throw new DocsGateError(`package.json pi extension ${entry} does not exist`);
+    const target = findExportedFunction(ts, root, entryRel, 'default', cache);
+    moduleInfo(ts, root, target.rel, cache);
+    const piParameter = target.node.parameters[0]?.name;
+    if (!piParameter || !ts.isIdentifier(piParameter)) {
+      throw new DocsGateError(`${target.rel} default export must have an identifier Pi parameter`);
+    }
+    collectRegistrationsInFunction(ts, root, target.rel, target.node, piParameter.text, cache, regs, new Set([`${target.rel}:default`]));
+  }
   return uniqueRegistrations(regs);
 }
 
@@ -1488,7 +1491,7 @@ export function buildCodeFacts(options = {}) {
     version: pkg.version,
     description: pkg.description,
     engines: pkg.engines ?? {},
-    entrypoint: pkg.pi?.extensions?.[0],
+    entrypoints: [...(pkg.pi?.extensions ?? [])],
     image: pkg.pi?.image ?? null,
     type: pkg.type,
     files: [...(pkg.files ?? [])].sort(),
@@ -1994,7 +1997,7 @@ export async function recordAttestation(docId, options = {}) {
 export function verifyPackageFacts(root, codeFacts, docsModel) {
   if (codeFacts.package.version !== codeFacts.lock.version || codeFacts.package.version !== codeFacts.lock.rootVersion) throw new DocsGateError(`package.json version ${codeFacts.package.version} does not match package-lock versions ${codeFacts.lock.version}/${codeFacts.lock.rootVersion}`);
   const pkg = readJson(root, 'package.json');
-  for (const mandatory of ['BACKGROUND-TASKS-INSTRUCTIONS.md', 'logo.png']) {
+  for (const mandatory of ['BACKGROUND-TASKS-INSTRUCTIONS.md', 'THIRD_PARTY_NOTICES.md', 'logo.png']) {
     if (!existsSync(packagePath(root, mandatory))) {
       throw new DocsGateError(`mandatory package adoption file is missing: ${mandatory}`);
     }
@@ -2091,7 +2094,7 @@ function buildReadmePackageFacts(codeFacts) {
       ['Package', `\`${codeFacts.package.name}\``],
       ['Version', `\`${codeFacts.package.version}\``],
       ['Node engine', `\`${codeFacts.package.engines.node ?? 'unspecified'}\``],
-      ['Pi entrypoint', `\`${codeFacts.package.entrypoint}\``],
+      ['Pi entrypoints', codeFacts.package.entrypoints.map((entrypoint) => `\`${entrypoint}\``).join(', ')],
       ['Package image', codeFacts.package.image ? `[logo.png](${codeFacts.package.image})` : 'not declared'],
     ],
   );
@@ -2217,6 +2220,7 @@ function applyGeneratedRegionsToDoc(doc, codeFacts, coverage, docsModel, attesta
         'docs/commands/bg.md': ['bg'],
         'docs/commands/bg-clear.md': ['bg-clear'],
         'docs/commands/bg-update.md': ['bg-update'],
+        'docs/commands/claude-cache.md': ['claude-cache'],
         'docs/commands/fusion.md': ['fusion'],
         'docs/commands/fusion-models.md': ['fusion-models'],
         'docs/commands/jobs.md': ['jobs'],
@@ -2341,7 +2345,7 @@ function assertSvgSafe(root, rel) {
 
 export function checkPayloadFiles(files, root = PACKAGE_ROOT) {
   const fileSet = new Set(files);
-  const requiredRoots = ['extensions/background-tasks.ts', 'extensions/delegate-child.ts', 'extensions/fusion-child.ts', 'README.md', 'TESTING.md', 'TEST_PLAN.md', 'PUBLISHING.md', 'BACKGROUND-TASKS-INSTRUCTIONS.md', 'logo.png', 'LICENSE', 'package.json'];
+  const requiredRoots = ['extensions/anthropic-attribution.ts', 'extensions/background-tasks.ts', 'extensions/delegate-child.ts', 'extensions/fusion-child.ts', 'README.md', 'TESTING.md', 'TEST_PLAN.md', 'PUBLISHING.md', 'BACKGROUND-TASKS-INSTRUCTIONS.md', 'THIRD_PARTY_NOTICES.md', 'logo.png', 'LICENSE', 'package.json'];
   for (const f of requiredRoots) if (!fileSet.has(f)) throw new DocsGateError(`packed payload missing ${f}`);
   for (const f of walkFiles(root, 'src', () => true)) if (!fileSet.has(f)) throw new DocsGateError(`packed payload missing ${f}`);
   for (const f of walkFiles(root, 'extensions', () => true)) if (!fileSet.has(f)) throw new DocsGateError(`packed payload missing ${f}`);

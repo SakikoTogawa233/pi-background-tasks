@@ -74,6 +74,17 @@ jobs:
       - name: Pack contents
         run: npm run pack:dry-run
 
+      - name: Set up pnpm 11.18.0 for exotic-subdependency regression
+        if: runner.os == 'Linux' && matrix.node == '22.19.0'
+        uses: pnpm/action-setup@v4
+        with:
+          version: 11.18.0
+          run_install: false
+
+      - name: Pnpm packed-install supply-chain regression
+        if: runner.os == 'Linux' && matrix.node == '22.19.0'
+        run: npm run test:pnpm-pack
+
   windows-integration:
     name: Windows integration · Node ${{ matrix.node }}
     runs-on: windows-latest

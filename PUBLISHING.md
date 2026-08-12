@@ -37,6 +37,8 @@ npm run docs:verify
 npm run payload:check
 # On a tag ref only: GITHUB_REF_TYPE=tag GITHUB_REF_NAME=v$VERSION npm run release:check-version
 npm run pack:dry-run
+# With pnpm 11.18.0 on PATH:
+npm run test:pnpm-pack
 npm run test:compat
 npm view pi-background-tasks name version --json
 ```

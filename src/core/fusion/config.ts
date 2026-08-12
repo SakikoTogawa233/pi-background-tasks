@@ -5,7 +5,7 @@ import { getAgentDir } from '@earendil-works/pi-coding-agent';
 import type { Api, Model } from '@earendil-works/pi-ai';
 import { isJsonObject, parseJsonText, type JsonObject } from '../common.js';
 import { replaceFileDurable } from '../durable-fs.js';
-import { CLAUDE_CODE_200K_SUBSCRIPTION_CONTEXT_WINDOW } from './anthropic-attribution.js';
+import { CLAUDE_CODE_200K_SUBSCRIPTION_CONTEXT_WINDOW } from '../anthropic-attribution.js';
 import {
   FUSION_MODEL_CONFIG_SCHEMA_VERSION,
   FusionError,

@@ -27,16 +27,27 @@
       "state": "pass"
     },
     {
-      "authored_body_sha256": "sha256:4d3d0ba1534c8ea5368e201fbf8fc7d52f2fbb353262d4af1ead263548547356",
+      "authored_body_sha256": "sha256:f4268bb078855d3563ec4bfa249f3aabc67fe855e40dd030d7fe71e81cb03782",
+      "covers_sources": [
+        "extensions/anthropic-attribution.ts",
+        "src/core/anthropic-attribution-path.ts",
+        "src/core/anthropic-attribution.ts"
+      ],
+      "doc_id": "subsystems/anthropic-attribution",
+      "rel": "docs/subsystems/anthropic-attribution.md",
+      "required": true,
+      "state": "missing"
+    },
+    {
+      "authored_body_sha256": "sha256:0840d793b8c18869f9a3bb8a72beeb602824ed1a580161f3456126af8af9b459",
       "covers_sources": [
         "src/core/attested-pi-run.ts"
       ],
       "doc_id": "subsystems/attested-pi-runs",
-      "notes": "Reviewed attested Pi event parsing, last-reported stopReason semantics, OAuth route observation, argv/environment safeguards, git authority, hashes, failure handling, and atomic sidecar durability.",
       "rel": "docs/subsystems/attested-pi-runs.md",
       "required": true,
       "reviewer": "gpt-5.5-final-attested-safety-reviewer",
-      "state": "pass"
+      "state": "stale-authored-prose"
     },
     {
       "authored_body_sha256": "sha256:253948c8b1f4dd339b0c1eeabd6e8addf584fe208a0f71c3a7f094921ff4547f",
@@ -52,20 +63,19 @@
       "state": "stale-authored-prose"
     },
     {
-      "authored_body_sha256": "sha256:d5a27cd6a1f78820fe6a39996f8c64c5924efaf2dba99ea44415c1e770dc45bb",
+      "authored_body_sha256": "sha256:40ee5dac92b9e873d6a9f71a59c03ff1ccd44d6717a13d3be18f74b19e68326e",
       "covers_sources": [
         "src/core/durable-fs.ts",
         "src/core/pi-launch.ts"
       ],
       "doc_id": "subsystems/child-launch-durability-and-safety",
-      "notes": "Reviewed durable file replacement and child launch sources, including file fsync, POSIX directory sync, Windows limitation, ordinary versus attested output wording, and loud launch/durability failures.",
       "rel": "docs/subsystems/child-launch-durability-and-safety.md",
       "required": true,
       "reviewer": "gpt-5.5-final-attested-safety-reviewer",
-      "state": "pass"
+      "state": "stale-authored-prose"
     },
     {
-      "authored_body_sha256": "sha256:60b6235d33b9c7df1b1494c0c071862aee059074ce58058c103f9a71d5d9e7d8",
+      "authored_body_sha256": "sha256:c110e04363936f61a2bea573da1140ea1de30ca94a5d823c3471bb283f41dbe3",
       "covers_sources": [
         "extensions/delegate-child.ts",
         "src/core/delegate/artifacts.ts",
@@ -87,10 +97,9 @@
       "state": "stale-authored-prose"
     },
     {
-      "authored_body_sha256": "sha256:e7cbe5b10fd56a28e6d23511db5500ee05b000be507fd50ac035d9757e0e2083",
+      "authored_body_sha256": "sha256:b6238bacecf46139dab1d6a8622783db76d913f0ce727205151b65b7cb210481",
       "covers_sources": [
         "extensions/fusion-child.ts",
-        "src/core/fusion/anthropic-attribution.ts",
         "src/core/fusion/artifacts.ts",
         "src/core/fusion/budget.ts",
         "src/core/fusion/child-protocol.ts",
@@ -197,6 +206,17 @@
       "rel": "docs/commands/bg-update.md",
       "review_policy": "contract",
       "stability": "stable"
+    },
+    "commands/claude-cache": {
+      "audience": "user",
+      "covers_sources": [],
+      "covers_surfaces": [
+        "command:claude-cache"
+      ],
+      "mode": "mixed",
+      "rel": "docs/commands/claude-cache.md",
+      "review_policy": "contract",
+      "stability": "evolving"
     },
     "commands/fusion": {
       "audience": "user",
@@ -364,6 +384,19 @@
       "review_policy": "contract",
       "stability": "stable"
     },
+    "subsystems/anthropic-attribution": {
+      "audience": "maintainer",
+      "covers_sources": [
+        "extensions/anthropic-attribution.ts",
+        "src/core/anthropic-attribution-path.ts",
+        "src/core/anthropic-attribution.ts"
+      ],
+      "covers_surfaces": [],
+      "mode": "authored",
+      "rel": "docs/subsystems/anthropic-attribution.md",
+      "review_policy": "behavioral",
+      "stability": "evolving"
+    },
     "subsystems/attested-pi-runs": {
       "audience": "maintainer",
       "covers_sources": [
@@ -435,7 +468,6 @@
       "audience": "maintainer",
       "covers_sources": [
         "extensions/fusion-child.ts",
-        "src/core/fusion/anthropic-attribution.ts",
         "src/core/fusion/artifacts.ts",
         "src/core/fusion/budget.ts",
         "src/core/fusion/child-protocol.ts",
@@ -625,6 +657,12 @@
       "rel": "docs/commands/bg-update.md"
     },
     {
+      "doc_id": "commands/claude-cache",
+      "generator": "scripts/docs/generate.mjs",
+      "name": "command-contract-claude-cache",
+      "rel": "docs/commands/claude-cache.md"
+    },
+    {
       "doc_id": "commands/fusion",
       "generator": "scripts/docs/generate.mjs",
       "name": "command-contract-fusion",
@@ -775,7 +813,10 @@
     "engines": {
       "node": ">=22.19.0"
     },
-    "entrypoint": "./extensions/background-tasks.ts",
+    "entrypoints": [
+      "./extensions/anthropic-attribution.ts",
+      "./extensions/background-tasks.ts"
+    ],
     "files": [
       "BACKGROUND-TASKS-INSTRUCTIONS.md",
       "LICENSE",
@@ -783,6 +824,7 @@
       "README.md",
       "TESTING.md",
       "TEST_PLAN.md",
+      "THIRD_PARTY_NOTICES.md",
       "docs/",
       "extensions/",
       "logo.png",
@@ -791,13 +833,14 @@
     "image": "https://raw.githubusercontent.com/ismailsaleekh/pi-background-tasks/main/logo.png",
     "name": "pi-background-tasks",
     "type": "module",
-    "version": "2.1.4"
+    "version": "2.2.0"
   },
   "public_surface_ids": [
     "command:bg",
     "command:bg-clear",
     "command:bg-tasks",
     "command:bg-update",
+    "command:claude-cache",
     "command:fusion",
     "command:fusion-models",
     "command:jobs",
@@ -854,6 +897,13 @@
         "kind": "command",
         "name": "bg-update",
         "source": "src/extension.ts:567"
+      },
+      {
+        "description": "Show or set Claude cache retention for this session (short, long, default)",
+        "id": "command:claude-cache",
+        "kind": "command",
+        "name": "claude-cache",
+        "source": "src/core/anthropic-attribution.ts:1928"
       },
       {
         "description": "Start fixed-purpose Fusion reason in the background and return immediately.",
@@ -1608,6 +1658,9 @@
   },
   "schema_version": "pi-background-tasks.docs-manifest.v2",
   "source_to_docs": {
+    "extensions/anthropic-attribution.ts": [
+      "subsystems/anthropic-attribution"
+    ],
     "extensions/background-tasks.ts": [
       "subsystems/host-ui-and-telemetry"
     ],
@@ -1616,6 +1669,12 @@
     ],
     "extensions/fusion-child.ts": [
       "subsystems/fusion"
+    ],
+    "src/core/anthropic-attribution-path.ts": [
+      "subsystems/anthropic-attribution"
+    ],
+    "src/core/anthropic-attribution.ts": [
+      "subsystems/anthropic-attribution"
     ],
     "src/core/attested-pi-run.ts": [
       "subsystems/attested-pi-runs"
@@ -1664,9 +1723,6 @@
     ],
     "src/core/extension-api.ts": [
       "api/eventbus-v1"
-    ],
-    "src/core/fusion/anthropic-attribution.ts": [
-      "subsystems/fusion"
     ],
     "src/core/fusion/artifacts.ts": [
       "subsystems/fusion"
@@ -1765,6 +1821,9 @@
     ],
     "command:bg-update": [
       "commands/bg-update"
+    ],
+    "command:claude-cache": [
+      "commands/claude-cache"
     ],
     "command:fusion": [
       "commands/fusion"

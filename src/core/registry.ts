@@ -58,6 +58,7 @@ import {
   resolvePiLaunch,
   type PiLaunchSpec,
 } from './pi-launch.js';
+import { resolveAnthropicAttributionExtensionPath } from './anthropic-attribution-path.js';
 import {
   runWindowsTaskkill,
   type TaskkillOutcome,
@@ -1234,7 +1235,9 @@ export class BackgroundTaskRegistry {
     if (this.shuttingDown)
       throw new Error('Cannot start an attested Pi task while Pi is shutting down');
 
-    const argv = buildAttestedPiArgv(request);
+    const attributionExtensionPath =
+      request.provider === 'anthropic' ? resolveAnthropicAttributionExtensionPath() : undefined;
+    const argv = buildAttestedPiArgv(request, attributionExtensionPath);
     const attestedPiLaunch = resolvePiLaunch({ platform: this.platform });
     assertWindowsCommandLineWithinLimit(
       attestedPiLaunch,

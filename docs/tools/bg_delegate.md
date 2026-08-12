@@ -161,13 +161,13 @@ The v1 capability is enforced by child argv and Pi's tool registry, not merely b
 - `--no-builtin-tools` is used with the explicit allowlist;
 - forbidden tools include shell/write/background/delegate/Fusion surfaces (`bash`, `edit`, `write`, `bg_run`, `bg_delegate`, `bg_result`, `bg_run_pi_attested`, Fusion tools, etc.);
 - ambient discovery is disabled with `--no-extensions`, `--no-skills`, `--no-prompt-templates`, `--no-themes`, `--no-context-files`;
-- only the package-owned delegate child extension is loaded explicitly.
+- the package-owned delegate guard is loaded explicitly; Anthropic routes first load the package attribution/sanitization extension.
 
 There is no shell, edit/write, network tool, recursive delegation, Fusion, or ambient project resource loading in the child tool set.
 
 ## Admission, budgets, and artifacts
 
-Public admission resolves the route and package-owned child guard extension before entering `preflightDelegateLaunch()`. Within that preflight, the hook contract is checked before capability/limit/seed/budget admission. Every refusal still occurs before child process, child session directory, or artifact root creation, leaving zero child processes and zero delegate artifacts; callers should not depend on a single absolute error-precedence order across route, guard-extension, and hook checks.
+Public admission resolves the route, package-owned child guard, and—for Anthropic routes—the package attribution extension before entering `preflightDelegateLaunch()`. Within that preflight, the hook contract is checked before capability/limit/seed/budget admission. Every refusal still occurs before child process, child session directory, or artifact root creation, leaving zero child processes and zero delegate artifacts; callers should not depend on a single absolute error-precedence order across route, guard-extension, and hook checks.
 
 Budgets and limits:
 
