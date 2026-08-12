@@ -106,6 +106,12 @@ const GuardProbeParams = {
   additionalProperties: false,
 } as const;
 
+const GuardImageParams = {
+  type: 'object',
+  properties: {},
+  additionalProperties: false,
+} as const;
+
 function findSpillReceiptPath(context: Context): string | undefined {
   for (const message of context.messages) {
     if (message.role !== 'toolResult') continue;
@@ -137,6 +143,23 @@ export default function delegateGuardProviderExtension(pi: ExtensionAPI): void {
       return Promise.resolve({
         content: [{ type: 'text' as const, text }],
         details: { bytes: text.length },
+      });
+    },
+  });
+
+  pi.registerTool<typeof GuardImageParams, { bytes: number }>({
+    name: 'guard_image_probe',
+    label: 'Guard Image Probe',
+    description: 'Delegate guard probe that emits image-bearing tool content.',
+    parameters: GuardImageParams,
+    execute() {
+      const data = Buffer.from('IMAGE_SENTINEL_BYTES'.repeat(256), 'utf8').toString('base64');
+      return Promise.resolve({
+        content: [
+          { type: 'text' as const, text: 'image preface' },
+          { type: 'image' as const, data, mimeType: 'image/png' },
+        ],
+        details: { bytes: Buffer.byteLength(data, 'utf8') },
       });
     },
   });
@@ -175,6 +198,58 @@ function responseFor(
   call: number,
   context: Context,
 ): ScriptedAssistantMessage {
+  if (current === 'invalid-unicode-tool-result') {
+    if (call === 1) {
+      return assistant(
+        [
+          {
+            type: 'toolCall',
+            id: 'guard-call-invalid-unicode',
+            name: 'guard_probe',
+            arguments: { size: 16, marker: '\uD800' },
+          },
+        ],
+        'toolUse',
+      );
+    }
+    return assistant([{ type: 'text', text: 'MUST_NOT_COMMIT' }], 'stop');
+  }
+
+  if (current === 'intermediate-narration') {
+    if (call === 1) {
+      return assistant(
+        [
+          { type: 'text', text: 'INTERMEDIATE_NARRATION_MUST_NOT_BE_COMMITTED' },
+          {
+            type: 'toolCall',
+            id: 'guard-call-narration',
+            name: 'guard_probe',
+            arguments: { size: 16, marker: 'evidence' },
+          },
+        ],
+        'toolUse',
+      );
+    }
+    return assistant([{ type: 'text', text: 'DELEGATE_FINAL_ANSWER' }], 'stop');
+  }
+
+  if (current === 'image-tool-result') {
+    if (call === 1) {
+      return assistant(
+        [
+          {
+            type: 'toolCall',
+            id: 'guard-call-image',
+            name: 'guard_image_probe',
+            arguments: {},
+          },
+        ],
+        'toolUse',
+      );
+    }
+    return assistant([{ type: 'text', text: 'DELEGATE_FINAL_ANSWER' }], 'stop');
+  }
+
   if (current === 'huge-tool-result') {
     if (call === 1) {
       return assistant(
@@ -184,6 +259,37 @@ function responseFor(
             id: 'guard-call-huge',
             name: 'guard_probe',
             arguments: { size: 2 * 1024 * 1024, marker: 'HUGEPAYLOAD' },
+          },
+        ],
+        'toolUse',
+      );
+    }
+    return assistant([{ type: 'text', text: 'DELEGATE_FINAL_ANSWER' }], 'stop');
+  }
+
+  if (current === 'split-utf8-range') {
+    if (call === 1) {
+      return assistant(
+        [
+          {
+            type: 'toolCall',
+            id: 'guard-call-utf8',
+            name: 'guard_probe',
+            arguments: { size: 2048, marker: 'é' },
+          },
+        ],
+        'toolUse',
+      );
+    }
+    const artifact = findSpillReceiptPath(context);
+    if (call === 2 && artifact !== undefined) {
+      return assistant(
+        [
+          {
+            type: 'toolCall',
+            id: 'guard-call-split-byte',
+            name: 'delegate_read_artifact',
+            arguments: { artifact, offset: 1, length: 1 },
           },
         ],
         'toolUse',
@@ -230,6 +336,23 @@ function responseFor(
             id: 'guard-call-overlong',
             name: 'delegate_read_artifact',
             arguments: { artifact, offset: 8000, length: 100_000 },
+          },
+        ],
+        'toolUse',
+      );
+    }
+    return assistant([{ type: 'text', text: 'DELEGATE_FINAL_ANSWER' }], 'stop');
+  }
+
+  if (current === 'subthreshold-growth') {
+    if (call <= 8) {
+      return assistant(
+        [
+          {
+            type: 'toolCall',
+            id: `guard-call-growth-${String(call)}`,
+            name: 'guard_probe',
+            arguments: { size: 32 * 1024, marker: `GROWTH${String(call)}` },
           },
         ],
         'toolUse',

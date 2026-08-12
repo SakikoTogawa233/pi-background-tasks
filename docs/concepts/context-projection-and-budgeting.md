@@ -62,7 +62,8 @@ Calibration facts in code:
 - observed large Fusion prompt corpus: 882 prompts, dated 2026-08-02;
 - Anthropic configured rate: 1.73 B/token after haircut;
 - OpenAI Codex configured rate: 2.89 B/token after haircut;
-- conservative/floor rates are used for delegate scope, small prompts, unbacked models, unknown providers, capacity guards, and dense-ASCII out-of-domain cases.
+- delegate launch uses backed family calibration only for large prompts on routes that can hold the calibration domain; small prompts/routes, unbacked models, unknown providers, and dense-ASCII out-of-domain cases use conservative/floor rates;
+- delegate runtime context estimates are advisory, while a separate provable `1.00 B/token` retained-growth budget drives explicit spilling and no-tool finalization.
 
 The dense-ASCII gate is explicitly a low-whitespace heuristic proxy, not a tokenizer guarantee. Calibration applies only when the input is in the measured domain and the route capacity can hold that domain.
 
@@ -70,9 +71,10 @@ The dense-ASCII gate is explicitly a low-whitespace heuristic proxy, not a token
 
 - `allowedInputTokens()` returns a signed number and never clamps unusable routes to zero.
 - Callers must reject unusable or too-small context windows before spawning children.
-- Multibyte bytes cannot bypass accounting.
+- Multibyte bytes cannot bypass accounting; delegate's published provable counter-forecast charges them at the same `1.00 B/token` ceiling as every other byte class.
 - Unknown output contracts are charged separately; future output cannot be assumed to be cheap.
 - Rate-source warnings are part of the contract and should be surfaced in refusal details.
+- A package-local estimate must not reject a live provider payload by subtracting hypothetical output; Fusion BUG-185 established this as a false-refusal shape. Use conservative estimates for lossless spill decisions, where a false positive preserves bytes rather than failing work.
 
 ## No silent truncation
 

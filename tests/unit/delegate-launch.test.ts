@@ -621,7 +621,7 @@ void describe('delegate launch preparation creates nothing on refusal', () => {
     );
     // Admission must have measured the prompt actually sent, not the seed alone.
     assert.equal(
-      prepared.preflight.plan.seed_utf8_bytes,
+      prepared.preflight.plan.child_prompt_utf8_bytes,
       Buffer.byteLength(prompt, 'utf8'),
       'the budget must forecast the real prompt, not an undercount',
     );

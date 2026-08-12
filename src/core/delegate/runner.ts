@@ -160,6 +160,7 @@ export async function prepareDelegateLaunch(
       budget: {
         family: preflight.plan.route.family,
         rate_source: preflight.plan.route.rate_source,
+        conservative_rate_source: preflight.plan.conservative_estimate.rateSource,
       },
       extensionMode: input.extensionMode,
       autoDeliver: input.autoDeliver,
@@ -200,6 +201,9 @@ export interface EvaluateDelegateTerminalInput {
   /** Terminal status observed by the background task registry. */
   taskStatus: 'completed' | 'failed' | 'killed';
   taskError: string | undefined;
+  /** Real merged child output owned by the background-task registry. */
+  taskOutputPath?: string | undefined;
+  taskOutputAbsPath?: string | undefined;
 }
 
 /**
@@ -251,6 +255,21 @@ async function adjudicateDelegateTerminal(
       recorded?.message ??
       input.taskError ??
       'the delegate child exited without committing a result package';
+    const preserved = ['seed.json', 'budget-plan.json', 'child-terminal.json', 'runtime-budget.json']
+      .filter((name) => existsSync(join(input.artifactDirAbs, name)));
+    if (
+      input.taskOutputPath !== undefined &&
+      input.taskOutputAbsPath !== undefined &&
+      existsSync(input.taskOutputAbsPath)
+    ) {
+      preserved.push(input.taskOutputPath);
+    }
+    const diagnosticTargets = preserved.filter(
+      (name) => name === 'child-terminal.json' || name === 'runtime-budget.json' || name === input.taskOutputPath,
+    );
+    const diagnostic = diagnosticTargets.length === 0
+      ? 'No child terminal record or merged task output exists; inspect the preserved launch artifacts listed above.'
+      : `Inspect the preserved diagnostic evidence: ${diagnosticTargets.join(', ')}.`;
     const error = new DelegateError(
       `bg_delegate produced no committed answer: ${detail}`,
       {
@@ -258,9 +277,9 @@ async function adjudicateDelegateTerminal(
         childCreated: true,
         taskId: input.taskId,
         artifactDir: input.artifactDirAbs,
-        preserved: ['seed.json', 'budget-plan.json', 'child.stdout.txt', 'child.stderr.txt'],
+        preserved,
         remediation: [
-          'Inspect child.stderr.txt and child-terminal.json in the artifact directory.',
+          diagnostic,
           'No partial answer is returned; nothing was truncated to look like success.',
         ],
       },

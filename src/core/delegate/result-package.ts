@@ -247,6 +247,21 @@ function parseAttestations(
   });
 }
 
+function parseSpillContentFormat(
+  value: unknown,
+  taskId: string,
+): DelegateSpillReceipt['content_format'] {
+  if (value === undefined) return undefined;
+  if (
+    value !== 'single_text_utf8' &&
+    value !== 'tool_result_content_json_v1' &&
+    value !== 'opaque_bytes'
+  ) {
+    fail('delegate spill receipt content_format is invalid', 'child_result_invalid', taskId);
+  }
+  return value;
+}
+
 function parseSpillReceipts(value: unknown, taskId: string): readonly DelegateSpillReceipt[] {
   if (!Array.isArray(value))
     fail('delegate result package spilled_artifacts must be an array', 'child_result_invalid', taskId);
@@ -264,6 +279,7 @@ function parseSpillReceipts(value: unknown, taskId: string): readonly DelegateSp
       source_call_index: requireInteger(entry, 'source_call_index', taskId),
       byte_length: requireInteger(entry, 'byte_length', taskId),
       sha256: requireSha256(entry, 'sha256', taskId),
+      content_format: parseSpillContentFormat(entry['content_format'], taskId),
     };
   });
 }

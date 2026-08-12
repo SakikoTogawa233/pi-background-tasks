@@ -14,9 +14,14 @@ import {
   type DelegateUsageReport,
 } from './core/delegate/types.js';
 import { verifyDelegateSeedBytes } from './core/delegate/seed.js';
-import { evaluateDelegateRuntimeBudget } from './core/delegate/budget.js';
+import {
+  DELEGATE_FINALIZATION_INPUT_RESERVE_TOKENS,
+  DELEGATE_FINALIZATION_TRIGGER_TOKENS,
+  evaluateDelegateRuntimeBudget,
+} from './core/delegate/budget.js';
 import { utf8ByteClassBreakdown } from './core/context/token-budget.js';
 import {
+  assertWellFormedUtf8,
   buildDelegateResultPackage,
   serializeDelegateResultPackage,
 } from './core/delegate/result-package.js';
@@ -31,10 +36,10 @@ import {
  * parent:
  *
  * - verifying the frozen seed bytes before the first model call;
- * - measuring the outgoing message set before every model call and refusing to
- *   let an oversized one reach the provider;
- * - spilling oversized tool results to hashed artifacts and replacing them with
- *   explicit receipts before they enter the transcript;
+ * - measuring the outgoing message set before every model call and requesting
+ *   no-tool finalization when advisory runway becomes low;
+ * - spilling oversized or runway-pressuring tool results to hashed artifacts
+ *   and replacing them with explicit receipts before transcript entry;
  * - asserting every assistant message came from the pinned route;
  * - enforcing turn and tool-call limits;
  * - committing exactly one result package atomically.
@@ -63,8 +68,19 @@ interface GuardState {
   spilled: DelegateSpillReceipt[];
   attestations: DelegateRouteAttestation[];
   usage: Usage | undefined;
+  usageIncomplete: boolean;
   usageUnavailableReason: string | undefined;
   answerBlocks: string[];
+  answerBytes: number;
+  retainedGrowthTokens: number;
+  retainedGrowthBudgetTokens: number | undefined;
+  retainedToolResultBytes: number;
+  contextPressureSpillBytes: number;
+  finalizationRequested: boolean;
+  finalizationReason: string | undefined;
+  contextMeasurements: RuntimeContextMeasurement[];
+  firstRequestObservedInputTokens: number | undefined;
+  runtimeBudgetWritten: boolean;
   terminal: TerminalLatch | undefined;
   committed: boolean;
 }
@@ -80,6 +96,16 @@ interface GuardState {
 interface TerminalLatch {
   code: string;
   message: string;
+}
+
+interface RuntimeContextMeasurement {
+  request_ordinal: number;
+  retained_utf8_bytes: number;
+  estimated_input_tokens: number;
+  allowed_input_tokens: number;
+  signed_headroom_tokens: number;
+  dominant_byte_class: string;
+  finalization_requested: boolean;
 }
 
 /**
@@ -113,6 +139,85 @@ function suppressedMessages<TMessage extends object>(
 
 function utf8(value: string): Buffer {
   return Buffer.from(value, 'utf8');
+}
+
+interface DelegateToolTextPart {
+  readonly type: 'text';
+  readonly text: string;
+}
+
+interface DelegateToolImagePart {
+  readonly type: 'image';
+  readonly data: string;
+  readonly mimeType: string;
+}
+
+type DelegateToolResultPart = DelegateToolTextPart | DelegateToolImagePart;
+type SpillContentFormat = DelegateSpillReceipt['content_format'];
+
+function encodeToolResultContent(
+  content: ReadonlyArray<DelegateToolResultPart>,
+): { payload: Buffer; contentFormat: Exclude<SpillContentFormat, undefined> } {
+  if (content.length === 1) {
+    const only = content[0];
+    if (only?.type === 'text') {
+      return {
+        payload: assertWellFormedUtf8(only.text, 'delegate single-text tool result'),
+        contentFormat: 'single_text_utf8',
+      };
+    }
+  }
+  const normalized = content.map((part) => {
+    if (part.type === 'text' && typeof part.text === 'string') {
+      return { type: 'text' as const, text: part.text };
+    }
+    if (
+      part.type === 'image' &&
+      typeof part.data === 'string' &&
+      typeof part.mimeType === 'string'
+    ) {
+      return {
+        type: 'image' as const,
+        data: part.data,
+        mimeType: part.mimeType,
+      };
+    }
+    throw new Error('delegate tool result contains an unsupported or malformed content block');
+  });
+  return {
+    payload: utf8(
+      JSON.stringify({
+        schema_version: 'pi-background-tasks.delegate-tool-result-content.v1',
+        content: normalized,
+      }),
+    ),
+    contentFormat: 'tool_result_content_json_v1',
+  };
+}
+
+function addUsage(current: Usage | undefined, delta: Usage): Usage {
+  const prior = current ?? {
+    input: 0,
+    output: 0,
+    cacheRead: 0,
+    cacheWrite: 0,
+    totalTokens: 0,
+    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+  };
+  return {
+    input: prior.input + delta.input,
+    output: prior.output + delta.output,
+    cacheRead: prior.cacheRead + delta.cacheRead,
+    cacheWrite: prior.cacheWrite + delta.cacheWrite,
+    totalTokens: prior.totalTokens + delta.totalTokens,
+    cost: {
+      input: prior.cost.input + delta.cost.input,
+      output: prior.cost.output + delta.cost.output,
+      cacheRead: prior.cost.cacheRead + delta.cost.cacheRead,
+      cacheWrite: prior.cost.cacheWrite + delta.cost.cacheWrite,
+      total: prior.cost.total + delta.cost.total,
+    },
+  };
 }
 
 function finiteNonNegative(source: object, key: string): number | undefined {
@@ -305,8 +410,19 @@ export default function delegateChildExtension(pi: ExtensionAPI): void {
     spilled: [],
     attestations: [],
     usage: undefined,
+    usageIncomplete: false,
     usageUnavailableReason: 'the child produced no assistant message carrying usage',
     answerBlocks: [],
+    answerBytes: 0,
+    retainedGrowthTokens: 0,
+    retainedGrowthBudgetTokens: undefined,
+    retainedToolResultBytes: 0,
+    contextPressureSpillBytes: 0,
+    finalizationRequested: false,
+    finalizationReason: undefined,
+    contextMeasurements: [],
+    firstRequestObservedInputTokens: undefined,
+    runtimeBudgetWritten: false,
     terminal: undefined,
     committed: false,
   };
@@ -316,11 +432,90 @@ export default function delegateChildExtension(pi: ExtensionAPI): void {
   }
 
   function usageReport(): DelegateUsageReport {
-    if (state.usage !== undefined) return { status: 'observed', usage: state.usage };
+    if (!state.usageIncomplete && state.usage !== undefined) {
+      return { status: 'observed', usage: state.usage };
+    }
     return {
       status: 'unavailable',
       reason: state.usageUnavailableReason ?? 'usage was not reported by the provider',
     };
+  }
+
+  function remainingGrowthTokens(): number {
+    if (state.retainedGrowthBudgetTokens === undefined) return 0;
+    return Math.max(0, state.retainedGrowthBudgetTokens - state.retainedGrowthTokens);
+  }
+
+  function requestFinalization(reason: string): void {
+    if (!state.finalizationRequested) {
+      state.finalizationRequested = true;
+      state.finalizationReason = reason;
+    }
+    pi.setActiveTools([]);
+  }
+
+  function accountRetainedGrowth(bytes: number, source: string): void {
+    state.retainedGrowthTokens += bytes;
+    if (
+      state.retainedGrowthBudgetTokens !== undefined &&
+      remainingGrowthTokens() <= DELEGATE_FINALIZATION_TRIGGER_TOKENS
+    ) {
+      requestFinalization(
+        `${source} left ${String(remainingGrowthTokens())} protected retained-growth tokens`,
+      );
+    }
+  }
+
+  function writeRuntimeBudgetRecord(): void {
+    if (state.runtimeBudgetWritten) return;
+    const latest = state.contextMeasurements.at(-1);
+    const firstEstimate = state.contextMeasurements[0]?.estimated_input_tokens;
+    const calibrationViolation =
+      firstEstimate !== undefined &&
+      state.firstRequestObservedInputTokens !== undefined &&
+      state.firstRequestObservedInputTokens > firstEstimate
+        ? {
+            forecast_input_tokens: firstEstimate,
+            observed_input_tokens: state.firstRequestObservedInputTokens,
+            tokens_under_forecast:
+              state.firstRequestObservedInputTokens - firstEstimate,
+          }
+        : null;
+    commitFileSync(
+      join(artifactDirAbs, 'runtime-budget.json'),
+      utf8(
+        `${JSON.stringify(
+          {
+            schema_version: 'pi-background-tasks.delegate-runtime-budget.v1',
+            task_id: seed.task_id,
+            launch_nonce: seed.launch_nonce,
+            policy: {
+              live_provider_context_owner: 'pi_and_provider',
+              retained_growth_estimator: 'provable_1_byte_per_token',
+              finalization_input_reserve_tokens: DELEGATE_FINALIZATION_INPUT_RESERVE_TOKENS,
+              finalization_trigger_tokens: DELEGATE_FINALIZATION_TRIGGER_TOKENS,
+            },
+            retained_growth_budget_tokens: state.retainedGrowthBudgetTokens ?? null,
+            retained_growth_tokens: state.retainedGrowthTokens,
+            retained_tool_result_bytes: state.retainedToolResultBytes,
+            spilled_tool_result_bytes: state.spilled.reduce(
+              (sum, receipt) => sum + receipt.byte_length,
+              0,
+            ),
+            context_pressure_spill_bytes: state.contextPressureSpillBytes,
+            finalization_requested: state.finalizationRequested,
+            finalization_reason: state.finalizationReason ?? null,
+            first_request_observed_input_tokens: state.firstRequestObservedInputTokens ?? null,
+            calibration_violation: calibrationViolation,
+            latest_context_estimate: latest ?? null,
+            context_measurements: state.contextMeasurements,
+          },
+          null,
+          2,
+        )}\n`,
+      ),
+    );
+    state.runtimeBudgetWritten = true;
   }
 
   /**
@@ -335,13 +530,6 @@ export default function delegateChildExtension(pi: ExtensionAPI): void {
       writeTerminalRecord(state.terminal);
       return;
     }
-    if (state.answerBlocks.length === 0) {
-      writeTerminalRecord({
-        code: 'child_exited_without_commit',
-        message: 'the delegate child produced no assistant answer text',
-      });
-      return;
-    }
     // A hash proves the bytes are intact; it cannot prove they are complete.
     // Only an approved terminal stop reason may be committed as success, so a
     // response cut short by the output-token limit, a content filter, an
@@ -349,7 +537,14 @@ export default function delegateChildExtension(pi: ExtensionAPI): void {
     if (!ACCEPTED_STOP_REASONS.has(stopReason)) {
       writeTerminalRecord({
         code: stopReason === 'length' ? 'child_model_output_limit' : 'child_result_invalid',
-        message: `the delegate child stopped with reason "${stopReason}", so its answer is incomplete and is not committed as a result; the captured text is preserved in the child transcript`,
+        message: `the delegate child stopped with reason "${stopReason}", so its answer is incomplete and is not committed as a result; the complete assistant message remains in the child transcript`,
+      });
+      return;
+    }
+    if (state.answerBlocks.length === 0) {
+      writeTerminalRecord({
+        code: 'child_exited_without_commit',
+        message: 'the delegate child produced no final assistant answer text',
       });
       return;
     }
@@ -360,6 +555,7 @@ export default function delegateChildExtension(pi: ExtensionAPI): void {
       });
       return;
     }
+    writeRuntimeBudgetRecord();
     const pkg = buildDelegateResultPackage({
       taskId: seed.task_id,
       launchNonce: seed.launch_nonce,
@@ -379,6 +575,7 @@ export default function delegateChildExtension(pi: ExtensionAPI): void {
   }
 
   function writeTerminalRecord(terminal: TerminalLatch): void {
+    writeRuntimeBudgetRecord();
     commitFileSync(
       join(artifactDirAbs, 'child-terminal.json'),
       utf8(
@@ -404,10 +601,11 @@ export default function delegateChildExtension(pi: ExtensionAPI): void {
     name: 'delegate_read_artifact',
     label: 'Delegate Artifact Read',
     description:
-      'Read an exact byte range from a spilled tool-result artifact. Returns exactly the requested range or fails; it never returns fewer bytes than requested and never clamps the request.',
-    promptSnippet: 'Read an exact byte range from a spilled tool-result artifact',
+      'Read an exact byte range from a spilled tool-result artifact as lossless base64. Returns the complete requested range or fails; it never decodes arbitrary bytes as UTF-8, returns fewer bytes, or clamps the request.',
+    promptSnippet: 'Read an exact artifact byte range as lossless base64',
     promptGuidelines: [
       'Use delegate_read_artifact when a tool result was replaced by a spill receipt and the omitted bytes are actually needed.',
+      'The response body is base64 for the exact requested bytes. Decode it according to the receipt content_format.',
       'Request a bounded range. A request past the end of the artifact fails loudly rather than returning a short read.',
     ],
     parameters: ArtifactReadParams,
@@ -445,8 +643,32 @@ export default function delegateChildExtension(pi: ExtensionAPI): void {
           `delegate_read_artifact returned ${String(slice.length)} of ${String(params.length)} requested bytes`,
         );
       }
+      const encoded = slice.toString('base64');
+      const responseText = [
+        `[delegate artifact range] artifact=${params.artifact} offset=${String(params.offset)} length=${String(params.length)} encoding=base64`,
+        encoded,
+      ].join('\n');
+      const responseBytes = utf8(responseText).length;
+      const availableInlineBytes = Math.max(
+        0,
+        Math.min(
+          seed.limits.max_tool_result_bytes,
+          remainingGrowthTokens() - DELEGATE_FINALIZATION_TRIGGER_TOKENS,
+        ),
+      );
+      if (responseBytes > availableInlineBytes) {
+        if (availableInlineBytes === 0) {
+          requestFinalization('no retained-growth runway remains for an artifact range read');
+          throw new Error(
+            `delegate_read_artifact cannot retain another artifact range because protected final-answer runway is active; stop reading and answer from gathered evidence`,
+          );
+        }
+        throw new Error(
+          `delegate_read_artifact requested ${String(params.length)} raw bytes whose lossless base64 response is ${String(responseBytes)} bytes, but current protected runway permits at most ${String(availableInlineBytes)} inline bytes; request a smaller exact range`,
+        );
+      }
       return Promise.resolve({
-        content: [{ type: 'text' as const, text: slice.toString('utf8') }],
+        content: [{ type: 'text' as const, text: responseText }],
         details: {
           artifact: params.artifact,
           offset: params.offset,
@@ -458,12 +680,15 @@ export default function delegateChildExtension(pi: ExtensionAPI): void {
   });
 
   pi.on('context', (event, ctx) => {
-    // Fail closed. Pi swallows exceptions thrown from a `context` handler and
-    // dispatches the call regardless, so a throw inside this guard would let the
-    // ORIGINAL unguarded message set reach the provider. Every path therefore
-    // runs inside this try, and the catch latches terminal state and suppresses
-    // the content rather than letting the original through.
+    // Measurement failures remain fail-closed. A successful estimate is
+    // advisory: Fusion BUG-185 proved that subtracting hypothetical output from
+    // a live provider payload can falsely refuse valid work. Package-owned
+    // growth is bounded earlier by the tool-result spill governor instead.
     try {
+      if (state.terminal !== undefined) {
+        ctx.abort();
+        return { messages: suppressedMessages(event.messages) };
+      }
       const measurement = retainedInputMeasurement(event.messages, ctx.getSystemPrompt());
       const verdict = evaluateDelegateRuntimeBudget(
         {
@@ -474,30 +699,72 @@ export default function delegateChildExtension(pi: ExtensionAPI): void {
         seed.limits.allowed_input_tokens,
         seed.route,
       );
-      if (verdict.withinBudget) return undefined;
-      const message = `delegate child context reached ${String(verdict.measuredTokens)} input tokens against a ${String(verdict.allowedTokens)}-token allowance on route ${seed.route.qualified_id}, over by ${String(verdict.overageTokens)}; estimator family ${verdict.rateSource.family}, source ${verdict.rateSource.source}, backed=${String(verdict.backed)}, dominant_byte_class=${verdict.dominantByteClass}, rate ${String(verdict.rateSource.effective_rate_bytes_per_token_x100)}/100 B/tok + ${String(verdict.rateSource.affine_f_tokens)} tokens`;
-      latch('provider_context_budget_exhausted', message);
-      // Barrier one: terminate the run. Depending on the supported Pi line,
-      // this skips provider dispatch or hands it an already-aborted signal.
-      ctx.abort();
-      // Barrier two: remove the content itself, so the request could not carry it
-      // even if a provider ignored the aborted signal. Retaining only the first
-      // message keeps the shape valid without transmitting the oversized tail.
-      return { messages: suppressedMessages(event.messages) };
+      if (state.retainedGrowthBudgetTokens === undefined) {
+        state.retainedGrowthBudgetTokens = Math.max(
+          0,
+          verdict.allowedTokens -
+            verdict.measuredTokens -
+            DELEGATE_FINALIZATION_INPUT_RESERVE_TOKENS,
+        );
+      }
+      state.contextMeasurements.push({
+        request_ordinal: state.contextMeasurements.length + 1,
+        retained_utf8_bytes: measurement.bytes,
+        estimated_input_tokens: verdict.measuredTokens,
+        allowed_input_tokens: verdict.allowedTokens,
+        signed_headroom_tokens: verdict.allowedTokens - verdict.measuredTokens,
+        dominant_byte_class: verdict.dominantByteClass,
+        finalization_requested: state.finalizationRequested,
+      });
+      if (
+        verdict.measuredTokens >=
+        verdict.allowedTokens - DELEGATE_FINALIZATION_INPUT_RESERVE_TOKENS
+      ) {
+        requestFinalization(
+          `advisory retained-input estimate reached ${String(verdict.measuredTokens)} of ${String(verdict.allowedTokens)} allowed tokens`,
+        );
+      }
+      if (!state.finalizationRequested) return undefined;
+      const finalizationMessage = {
+        role: 'user' as const,
+        content: `[delegate finalization runway] Stop investigating and do not call tools. Produce the final self-contained answer now from evidence already gathered. Reason: ${state.finalizationReason ?? 'protected final-answer runway is active'}.`,
+        timestamp: Date.now(),
+      };
+      return { messages: [...event.messages, finalizationMessage] };
     } catch (error) {
       latch(
         'child_result_invalid',
-        `delegate context guard failed and the run was stopped rather than dispatched unguarded: ${error instanceof Error ? error.message : String(error)}`,
+        `delegate context measurement failed and the run was stopped rather than dispatched unguarded: ${error instanceof Error ? error.message : String(error)}`,
       );
       try {
         ctx.abort();
       } catch {
-        // An abort failure must not resurrect the unguarded message set. The
-        // latch above already prevents a success commit, and the suppressed
-        // replacement below still removes the content from this request.
+        // The terminal latch prevents success even if abort itself fails.
       }
       return { messages: suppressedMessages(event.messages) };
     }
+  });
+
+  pi.on('tool_call', (_event, ctx) => {
+    if (state.finalizationRequested) {
+      return {
+        block: true,
+        reason: 'delegate protected final-answer runway is active; answer now without tools',
+      };
+    }
+    state.toolCalls += 1;
+    if (state.toolCalls > seed.limits.max_tool_calls) {
+      latch(
+        'child_tool_call_limit',
+        `delegate child exceeded its ${String(seed.limits.max_tool_calls)} tool-call limit`,
+      );
+      ctx.abort();
+      return {
+        block: true,
+        reason: `delegate child exceeded its ${String(seed.limits.max_tool_calls)} tool-call limit`,
+      };
+    }
+    return undefined;
   });
 
   pi.on('tool_result', (event) => {
@@ -525,31 +792,36 @@ export default function delegateChildExtension(pi: ExtensionAPI): void {
   function guardToolResult(event: {
     toolName: string;
     toolCallId: string;
-    content: ReadonlyArray<{ type: string; text?: string }>;
+    content: ReadonlyArray<DelegateToolResultPart>;
   }): { content: Array<{ type: 'text'; text: string }>; isError?: boolean } | undefined {
-    state.toolCalls += 1;
-    if (state.toolCalls > seed.limits.max_tool_calls) {
-      latch(
-        'child_tool_call_limit',
-        `delegate child exceeded its ${String(seed.limits.max_tool_calls)} tool-call limit`,
-      );
-    }
-    const texts = event.content.flatMap((part) =>
-      part.type === 'text' && typeof part.text === 'string' ? [part.text] : [],
-    );
-    const joined = texts.join('');
-    const payload = utf8(joined);
+    // A single text block keeps its exact UTF-8 payload for convenient range
+    // reads. Multi-block and image-bearing results use a closed JSON envelope
+    // so block boundaries, MIME types, and complete base64 image data survive
+    // a spill. Unknown blocks fail closed rather than disappearing from hashes.
+    const encodedContent = encodeToolResultContent(event.content);
+    const payload = encodedContent.payload;
     state.totalToolOutputBytes += payload.length;
     if (state.totalToolOutputBytes > seed.limits.max_total_tool_output_bytes) {
       latch(
         'aggregate_tool_output_cap',
         `delegate child accumulated ${String(state.totalToolOutputBytes)} bytes of tool output, exceeding its ${String(seed.limits.max_total_tool_output_bytes)}-byte cap`,
       );
+      requestFinalization('the aggregate raw tool-output cap was reached');
+      const withheld = '[delegate: tool result withheld because the aggregate raw-output cap was reached; answer from evidence already gathered]';
+      accountRetainedGrowth(utf8(withheld).length, 'aggregate-cap receipt');
+      return { content: [{ type: 'text', text: withheld }], isError: true };
     }
-    if (payload.length <= seed.limits.max_tool_result_bytes) return undefined;
+    const contextPressure =
+      state.retainedGrowthBudgetTokens === undefined || payload.length > remainingGrowthTokens();
+    if (!contextPressure && payload.length <= seed.limits.max_tool_result_bytes) {
+      state.retainedToolResultBytes += payload.length;
+      accountRetainedGrowth(payload.length, `${event.toolName} inline result`);
+      return undefined;
+    }
 
-    // Oversized: spill to a hashed artifact and replace the transcript content
-    // with an explicit receipt. The raw payload never enters the transcript.
+    // Per-result oversized or route-pressure output is spilled in full and
+    // replaced by a receipt. Conservative false positives cause an explicit
+    // spill, never task failure or silent byte loss.
     const turnSequence = state.turns;
     const sourceCallIndex = state.spilled.length;
     const safeCallId = event.toolCallId.replace(/[^a-zA-Z0-9_.-]+/g, '-').slice(0, 64);
@@ -595,20 +867,22 @@ export default function delegateChildExtension(pi: ExtensionAPI): void {
       source_call_index: sourceCallIndex,
       byte_length: payload.length,
       sha256: sha256(payload),
+      content_format: encodedContent.contentFormat,
     };
     state.spilled.push(receipt);
+    if (contextPressure) state.contextPressureSpillBytes += payload.length;
+    const spillReason = contextPressure
+      ? `retaining it would consume protected final-answer runway (${String(remainingGrowthTokens())} tokens remain)`
+      : `it exceeded the ${String(seed.limits.max_tool_result_bytes)}-byte per-result transcript cap`;
+    const receiptText = [
+      `[delegate spill receipt] The ${event.toolName} result was ${String(payload.length)} bytes; ${spillReason}.`,
+      `It was written in full to ${relPath} (sha256 ${receipt.sha256}, content_format ${encodedContent.contentFormat}).`,
+      'Nothing was truncated: the complete encoded content is on disk.',
+      `Read an exact range as base64 with delegate_read_artifact({artifact:"${relPath}", offset, length}).`,
+    ].join('\n');
+    accountRetainedGrowth(utf8(receiptText).length, `${event.toolName} spill receipt`);
     return {
-      content: [
-        {
-          type: 'text' as const,
-          text: [
-            `[delegate spill receipt] The ${event.toolName} result was ${String(payload.length)} bytes, over the ${String(seed.limits.max_tool_result_bytes)}-byte transcript cap.`,
-            `It was written in full to ${relPath} (sha256 ${receipt.sha256}).`,
-            'Nothing was truncated: the complete bytes are on disk.',
-            `Read an exact range with delegate_read_artifact({artifact:"${relPath}", offset, length}).`,
-          ].join('\n'),
-        },
-      ],
+      content: [{ type: 'text' as const, text: receiptText }],
     };
   }
 
@@ -644,21 +918,46 @@ export default function delegateChildExtension(pi: ExtensionAPI): void {
     }
     const observedUsage = readUsage(Reflect.get(event.message, 'usage'));
     if (observedUsage === undefined) {
-      // Never synthesize zero usage. An absent or incomplete usage record stays
-      // explicitly unavailable so the parent cannot report a free run.
+      // Never synthesize zero usage. Once one turn is incomplete, later usage
+      // cannot conceal it by replacing the missing record.
+      state.usageIncomplete = true;
       state.usageUnavailableReason =
-        'the provider did not report a complete token/cost usage record';
+        'at least one provider turn did not report a complete token/cost usage record';
     } else {
-      state.usage = observedUsage;
-      state.usageUnavailableReason = undefined;
+      if (state.firstRequestObservedInputTokens === undefined) {
+        state.firstRequestObservedInputTokens =
+          observedUsage.input + observedUsage.cacheRead + observedUsage.cacheWrite;
+      }
+      state.usage = addUsage(state.usage, observedUsage);
+      if (!state.usageIncomplete) state.usageUnavailableReason = undefined;
     }
     const content: unknown = Reflect.get(event.message, 'content');
     if (!Array.isArray(content)) return;
+    if (attestation.stop_reason !== 'stop') {
+      const retained = messageContentMeasurement(content);
+      accountRetainedGrowth(retained.bytes, 'assistant intermediate message');
+      // Tool-use narration is retained in the transcript for reasoning but is
+      // not part of the delegate's committed answer. Only the final clean-stop
+      // assistant message owns the answer data plane.
+      return;
+    }
+    state.answerBlocks = [];
+    state.answerBytes = 0;
     for (const part of content) {
       if (typeof part !== 'object' || part === null) continue;
       if (Reflect.get(part, 'type') !== 'text') continue;
       const text: unknown = Reflect.get(part, 'text');
-      if (typeof text === 'string' && text.length > 0) state.answerBlocks.push(text);
+      if (typeof text !== 'string' || text.length === 0) continue;
+      const bytes = utf8(text).length;
+      state.answerBytes += bytes;
+      if (state.answerBytes > seed.limits.max_answer_bytes) {
+        latch(
+          'child_capture_limit',
+          `delegate child answer text reached ${String(state.answerBytes)} bytes, exceeding its ${String(seed.limits.max_answer_bytes)}-byte capture contract; the transcript is preserved and no prefix is committed`,
+        );
+        continue;
+      }
+      state.answerBlocks.push(text);
     }
   });
 

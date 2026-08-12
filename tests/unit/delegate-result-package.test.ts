@@ -275,6 +275,39 @@ void describe('delegate result package', () => {
     );
   });
 
+  void it('accepts a historical v1 spill receipt without content_format', () => {
+    const built = buildDelegateResultPackage({
+      taskId: EXPECTED.taskId,
+      launchNonce: EXPECTED.launchNonce,
+      seedSha256: EXPECTED.seedSha256,
+      directiveSha256: 'b'.repeat(64),
+      route: EXPECTED.route,
+      routeAttestations: [{ provider: 'anthropic', model: 'claude-test', stop_reason: 'stop' }],
+      stopReason: 'stop',
+      turns: 1,
+      toolCalls: 1,
+      usage: OBSERVED_USAGE,
+      answerBlocks: ['answer'],
+      spilledArtifacts: [
+        {
+          schema_version: 'pi-background-tasks.delegate-receipt.v1',
+          artifact: 'spill/historical.bin',
+          tool_name: 'read',
+          tool_call_id: 'historical',
+          turn_sequence: 1,
+          source_call_index: 0,
+          byte_length: 7,
+          sha256: createHash('sha256').update('payload').digest('hex'),
+        },
+      ],
+    });
+    const verified = verifyDelegateResultPackage(
+      serializeDelegateResultPackage(built),
+      EXPECTED,
+    );
+    assert.equal(verified.package.spilled_artifacts[0]?.content_format, undefined);
+  });
+
   void it('preserves spill receipts with their call coordinates', () => {
     const built = buildDelegateResultPackage({
       taskId: EXPECTED.taskId,
@@ -298,6 +331,7 @@ void describe('delegate result package', () => {
           source_call_index: 0,
           byte_length: 2_097_152,
           sha256: createHash('sha256').update('payload').digest('hex'),
+          content_format: 'single_text_utf8',
         },
       ],
     });
@@ -311,5 +345,6 @@ void describe('delegate result package', () => {
     assert.equal(receipt.turn_sequence, 1);
     assert.equal(receipt.source_call_index, 0);
     assert.equal(receipt.byte_length, 2_097_152);
+    assert.equal(receipt.content_format, 'single_text_utf8');
   });
 });

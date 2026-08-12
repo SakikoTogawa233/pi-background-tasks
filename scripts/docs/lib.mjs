@@ -1421,8 +1421,6 @@ function runtimeArtifacts(ts, root) {
     { kind: 'delegate-artifact', value: 'result.json', source: source('src/core/delegate/result-package.ts', 'result.json') },
     { kind: 'delegate-artifact', value: 'outcome.json', source: source('src/core/delegate/artifacts.ts', 'outcome.json') },
     { kind: 'delegate-artifact', value: 'error.json', source: source('src/core/delegate/artifacts.ts', 'error.json') },
-    { kind: 'delegate-artifact', value: 'child.stdout.txt', source: source('src/core/delegate/artifacts.ts', 'child.stdout.txt') },
-    { kind: 'delegate-artifact', value: 'child.stderr.txt', source: source('src/core/delegate/artifacts.ts', 'child.stderr.txt') },
     { kind: 'delegate-artifact', value: 'spill/<receipt-named-file>', source: source('src/core/delegate/artifacts.ts', 'spill') },
     { kind: 'directory', value: '.pi/fusion/<session-id>-<pid>/<run-id>/', source: source('src/core/fusion/artifacts.ts', '.pi') },
     { kind: 'fusion-artifact', value: 'canonical-input.json', source: source('src/core/fusion/artifacts.ts', 'canonical-input.json') },

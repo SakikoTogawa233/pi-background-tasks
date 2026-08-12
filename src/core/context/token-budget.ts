@@ -45,7 +45,11 @@ export const TOKEN_BUDGET_SEGMENT_KINDS = [
 ] as const;
 export type TokenBudgetSegmentKind = (typeof TOKEN_BUDGET_SEGMENT_KINDS)[number];
 
-export type TokenBudgetEstimatorScope = 'fusion' | 'delegate' | 'conservative';
+export type TokenBudgetEstimatorScope =
+  | 'fusion'
+  | 'delegate_launch'
+  | 'delegate'
+  | 'conservative';
 export type TokenBudgetDominantByteClass =
   | 'normal'
   | 'dense_ascii'
@@ -526,7 +530,7 @@ function rateSourceWarning(input: {
     return `model is not in the exact calibration backing set for family ${input.family}; using the provable 1.00 B/tok floor`;
   }
   if (input.source === 'delegate_conservative') {
-    return 'delegate scope withholds calibrated rates and uses the provable 1.00 B/tok profile for launch/runtime headroom';
+    return 'delegate launch/runtime uses the provable 1.00 B/tok profile when the prompt or route is below the backed large-prompt calibration domain';
   }
   if (input.source === 'explicit_conservative') {
     return 'explicit conservative scope uses the provable 1.00 B/tok profile';
@@ -569,7 +573,16 @@ function effectiveRateSource(input: {
       ? 'unbacked_model_floor'
       : 'unknown_provider_floor';
     effective = TOKEN_BUDGET_PROVABLE_RATE_X100;
-  } else if (input.scope === 'delegate') {
+  } else if (
+    input.scope === 'delegate' ||
+    (input.scope === 'delegate_launch' &&
+      (input.profile.concrete_known_bytes < TOKEN_BUDGET_LARGE_PROMPT_MIN_BYTES ||
+        (input.allowedInputTokens !== undefined &&
+          Math.floor(
+            (input.allowedInputTokens * TOKEN_BUDGET_DELEGATE_CONSERVATIVE_RATE_X100) /
+              TOKEN_BUDGET_RATE_SCALE,
+          ) < TOKEN_BUDGET_LARGE_PROMPT_MIN_BYTES)))
+  ) {
     source = 'delegate_conservative';
     effective = Math.min(configured, TOKEN_BUDGET_DELEGATE_CONSERVATIVE_RATE_X100);
   } else if (input.scope === 'conservative') {

@@ -119,30 +119,31 @@ void describe('delegate mutation resistance', () => {
       /usage\s*=\s*\{\s*input:\s*0/,
       'a missing usage record must not become a zero usage record',
     );
+    assert.match(child, /state\.usage = addUsage\(state\.usage, observedUsage\)/);
+    assert.doesNotMatch(
+      child,
+      /state\.usage = observedUsage/,
+      'a later turn must not overwrite usage accumulated from earlier turns',
+    );
     const resultPackage = codeOnly(await source('src/core/delegate/result-package.ts'));
     assert.match(resultPackage, /usage status must be observed or unavailable/);
   });
 
-  void it('keeps the child guard using abort rather than a throw as its barrier', async () => {
+  void it('does not repeat Fusion BUG-185 by turning an advisory estimate into provider truth', async () => {
     const child = codeOnly(await source('src/delegate-child-extension.ts'));
-    assert.match(child, /ctx\.abort\(\)/, 'the guard must abort the run');
-    // Defence in depth: the oversized content must also be removed, because a
-    // throw is not a barrier and abort does not skip the call site on Pi 0.83.
+    const contextHook = child.match(/pi\.on\('context'[\s\S]*?pi\.on\('tool_call'/)?.[0] ?? '';
+    assert.doesNotMatch(contextHook, /provider_context_budget_exhausted/);
+    assert.doesNotMatch(contextHook, /if \(!verdict\.withinBudget\)/);
+    assert.match(contextHook, /requestFinalization/);
     assert.match(
-      child,
+      contextHook,
       /return \{ messages: suppressedMessages\(event\.messages\) \}/,
-      'the guard must replace the outgoing message set, not only abort',
-    );
-    // Both the budget path and the fail-closed catch path must suppress.
-    assert.equal(
-      (child.match(/return \{ messages: suppressedMessages\(event\.messages\) \}/g) ?? []).length,
-      2,
-      'both the over-budget path and the guard-failure path must suppress the content',
+      'only a malformed measurement path may suppress and abort transport',
     );
     assert.doesNotMatch(
-      child,
+      contextHook,
       /pi\.on\('context'[\s\S]{0,600}?throw new/,
-      'the context guard must not rely on throwing, which Pi swallows',
+      'the context hook must not rely on throwing, which Pi swallows',
     );
   });
 
@@ -178,6 +179,11 @@ void describe('delegate mutation resistance', () => {
       child,
       /answerBlocks\.join\(''\)\.trim\(\)\.length === 0/,
       'a whitespace-only answer must be refused',
+    );
+    assert.match(
+      child,
+      /attestation\.stop_reason !== 'stop'[\s\S]{0,500}?return;/,
+      'intermediate tool-use narration must not enter the committed answer',
     );
   });
 
@@ -236,7 +242,7 @@ void describe('delegate mutation resistance', () => {
     assert.match(launch, /export function buildDelegateChildPrompt/);
     assert.match(
       launch,
-      /seedSerialized: childPrompt/,
+      /planDelegateAdmission\(\{[\s\S]*?childPrompt,/,
       'admission must measure the prompt that is sent, not the seed alone',
     );
     const registry = codeOnly(await source('src/core/registry.ts'));
@@ -254,6 +260,18 @@ void describe('delegate mutation resistance', () => {
     assert.match(runner, /store\.writeChildPrompt\(stdinBytes\)/);
   });
 
+  void it('spills package-owned growth before it consumes protected finalization runway', async () => {
+    const child = codeOnly(await source('src/delegate-child-extension.ts'));
+    assert.match(child, /payload\.length > remainingGrowthTokens\(\)/);
+    assert.match(child, /contextPressureSpillBytes/);
+    assert.match(child, /requestFinalization/);
+    assert.match(child, /runtime-budget\.json/);
+    const budget = codeOnly(await source('src/core/delegate/budget.ts'));
+    assert.match(budget, /DELEGATE_FINALIZATION_INPUT_RESERVE_TOKENS/);
+    assert.match(budget, /retained_growth_budget_tokens/);
+    assert.match(budget, /scope: 'delegate_launch'/);
+  });
+
   void it('reads bounded artifact ranges exactly or fails', async () => {
     const artifacts = codeOnly(await source('src/core/delegate/artifacts.ts'));
     assert.match(artifacts, /refused rather than silently shortened/);
@@ -261,6 +279,26 @@ void describe('delegate mutation resistance', () => {
     const child = codeOnly(await source('src/delegate-child-extension.ts'));
     assert.match(child, /refused rather than silently shortened/);
     assert.match(child, /slice\.length !== params\.length/);
+    assert.match(child, /slice\.toString\('base64'\)/);
+    assert.doesNotMatch(
+      child,
+      /slice\.toString\('utf8'\)/,
+      'an arbitrary byte range must never be silently decoded at a split UTF-8 boundary',
+    );
+  });
+
+  void it('preserves every supported tool-result content block on spill', async () => {
+    const child = codeOnly(await source('src/delegate-child-extension.ts'));
+    assert.match(child, /tool_result_content_json_v1/);
+    assert.match(child, /part\.type === 'image'/);
+    assert.match(child, /mimeType: part\.mimeType/);
+    assert.match(child, /data: part\.data/);
+    assert.match(child, /assertWellFormedUtf8\(only\.text/);
+    assert.doesNotMatch(
+      child,
+      /content\.flatMap\([\s\S]{0,200}?part\.type === 'text'/,
+      'spill accounting must not flatten away non-text content',
+    );
   });
 
   void it('never lets a delegate seed borrow Fusion provenance', async () => {

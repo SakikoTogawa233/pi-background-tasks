@@ -4,7 +4,6 @@ import {
   TOKEN_BUDGET_RATE_SCALE,
   estimateInputTokens,
   knownTextSegment,
-  maxKnownTextBytesForTokens,
   resolveTokenBudgetFamily,
   utf8ByteClassBreakdown,
   allowedInputTokens,
@@ -28,11 +27,15 @@ import {
  * A delegate child is a multi-turn, tool-using agent, so its budget has two
  * distinct phases rather than Fusion's single-shot stage forecast:
  *
- * 1. Launch admission checks the frozen seed, framing, and child system prompt.
- * 2. The runtime governor checks the complete retained input before each call.
+ * 1. Launch admission checks the frozen seed, framing, and child system prompt
+ *    with the same backed family calibration used by Fusion for large prompts.
+ * 2. A separate provable 1 B/token forecast sizes the transcript-growth runway
+ *    used for explicit tool-result spilling.
+ * 3. Runtime measurements are advisory. Package-owned growth is controlled
+ *    before transcript entry; Pi and the provider own live context handling.
  *
- * Nothing here clamps, downgrades, or silently reduces. An input that does not
- * fit is a typed refusal.
+ * Nothing here clips, substitutes, or silently reduces content. Tool bytes that
+ * do not fit the retained-growth runway are preserved as hashed spill artifacts.
  */
 
 /** Output tokens reserved so the child can always finish an answer. */
@@ -54,10 +57,14 @@ export const DELEGATE_DEFAULT_TIMEOUT_SECONDS = 1200;
 export const DELEGATE_MAX_TOOL_RESULT_BYTES = 64 * 1024;
 export const DELEGATE_MAX_TOTAL_TOOL_OUTPUT_BYTES = 64 * 1024 * 1024;
 export const DELEGATE_MAX_ANSWER_BYTES = 4 * 1024 * 1024;
+/** Input runway held back for a final no-tool answer after investigation. */
+export const DELEGATE_FINALIZATION_INPUT_RESERVE_TOKENS = 32 * 1024;
+/** Remaining retained-growth runway at which the child disables tools. */
+export const DELEGATE_FINALIZATION_TRIGGER_TOKENS = 8 * 1024;
 /** Answers at or under this serialize inline; larger ones degrade explicitly. */
 export const DELEGATE_INLINE_ANSWER_BYTES = 48 * 1024;
 
-export const DELEGATE_BUDGET_POLICY_ID = 'delegate-budget-policy-v2';
+export const DELEGATE_BUDGET_POLICY_ID = 'delegate-budget-policy-v3';
 
 export interface DelegateBudgetPolicyDescriptor {
   id: typeof DELEGATE_BUDGET_POLICY_ID;
@@ -68,7 +75,11 @@ export interface DelegateBudgetPolicyDescriptor {
   safety_reserve_tokens: number;
   min_usable_input_tokens: number;
   inline_answer_bytes: number;
-  estimator_scope: 'delegate';
+  finalization_input_reserve_tokens: number;
+  finalization_trigger_tokens: number;
+  launch_estimator_scope: 'calibrated_large_prompt';
+  retained_growth_estimator_scope: 'provable_1_byte_per_token';
+  live_provider_context_owner: 'pi_and_provider';
 }
 
 export const DELEGATE_BUDGET_POLICY: DelegateBudgetPolicyDescriptor = {
@@ -80,7 +91,11 @@ export const DELEGATE_BUDGET_POLICY: DelegateBudgetPolicyDescriptor = {
   safety_reserve_tokens: DELEGATE_SAFETY_RESERVE_TOKENS,
   min_usable_input_tokens: DELEGATE_MIN_USABLE_INPUT_TOKENS,
   inline_answer_bytes: DELEGATE_INLINE_ANSWER_BYTES,
-  estimator_scope: 'delegate',
+  finalization_input_reserve_tokens: DELEGATE_FINALIZATION_INPUT_RESERVE_TOKENS,
+  finalization_trigger_tokens: DELEGATE_FINALIZATION_TRIGGER_TOKENS,
+  launch_estimator_scope: 'calibrated_large_prompt',
+  retained_growth_estimator_scope: 'provable_1_byte_per_token',
+  live_provider_context_owner: 'pi_and_provider',
 };
 
 export interface DelegateAdmissionPlanV1 {
@@ -97,17 +112,22 @@ export interface DelegateAdmissionPlanV1 {
     rate_source: TokenBudgetRateSource;
     byte_capacity_utf8_bytes: number;
   };
-  seed_utf8_bytes: number;
-  seed_multibyte_utf8_bytes: number;
+  child_prompt_utf8_bytes: number;
+  child_prompt_multibyte_utf8_bytes: number;
   system_prompt_utf8_bytes: number;
   system_prompt_multibyte_utf8_bytes: number;
   launch_utf8_bytes: number;
   launch_input_tokens_upper_bound: number;
+  conservative_launch_input_tokens: number;
+  conservative_launch_fits: boolean;
   signed_headroom_tokens: number;
   utilization_basis_points: number;
+  retained_growth_budget_tokens: number;
+  finalization_input_reserve_tokens: number;
   byte_class_breakdown: TokenBudgetByteClassBreakdown;
   dominant_byte_class: EstimateInputTokensResult['rateSource']['dominant_byte_class'];
   estimate: EstimateInputTokensResult;
+  conservative_estimate: EstimateInputTokensResult;
   fits: boolean;
   limits: DelegateLimits;
 }
@@ -167,7 +187,7 @@ export function delegateAllowedInputTokens(route: DelegatePinnedRoute): number {
 
 export interface DelegateAdmissionInput {
   route: DelegatePinnedRoute;
-  seedSerialized: string;
+  childPrompt: string;
   childSystemPrompt: string;
   limits: DelegateLimits;
 }
@@ -176,20 +196,39 @@ export interface DelegateAdmissionInput {
 export function planDelegateAdmission(input: DelegateAdmissionInput): DelegateAdmissionPlanV1 {
   const allowed = delegateAllowedInputTokens(input.route);
   const family = routeFamily(input.route);
-  const seed = utf8ByteClassBreakdown(input.seedSerialized);
+  const childPrompt = utf8ByteClassBreakdown(input.childPrompt);
   const system = utf8ByteClassBreakdown(input.childSystemPrompt);
+  const segments = [knownTextSegment(input.childPrompt), knownTextSegment(input.childSystemPrompt)];
   const estimate = estimateInputTokens({
     family: family.family,
     calibrationBacked: family.backed,
     familyResolution: family.resolution,
     allowedInputTokens: allowed,
-    scope: 'delegate',
-    segments: [knownTextSegment(input.seedSerialized), knownTextSegment(input.childSystemPrompt)],
+    scope: 'delegate_launch',
+    segments,
   });
+  const conservativeEstimate = estimateInputTokens({
+    family: family.family,
+    calibrationBacked: family.backed,
+    familyResolution: family.resolution,
+    allowedInputTokens: allowed,
+    scope: 'conservative',
+    segments,
+  });
+  // `conservativeEstimate.tokens` intentionally uses the shared estimator's
+  // calibrated multibyte diagnostic rate. The counter-forecast published as
+  // "provable" must instead use that estimator's explicit 1 B/token ceiling
+  // for multibyte bytes as well as normal/dense bytes.
+  const provableConservativeLaunchTokens =
+    conservativeEstimate.advisory.input_tokens_if_multibyte_used_provable_ceiling;
   const byteCapacity = Math.floor(
     (allowed * estimate.rateSource.effective_rate_bytes_per_token_x100) / TOKEN_BUDGET_RATE_SCALE,
   );
-  const launchBytes = seed.bytes + system.bytes;
+  const launchBytes = childPrompt.bytes + system.bytes;
+  const retainedGrowthBudget = Math.max(
+    0,
+    allowed - estimate.tokens - DELEGATE_FINALIZATION_INPUT_RESERVE_TOKENS,
+  );
   return {
     schema_version: DELEGATE_BUDGET_PLAN_SCHEMA_VERSION,
     policy: DELEGATE_BUDGET_POLICY,
@@ -204,17 +243,22 @@ export function planDelegateAdmission(input: DelegateAdmissionInput): DelegateAd
       rate_source: estimate.rateSource,
       byte_capacity_utf8_bytes: byteCapacity,
     },
-    seed_utf8_bytes: seed.bytes,
-    seed_multibyte_utf8_bytes: seed.multibyteBytes,
+    child_prompt_utf8_bytes: childPrompt.bytes,
+    child_prompt_multibyte_utf8_bytes: childPrompt.multibyteBytes,
     system_prompt_utf8_bytes: system.bytes,
     system_prompt_multibyte_utf8_bytes: system.multibyteBytes,
     launch_utf8_bytes: launchBytes,
     launch_input_tokens_upper_bound: estimate.tokens,
+    conservative_launch_input_tokens: provableConservativeLaunchTokens,
+    conservative_launch_fits: provableConservativeLaunchTokens <= allowed,
     signed_headroom_tokens: allowed - estimate.tokens,
     utilization_basis_points: utilizationBasisPoints(estimate.tokens, allowed),
+    retained_growth_budget_tokens: retainedGrowthBudget,
+    finalization_input_reserve_tokens: DELEGATE_FINALIZATION_INPUT_RESERVE_TOKENS,
     byte_class_breakdown: estimate.byte_class_breakdown,
     dominant_byte_class: estimate.rateSource.dominant_byte_class,
     estimate,
+    conservative_estimate: conservativeEstimate,
     fits: estimate.tokens <= allowed,
     limits: input.limits,
   };
@@ -226,17 +270,15 @@ function rateWarningText(rateSource: TokenBudgetRateSource, qualifiedId: string)
 }
 
 function requiredByteReduction(plan: DelegateAdmissionPlanV1): number {
-  return Math.max(
-    0,
-    plan.launch_utf8_bytes -
-      maxKnownTextBytesForTokens({
-        family: plan.route.family,
-        calibrationBacked: plan.route.rate_source.backed,
-        familyResolution: plan.route.rate_source.model_resolution,
-        allowedInputTokens: plan.route.allowed_input_tokens,
-        scope: 'delegate',
-      }),
-  );
+  const variableTokens =
+    plan.route.allowed_input_tokens - plan.route.rate_source.affine_f_tokens;
+  const maximumBytes = variableTokens <= 0
+    ? 0
+    : Math.floor(
+        (variableTokens * plan.route.rate_source.effective_rate_bytes_per_token_x100) /
+          TOKEN_BUDGET_RATE_SCALE,
+      );
+  return Math.max(0, plan.launch_utf8_bytes - maximumBytes);
 }
 
 /**
@@ -249,7 +291,7 @@ export function assertDelegateAdmission(plan: DelegateAdmissionPlanV1): void {
   if (plan.fits) return;
   const overage = plan.launch_input_tokens_upper_bound - plan.route.allowed_input_tokens;
   throw new DelegateError(
-    `bg_delegate seed does not fit the pinned route before launch. Route ${plan.route.qualified_id} allows ${String(plan.route.allowed_input_tokens)} input tokens; the frozen seed plus the child system prompt measure ${String(plan.launch_utf8_bytes)} UTF-8 bytes (<= ${String(plan.launch_input_tokens_upper_bound)} input tokens), over by ${String(overage)} tokens. Estimator family ${plan.route.family}, source ${plan.route.rate_source.source}, backed=${String(plan.route.rate_source.backed)}, dominant_byte_class=${plan.dominant_byte_class}, rate ${String(plan.route.rate_source.effective_rate_bytes_per_token_x100)}/100 B/tok + ${String(plan.route.rate_source.affine_f_tokens)} tokens.${rateWarningText(plan.route.rate_source, plan.route.qualified_id)} Required reduction is at least ${String(requiredByteReduction(plan))} UTF-8 bytes. No child process, child session, or artifact was created. Nothing was clipped, dropped, or substituted.`,
+    `bg_delegate child prompt does not fit the pinned route before launch. Route ${plan.route.qualified_id} allows ${String(plan.route.allowed_input_tokens)} input tokens; the exact child prompt plus child system prompt measure ${String(plan.launch_utf8_bytes)} UTF-8 bytes (<= ${String(plan.launch_input_tokens_upper_bound)} input tokens), over by ${String(overage)} tokens. Estimator family ${plan.route.family}, source ${plan.route.rate_source.source}, backed=${String(plan.route.rate_source.backed)}, dominant_byte_class=${plan.dominant_byte_class}, rate ${String(plan.route.rate_source.effective_rate_bytes_per_token_x100)}/100 B/tok + ${String(plan.route.rate_source.affine_f_tokens)} tokens.${rateWarningText(plan.route.rate_source, plan.route.qualified_id)} Required reduction is at least ${String(requiredByteReduction(plan))} UTF-8 bytes. No child process, child session, or artifact was created. Nothing was clipped, dropped, or substituted.`,
     {
       code: 'seed_budget_exceeded',
       childCreated: false,
@@ -291,10 +333,13 @@ export interface DelegateGovernorVerdict {
 }
 
 /**
- * Runtime governor decision for one prospective model call.
+ * Advisory runtime measurement for one prospective model call.
  *
- * Pure and total, so the child guard can call it from inside a hook with no
- * possibility of throwing where a throw would be swallowed.
+ * This deliberately uses the calibrated large-prompt policy and never decides
+ * whether transport may occur. Fusion's BUG-185 proved that a package-local
+ * estimator must not reject a live provider payload by subtracting hypothetical
+ * output. The delegate child uses this result for evidence and graceful
+ * finalization while proactive spilling controls package-owned growth.
  */
 export function evaluateDelegateRuntimeBudget(
   measurement: DelegateRuntimeMeasurement,
@@ -307,7 +352,7 @@ export function evaluateDelegateRuntimeBudget(
     calibrationBacked: family.backed,
     familyResolution: family.resolution,
     allowedInputTokens: allowedTokens,
-    scope: 'delegate',
+    scope: 'delegate_launch',
     segments: [
       {
         kind: 'known_text',

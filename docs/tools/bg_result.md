@@ -11,7 +11,7 @@ covers_sources: []
 
 <!-- pi-docs:begin name="tool-contract-bg_result" generator="scripts/docs/generate.mjs" -->
 - Label: **Background Result**
-- Source: `src/delegate-extension.ts:515`
+- Source: `src/delegate-extension.ts:516`
 - Description: Retrieve a hash-verified result from a bg_delegate or background Fusion task. Never blocks: a running task returns a typed not-ready result. Oversized answers are never truncated.
 - Root schema: `object`; additionalProperties: `false`
 
@@ -124,7 +124,7 @@ Common delegate retrieval outcomes:
 - `result_too_large_for_inline` — explicit inline request exceeded the inline cap.
 - Fusion `summary_status:"integrity_failed"` — a terminal summary or its manifest binding failed verification; no summary metadata is trusted.
 
-Delegate errors include whether a child process was created, preserved artifact hints when known, and remediation text. Usage missing from the provider is reported as `unavailable`, not synthesized as zero. Fusion retrieval additionally fails on non-completed manifests, identity/schema drift, malformed usage/details, invalid UTF-8, or any manifest/result/merged hash or byte-length mismatch; failed/cancelled runs return their preserved terminal error rather than partial output.
+Delegate errors include whether a child process was created, preserved artifact hints that are checked for existence, the real merged task output path when available, and remediation text. Usage missing from the provider is reported as `unavailable`, not synthesized as zero. Fusion retrieval additionally fails on non-completed manifests, identity/schema drift, malformed usage/details, invalid UTF-8, or any manifest/result/merged hash or byte-length mismatch; failed/cancelled runs return their preserved terminal error rather than partial output.
 
 ## Parent outcome separation
 

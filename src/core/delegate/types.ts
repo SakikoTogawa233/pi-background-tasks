@@ -18,7 +18,7 @@ export const DELEGATE_RESULT_PACKAGE_SCHEMA_VERSION =
   'pi-background-tasks.delegate-result.v1' as const;
 export const DELEGATE_RECEIPT_SCHEMA_VERSION = 'pi-background-tasks.delegate-receipt.v1' as const;
 export const DELEGATE_BUDGET_PLAN_SCHEMA_VERSION =
-  'pi-background-tasks.delegate-budget-plan.v2' as const;
+  'pi-background-tasks.delegate-budget-plan.v3' as const;
 export const DELEGATE_MANIFEST_SCHEMA_VERSION = 'pi-background-tasks.delegate-manifest.v2' as const;
 
 /**
@@ -64,6 +64,7 @@ export interface DelegatePinnedRoute extends DelegateRoute {
 export interface DelegateBudgetRouteSource {
   family: TokenBudgetFamily;
   rate_source: TokenBudgetRateSource;
+  conservative_rate_source?: TokenBudgetRateSource | undefined;
 }
 
 export interface DelegateContextPolicyDescriptor {
@@ -192,6 +193,11 @@ export interface DelegateResultPackageV1 {
   spilled_artifacts: readonly DelegateSpillReceipt[];
 }
 
+export type DelegateSpillContentFormat =
+  | 'single_text_utf8'
+  | 'tool_result_content_json_v1'
+  | 'opaque_bytes';
+
 export interface DelegateSpillReceipt {
   schema_version: typeof DELEGATE_RECEIPT_SCHEMA_VERSION;
   artifact: string;
@@ -201,6 +207,11 @@ export interface DelegateSpillReceipt {
   source_call_index: number;
   byte_length: number;
   sha256: string;
+  /**
+   * Encoding of the hashed artifact bytes. Optional only for compatibility
+   * with v1 receipts written before content formats were recorded.
+   */
+  content_format?: DelegateSpillContentFormat | undefined;
 }
 
 export const DELEGATE_ERROR_CODES = [

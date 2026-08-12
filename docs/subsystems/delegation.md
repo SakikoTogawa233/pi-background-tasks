@@ -82,43 +82,52 @@ Routes are pinned once:
 - unavailable/unknown-capacity routes fail;
 - no substitution, fallback, or retry on a different route.
 
-Budgets use a delegate-specific conservative estimator. Constants currently documented by source/tests:
+Budgeting separates admission from package-owned runtime growth. Constants currently documented by source/tests:
 
 - reserved output: `16,384` tokens;
 - framing reserve: `8,192` tokens;
 - safety reserve: `4,096` tokens;
 - minimum usable input: `8,192` tokens;
+- protected finalization input runway: `32,768` tokens;
+- finalization trigger inside retained-growth runway: `8,192` tokens;
 - default turns/tools/timeout: `24` / `120` / `1200s`;
 - per-result transcript cap: `64 KiB`;
-- aggregate tool-output cap: `64 MiB`;
-- answer capture cap value carried in the seed: `4 MiB`; current child code does not separately enforce this before packaging;
+- aggregate raw tool-output cap: `64 MiB`;
+- answer capture cap: `4 MiB`, enforced before result packaging;
 - inline answer cap: `48 KiB`.
 
-Launch admission measures the child system prompt plus the actual child prompt carrying the seed. Runtime guard measures retained input before every model call. An over-budget runtime call latches `provider_context_budget_exhausted`, aborts the run, and suppresses outgoing content.
+Launch admission measures the child system prompt plus the exact child prompt carrying the seed. Backed large prompts use the shared family calibration; prompts or routes below the calibration domain and unknown/unbacked routes use the provable `1.00 B/token` profile. `budget-plan.json` v3 also records the provable conservative counter-forecast, protected finalization reserve, and retained-growth budget.
+
+After launch, token measurements are advisory. Fusion BUG-185 proved that a package-local estimate must not reject a live provider payload after subtracting hypothetical output. Delegate therefore does not self-report provider exhaustion from that estimate. Pi and the provider own live context handling; a genuine provider context error remains loud. Package-owned growth is controlled before transcript entry: a tool result spills whenever it exceeds the per-result cap **or** retaining it would consume protected final-answer runway. Conservative false positives therefore create explicit hash receipts rather than failed tasks. Near the end of the runway the child disables tools and injects one finalization instruction so it can answer from evidence already gathered.
 
 ## Child guard and commit discipline
 
 The child verifies seed hash, task id, and launch nonce at extension load before the first model call. It then enforces:
 
-- context budget before every provider call;
-- per-result spill receipts before tool output enters the transcript;
-- aggregate tool-output cap;
+- advisory retained-context measurement before every provider call, without a BUG-185-style token abort;
+- route-runway-aware and per-result spill receipts before tool output enters the transcript, including structured preservation of image-bearing results;
+- bounded artifact range reads returned as lossless base64 against remaining inline runway;
+- aggregate raw tool-output cap;
+- protected no-tool finalization when retained-growth runway becomes low;
 - turn and tool-call limits;
 - route attestation for assistant messages;
-- complete usage records only (missing/partial usage is `unavailable`, never zero);
+- per-turn usage accumulation across the full agent loop; if any turn is missing/partial, aggregate usage is `unavailable` rather than understated or replaced by a later record;
 - accepted final stop reason `stop` only, so provider `length` stops become `child_model_output_limit` rather than partial success;
+- answer capture from only the final clean-stop assistant message, never intermediate tool-use narration;
 - non-empty, non-whitespace answer text;
-- well-formed UTF-8 answer blocks.
+- the declared answer capture cap, with no partial result on overflow;
+- well-formed UTF-8 answer blocks;
+- durable `runtime-budget.json` evidence containing context measurements, retained/spilled bytes, finalization state, first-request observed usage, and calibration-underforecast evidence.
 
 A terminal latch prevents later success commit after any degraded/refused condition. This avoids a hash-valid result built on silently modified context.
 
 `result.json` is the single answer data plane. It is child-written by temp file, file fsync, and rename; POSIX then fsyncs the parent directory, while Windows skips directory fsync because Node does not provide the same portable guarantee there. Final-name presence is the child commit point. No final `result.json` means no accepted answer, regardless of process exit code. `child-terminal.json` records child-side terminal failures when no success package is committed.
 
-After adjudication, the parent makes a best-effort durable write of `outcome.json`. This is separate from `result.json` so child and parent cannot race over one state field. An `outcome.json` write failure is currently ignored and does not change the returned adjudication, so the artifact may be absent even though evaluation completed. Child stdout/stderr are currently captured in the background task output file; although delegate artifact constants name `child.stdout.txt` and `child.stderr.txt`, current registry finalization does not populate those files in the delegate artifact directory.
+After adjudication, the parent makes a best-effort durable write of `outcome.json`. This is separate from `result.json` so child and parent cannot race over one state field. An `outcome.json` write failure is currently ignored and does not change the returned adjudication, so the artifact may be absent even though evaluation completed. Child stdout/stderr are captured in the background task output file. Delegate-local `child.stdout.txt` and `child.stderr.txt` are not currently populated, and terminal reporting now lists only diagnostic paths that actually exist.
 
 ## Spill artifacts and `delegate_read_artifact`
 
-Oversized tool results are durably written in full under `spill/` and replaced with receipts. A failed spill withholds the original payload and latches a terminal failure; no uncommitted artifact is claimed by receipt.
+Oversized tool results are durably written in full under `spill/` and replaced with receipts. A single text block is stored as exact UTF-8; malformed lone-surrogate text is rejected rather than silently converted to U+FFFD. Multi-block or image-bearing content is stored in a closed JSON envelope that preserves block boundaries, MIME types, text, and complete base64 image data. New receipts record `content_format`; historical v1 receipts without that optional field remain readable. A failed spill withholds the original payload and latches a terminal failure; no uncommitted artifact is claimed by receipt.
 
 `delegate_read_artifact` requires:
 
@@ -126,7 +135,7 @@ Oversized tool results are durably written in full under `spill/` and replaced w
 - `offset: non-negative safe integer`;
 - `length: positive safe integer`.
 
-It reads the whole artifact file, verifies the requested range is in bounds, and returns exactly that UTF-8-decoded range. Path escape and short reads fail loudly.
+It reads the whole artifact file, verifies the requested range is in bounds, and returns the exact bytes as base64 plus offset/length metadata. Arbitrary ranges are never decoded as UTF-8, so a range that splits a multibyte sequence remains byte-exact rather than becoming U+FFFD. Path escape and short reads fail loudly.
 
 ## Retrieval contract
 
@@ -163,7 +172,7 @@ Launch / execution:
 
 Budget / limits:
 
-- `provider_context_budget_exhausted`
+- `provider_context_budget_exhausted` (legacy terminal records only; current children do not infer provider exhaustion from an advisory estimate)
 - `aggregate_tool_output_cap`
 - `child_model_output_limit`
 - `child_capture_limit`

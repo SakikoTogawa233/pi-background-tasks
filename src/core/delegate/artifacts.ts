@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { existsSync } from 'node:fs';
 import { chmod, mkdir, open, readFile, rename, rm } from 'node:fs/promises';
 import { basename, isAbsolute, join, relative, sep } from 'node:path';
 import { canonicalJson } from '../attested-pi-run.js';
@@ -45,8 +46,7 @@ export const DELEGATE_ARTIFACT_NAMES = {
   outcome: 'outcome.json',
   result: DELEGATE_RESULT_PACKAGE_FILENAME,
   childPrompt: 'child-prompt.txt',
-  childStderr: 'child.stderr.txt',
-  childStdout: 'child.stdout.txt',
+  runtimeBudget: 'runtime-budget.json',
   error: 'error.json',
 } as const;
 
@@ -232,11 +232,6 @@ export class DelegateArtifactStore {
     return this.write(DELEGATE_ARTIFACT_NAMES.budgetPlan, `${canonicalJson(plan)}\n`);
   }
 
-  async writeChildStreams(stdout: Buffer, stderr: Buffer): Promise<void> {
-    await this.write(DELEGATE_ARTIFACT_NAMES.childStdout, stdout);
-    await this.write(DELEGATE_ARTIFACT_NAMES.childStderr, stderr);
-  }
-
   /** Commit the run. The rename performed here is the single success point. */
   async commitResult(pkg: DelegateResultPackageV1): Promise<DelegateArtifactRef> {
     const ref = await this.write(
@@ -251,17 +246,23 @@ export class DelegateArtifactStore {
     try {
       return await readFile(this.resultPathAbs, 'utf8');
     } catch (error) {
+      const diagnosticNames = [
+        DELEGATE_ARTIFACT_NAMES.error,
+        DELEGATE_ARTIFACT_NAMES.outcome,
+        DELEGATE_ARTIFACT_NAMES.runtimeBudget,
+        DELEGATE_ARTIFACT_NAMES.manifest,
+      ].filter((name) => existsSync(join(this.rootAbs, name)));
       throw new DelegateError(
-        `delegate result package is not present at ${join(this.rootDisplay, DELEGATE_ARTIFACT_NAMES.result)}; the child produced no committed answer`,
+        `delegate result package could not be read at ${join(this.rootDisplay, DELEGATE_ARTIFACT_NAMES.result)}; no committed answer is available (${error instanceof Error ? error.message : String(error)})`,
         {
           code: 'result_unavailable',
           childCreated: true,
           taskId: this.manifest.task_id,
           artifactDir: this.rootDisplay,
-          preserved: [this.rootDisplay],
-          remediation: [
-            'Inspect child.stderr.txt and error.json in the artifact directory for the recorded failure.',
-          ],
+          preserved: diagnosticNames,
+          remediation: diagnosticNames.length === 0
+            ? ['No diagnostic control artifact exists; inspect the background task merged output if one was created.']
+            : [`Inspect the existing delegate control artifacts: ${diagnosticNames.join(', ')}.`],
         },
       );
     }
@@ -353,6 +354,7 @@ export class DelegateArtifactStore {
       source_call_index: input.sourceCallIndex,
       byte_length: input.payload.length,
       sha256: sha256Bytes(input.payload),
+      content_format: 'opaque_bytes',
     };
   }
 

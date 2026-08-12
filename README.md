@@ -27,7 +27,7 @@
 | Fact | Value |
 | --- | --- |
 | Package | `pi-background-tasks` |
-| Version | `2.3.0` |
+| Version | `2.4.0` |
 | Node engine | `>=22.19.0` |
 | Pi entrypoints | `./extensions/anthropic-attribution.ts`, `./extensions/background-tasks.ts` |
 | Package image | [logo.png](https://raw.githubusercontent.com/ismailsaleekh/pi-background-tasks/main/logo.png) |
@@ -295,6 +295,7 @@ Agent tasks launched through `pi -p ...` or `pi --mode json ...` and marked `isA
 ## Architecture, trust, and safety
 
 - Runtime task files live under `.pi/tasks/<session-id>-<pid>/`; Fusion artifacts under `.pi/fusion/...`; delegate artifacts under `.pi/delegate/...`.
+- Delegate launch budgeting uses backed route-family calibration for eligible large prompts and records a provable conservative counter-forecast across every byte class. During investigation, text and image-bearing tool output spill losslessly when retaining them would consume protected final-answer runway—even below the normal 64 KiB per-result threshold. Exact artifact ranges return as base64, final capture excludes intermediate tool-use narration, and near the runway boundary tools are disabled for graceful finalization. Runtime token estimates are advisory; Pi/provider own live context admission, avoiding Fusion BUG-185-style false refusals.
 - Shell jobs are tracked by the package, but they are not sandboxed. Treat commands as local processes with your permissions and credentials.
 - Delegate and Fusion child Pi processes are route-pinned where applicable; delegate/Fusion paths do not silently substitute routes.
 - Fusion uses direct child `pi --mode text` processes, not direct completion APIs. Frontier Fusion routes are admitted only through Pi Anthropic or Codex subscription OAuth; metered frontier API credentials are rejected before child creation.

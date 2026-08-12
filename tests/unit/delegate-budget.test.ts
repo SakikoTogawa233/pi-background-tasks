@@ -1,5 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import {
   DELEGATE_FRAMING_RESERVE_TOKENS,
   DELEGATE_INLINE_ANSWER_BYTES,
@@ -20,7 +21,6 @@ import {
   TOKEN_BUDGET_PROVABLE_RATE_X100,
   estimateInputTokens,
   maxKnownTextBytesForTokens,
-  resolveTokenBudgetFamily,
 } from '../../src/core/context/token-budget.js';
 
 function route(
@@ -38,6 +38,16 @@ function route(
   };
 }
 
+const INCIDENT = JSON.parse(
+  readFileSync(new URL('../fixtures/delegate-context-incident.json', import.meta.url), 'utf8'),
+) as Record<string, unknown>;
+
+function incidentNumber(key: string): number {
+  const value = INCIDENT[key];
+  if (typeof value !== 'number') throw new Error(`incident fixture ${key} must be numeric`);
+  return value;
+}
+
 const LIMITS = {
   max_turns: 24,
   max_tool_calls: 120,
@@ -49,19 +59,29 @@ const LIMITS = {
 };
 
 function maxDelegateKnownBytes(pinnedRoute: DelegatePinnedRoute): number {
-  const family = resolveTokenBudgetFamily(pinnedRoute);
-  return maxKnownTextBytesForTokens({
-    family: family.family,
-    allowedInputTokens: delegateAllowedInputTokens(pinnedRoute),
-    scope: 'delegate',
+  const allowed = delegateAllowedInputTokens(pinnedRoute);
+  const probe = planDelegateAdmission({
+    route: pinnedRoute,
+    childPrompt: 'x '.repeat(30_000),
+    childSystemPrompt: '',
+    limits: LIMITS,
   });
+  const rate = probe.route.rate_source;
+  return Math.floor(
+    ((allowed - rate.affine_f_tokens) * rate.effective_rate_bytes_per_token_x100) /
+      100,
+  );
+}
+
+function normalText(bytes: number): string {
+  return `${'x '.repeat(Math.floor(bytes / 2))}${bytes % 2 === 0 ? '' : 'x'}`;
 }
 
 function delegateTokenForecast(bytes: number, allowedInputTokens: number): number {
   return estimateInputTokens({
     family: 'openai-codex',
     allowedInputTokens,
-    scope: 'delegate',
+    scope: 'delegate_launch',
     segments: [{ kind: 'known_text', bytes, multibyteBytes: 0, denseBytes: 0 }],
   }).tokens;
 }
@@ -109,14 +129,14 @@ void describe('delegate launch admission', () => {
     const pinnedRoute = route(200_000);
     const plan = planDelegateAdmission({
       route: pinnedRoute,
-      seedSerialized: 'x'.repeat(1000),
+      childPrompt: 'x'.repeat(1000),
       childSystemPrompt: 'y'.repeat(500),
       limits: LIMITS,
     });
     assert.equal(plan.fits, true);
-    assert.equal(plan.schema_version, 'pi-background-tasks.delegate-budget-plan.v2');
-    assert.equal(plan.policy.id, 'delegate-budget-policy-v2');
-    assert.equal(plan.seed_utf8_bytes, 1000);
+    assert.equal(plan.schema_version, 'pi-background-tasks.delegate-budget-plan.v3');
+    assert.equal(plan.policy.id, 'delegate-budget-policy-v3');
+    assert.equal(plan.child_prompt_utf8_bytes, 1000);
     assert.equal(plan.system_prompt_utf8_bytes, 500);
     assert.equal(plan.launch_utf8_bytes, 1500);
     assert.equal(plan.launch_input_tokens_upper_bound, plan.estimate.tokens);
@@ -132,7 +152,7 @@ void describe('delegate launch admission', () => {
     const exactBytes = maxDelegateKnownBytes(pinnedRoute);
     const atLimit = planDelegateAdmission({
       route: pinnedRoute,
-      seedSerialized: 'x'.repeat(exactBytes),
+      childPrompt: normalText(exactBytes),
       childSystemPrompt: '',
       limits: LIMITS,
     });
@@ -144,7 +164,7 @@ void describe('delegate launch admission', () => {
 
     const overLimit = planDelegateAdmission({
       route: pinnedRoute,
-      seedSerialized: 'x'.repeat(exactBytes + 1),
+      childPrompt: normalText(exactBytes + 1),
       childSystemPrompt: '',
       limits: LIMITS,
     });
@@ -165,8 +185,8 @@ void describe('delegate launch admission', () => {
     const seedBytes = maxDelegateKnownBytes(pinnedRoute);
     const plan = planDelegateAdmission({
       route: pinnedRoute,
-      seedSerialized: 'x'.repeat(seedBytes),
-      childSystemPrompt: 'y'.repeat(2),
+      childPrompt: normalText(seedBytes),
+      childSystemPrompt: 'y ',
       limits: LIMITS,
     });
     assert.equal(plan.fits, false, 'the system prompt must consume the same allowance');
@@ -176,15 +196,15 @@ void describe('delegate launch admission', () => {
     const emoji = '👩‍👩‍👧‍👦';
     const plan = planDelegateAdmission({
       route: route(200_000),
-      seedSerialized: emoji.repeat(100),
+      childPrompt: emoji.repeat(100),
       childSystemPrompt: '',
       limits: LIMITS,
     });
-    assert.equal(plan.seed_utf8_bytes, Buffer.byteLength(emoji.repeat(100), 'utf8'));
-    assert.ok(plan.seed_utf8_bytes > emoji.repeat(100).length);
-    assert.equal(plan.estimate.byte_class_breakdown.multibyte_bytes, plan.seed_utf8_bytes);
-    assert.equal(plan.estimate.perSegment[0]?.multibyte_provable_tokens, plan.seed_utf8_bytes);
-    assert.ok((plan.estimate.perSegment[0]?.multibyte_tokens ?? 0) < plan.seed_utf8_bytes);
+    assert.equal(plan.child_prompt_utf8_bytes, Buffer.byteLength(emoji.repeat(100), 'utf8'));
+    assert.ok(plan.child_prompt_utf8_bytes > emoji.repeat(100).length);
+    assert.equal(plan.estimate.byte_class_breakdown.multibyte_bytes, plan.child_prompt_utf8_bytes);
+    assert.equal(plan.estimate.perSegment[0]?.multibyte_provable_tokens, plan.child_prompt_utf8_bytes);
+    assert.ok((plan.estimate.perSegment[0]?.multibyte_tokens ?? 0) < plan.child_prompt_utf8_bytes);
     assert.equal(plan.dominant_byte_class, 'multibyte');
   });
 
@@ -193,7 +213,7 @@ void describe('delegate launch admission', () => {
     assert.equal(delegateAllowedInputTokens(pinnedRoute), 8192);
     const plan = planDelegateAdmission({
       route: pinnedRoute,
-      seedSerialized: 'x'.repeat(23_674),
+      childPrompt: 'x'.repeat(23_674),
       childSystemPrompt: '',
       limits: LIMITS,
     });
@@ -217,7 +237,7 @@ void describe('delegate launch admission', () => {
     assert.equal(beforeAnthropicForecast, 8_192);
     const plan = planDelegateAdmission({
       route: pinnedRoute,
-      seedSerialized: 'x'.repeat(13_286),
+      childPrompt: 'x'.repeat(13_286),
       childSystemPrompt: '',
       limits: LIMITS,
     });
@@ -241,11 +261,73 @@ void describe('delegate launch admission', () => {
     );
   });
 
+  void it('replays the incident byte-class contract with calibrated runway and a provable counter-forecast', () => {
+    const promptBytes = incidentNumber('child_prompt_utf8_bytes');
+    const multibyteBytes = incidentNumber('launch_multibyte_bytes');
+    assert.equal(multibyteBytes % Buffer.byteLength('€', 'utf8'), 0);
+    const childPrompt = `${normalText(promptBytes - multibyteBytes)}${'€'.repeat(multibyteBytes / 3)}`;
+    const childSystemPrompt = normalText(incidentNumber('system_prompt_utf8_bytes'));
+    assert.equal(Buffer.byteLength(childPrompt, 'utf8'), promptBytes);
+    const pinnedRoute = route(
+      incidentNumber('context_window_tokens'),
+      'openai-codex',
+      'gpt-5.6-sol',
+    );
+    const plan = planDelegateAdmission({
+      route: pinnedRoute,
+      childPrompt,
+      childSystemPrompt,
+      limits: LIMITS,
+    });
+    assert.equal(plan.launch_utf8_bytes, incidentNumber('launch_utf8_bytes'));
+    assert.equal(plan.byte_class_breakdown.normal_bytes, incidentNumber('launch_normal_bytes'));
+    assert.equal(plan.byte_class_breakdown.multibyte_bytes, multibyteBytes);
+    assert.equal(plan.route.allowed_input_tokens, incidentNumber('allowed_input_tokens'));
+    assert.equal(plan.route.rate_source.source, 'calibrated_large_window');
+    assert.equal(
+      plan.route.rate_source.effective_rate_bytes_per_token_x100,
+      incidentNumber('calibrated_rate_bytes_per_token_x100'),
+    );
+    assert.equal(plan.fits, true);
+    assert.ok(plan.launch_input_tokens_upper_bound < 70_000);
+    assert.equal(
+      plan.conservative_estimate.tokens,
+      incidentNumber('old_one_byte_normal_two_byte_multibyte_forecast'),
+    );
+    assert.equal(
+      plan.conservative_launch_input_tokens,
+      incidentNumber('provable_one_byte_per_token_forecast'),
+    );
+    assert.equal(plan.conservative_launch_fits, true);
+    assert.ok(plan.retained_growth_budget_tokens > 240_000);
+    assert.equal(
+      plan.finalization_input_reserve_tokens,
+      incidentNumber('finalization_reserve_tokens'),
+    );
+  });
+
+  void it('publishes the provable ceiling for multibyte-heavy conservative forecasts', () => {
+    const pinnedRoute = route(128_672, 'openai-codex', 'gpt-5.6-sol');
+    const plan = planDelegateAdmission({
+      route: pinnedRoute,
+      childPrompt: '€'.repeat(40_000),
+      childSystemPrompt: '',
+      limits: LIMITS,
+    });
+    assert.equal(plan.route.allowed_input_tokens, 100_000);
+    assert.ok(
+      plan.conservative_estimate.tokens < plan.route.allowed_input_tokens,
+      'the legacy 2 B/token multibyte diagnostic demonstrates the original false fit',
+    );
+    assert.equal(plan.conservative_launch_input_tokens, 120_512);
+    assert.equal(plan.conservative_launch_fits, false);
+  });
+
   void it('unknown family is loud and no looser than calibrated families', () => {
     const unknownRoute = route(200_000, 'mystery-provider', 'mystery-model');
     const plan = planDelegateAdmission({
       route: unknownRoute,
-      seedSerialized: 'x',
+      childPrompt: 'x',
       childSystemPrompt: '',
       limits: LIMITS,
     });
@@ -260,7 +342,7 @@ void describe('delegate launch admission', () => {
     );
     const oversized = planDelegateAdmission({
       route: unknownRoute,
-      seedSerialized: 'x'.repeat(delegateAllowedInputTokens(unknownRoute)),
+      childPrompt: 'x'.repeat(delegateAllowedInputTokens(unknownRoute)),
       childSystemPrompt: '',
       limits: LIMITS,
     });
@@ -278,7 +360,7 @@ void describe('delegate launch admission', () => {
     const pinnedRoute = route(200_000);
     const plan = planDelegateAdmission({
       route: pinnedRoute,
-      seedSerialized: 'x'.repeat(maxDelegateKnownBytes(pinnedRoute) * 2),
+      childPrompt: 'x'.repeat(maxDelegateKnownBytes(pinnedRoute) * 2),
       childSystemPrompt: '',
       limits: LIMITS,
     });
@@ -317,7 +399,7 @@ void describe('delegate runtime governor', () => {
     const exactBytes = maxKnownTextBytesForTokens({
       family: 'openai-codex',
       allowedInputTokens: allowed,
-      scope: 'delegate',
+      scope: 'delegate_launch',
     });
     const exact = evaluateDelegateRuntimeBudget(
       {

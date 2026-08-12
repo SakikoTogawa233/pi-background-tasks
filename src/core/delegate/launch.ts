@@ -380,7 +380,9 @@ export function buildDelegateChildSystemPrompt(seedPathHint: string): string {
     '',
     'You are inspect-only. You can read, search, and list files. You cannot run shell commands, edit or write files, reach the network, or start further delegates. Do not claim to have done so.',
     '',
-    'If a tool result is replaced by a spill receipt, the complete bytes are on disk and nothing was truncated. Use delegate_read_artifact with an exact offset and length when you genuinely need them.',
+    'If a tool result is replaced by a spill receipt, the complete encoded content is on disk and nothing was truncated. Use delegate_read_artifact with an exact offset and length when you genuinely need lossless base64 bytes, then interpret them using the receipt content_format.',
+    '',
+    'The child controls retained context by spilling tool results before they consume protected final-answer runway. A spill is not a failure. If a finalization-runway notice appears, all investigation tools are finished: stop investigating and answer immediately from the evidence already gathered.',
     '',
     'Finish with a single, direct, self-contained answer to the directive. Your final assistant message is the answer that will be returned to the parent.',
   ].join('\n');
@@ -468,7 +470,7 @@ export function preflightDelegateLaunch(input: DelegatePreflightInput): Delegate
     route: input.route,
     // The seed reaches the child inside its prompt, so the admission forecast
     // must measure the prompt that is actually sent, not the seed alone.
-    seedSerialized: childPrompt,
+    childPrompt,
     childSystemPrompt,
     limits,
   });

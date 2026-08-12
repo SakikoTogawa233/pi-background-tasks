@@ -2,7 +2,7 @@ import { describe, it, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { existsSync } from 'node:fs';
-import { mkdtemp, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DelegateArtifactStore } from '../../src/core/delegate/artifacts.js';
@@ -118,6 +118,23 @@ void describe('delegate artifact store', () => {
     const onDisk = await readFile(join(store.artifactDirAbs, 'seed.json'), 'utf8');
     assert.equal(onDisk, seed, 'persisted seed bytes must equal the bytes handed to the child');
     assert.equal(ref.sha256, createHash('sha256').update(seed, 'utf8').digest('hex'));
+  });
+
+  void it('readCommittedResult advertises only control artifacts that exist', async () => {
+    const { store } = await makeStore();
+    await assert.rejects(
+      store.readCommittedResult(),
+      (error: unknown) => {
+        assert.ok(error instanceof DelegateError);
+        assert.equal(error.code, 'result_unavailable');
+        assert.doesNotMatch(error.describe(), /child\.stdout|child\.stderr/);
+        assert.ok(error.preserved.length > 0);
+        assert.ok(
+          error.preserved.every((path) => existsSync(join(store.artifactDirAbs, path))),
+        );
+        return true;
+      },
+    );
   });
 
   void it('spills an oversized payload and returns a receipt naming its coordinates', async () => {
@@ -312,6 +329,49 @@ void describe('delegate terminal evaluation', () => {
     assert.equal(evaluation.outcome.errorCode, 'child_exited_without_commit');
     assert.match(evaluation.error?.message ?? '', /no committed answer/);
     assert.match(evaluation.error?.describe() ?? '', /Preserved:/);
+    assert.doesNotMatch(
+      evaluation.error?.describe() ?? '',
+      /child\.stderr\.txt|child\.stdout\.txt|Inspect child-terminal\.json/,
+      'terminal reporting must never advertise evidence files that do not exist',
+    );
+  });
+
+  void it('does not advertise a configured merged output path that does not exist', async () => {
+    const { root, store } = await makeStore();
+    const missingAbsPath = join(root, '.pi', 'tasks', 'missing.output');
+    const evaluation = await evaluateDelegateTerminal({
+      artifactDirAbs: store.artifactDirAbs,
+      taskId: TASK_ID,
+      launchNonce: NONCE,
+      seedSha256: SEED_SHA,
+      route: { provider: ROUTE.provider, model: ROUTE.model },
+      taskStatus: 'failed',
+      taskError: 'spawn failed before output creation',
+      taskOutputPath: '.pi/tasks/missing.output',
+      taskOutputAbsPath: missingAbsPath,
+    });
+    assert.doesNotMatch(evaluation.error?.describe() ?? '', /missing\.output/);
+    assert.doesNotMatch(evaluation.error?.describe() ?? '', /Inspect child-terminal\.json/);
+  });
+
+  void it('reports only a real merged task output path as preserved diagnostics', async () => {
+    const { root, store } = await makeStore();
+    const outputAbsPath = join(root, '.pi', 'tasks', 'delegate.output');
+    await mkdir(join(root, '.pi', 'tasks'), { recursive: true });
+    await writeFile(outputAbsPath, 'merged stdout and stderr', 'utf8');
+    const evaluation = await evaluateDelegateTerminal({
+      artifactDirAbs: store.artifactDirAbs,
+      taskId: TASK_ID,
+      launchNonce: NONCE,
+      seedSha256: SEED_SHA,
+      route: { provider: ROUTE.provider, model: ROUTE.model },
+      taskStatus: 'failed',
+      taskError: 'Exited with code 1',
+      taskOutputPath: '.pi/tasks/delegate.output',
+      taskOutputAbsPath: outputAbsPath,
+    });
+    assert.match(evaluation.error?.describe() ?? '', /\.pi\/tasks\/delegate\.output/);
+    assert.doesNotMatch(evaluation.error?.describe() ?? '', /child\.stderr\.txt/);
   });
 
   void it('reports the child-recorded terminal reason when one exists', async () => {

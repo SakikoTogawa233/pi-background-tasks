@@ -186,19 +186,24 @@ Budgets and limits:
 - route capacity is the declared context window minus reserves: `16,384` output, `8,192` framing, `4,096` safety tokens;
 - minimum usable input is `8,192` tokens;
 - launch admission measures the child system prompt plus the exact child prompt bytes that carry the seed;
-- runtime context is measured before each model call;
-- per-tool-result transcript cap: `64 KiB`;
-- aggregate tool-output cap: `64 MiB`;
-- answer capture cap value in the seed: `4 MiB`; current child code carries this limit but does not separately enforce it before packaging;
+- backed large prompts use route-family calibration; the plan also records a provable `1.00 B/token` counter-forecast for every byte class, including multibyte input;
+- `32,768` input tokens are protected for finalization, with an `8,192`-token low-runway trigger;
+- runtime context estimates are advisory and never masquerade as provider context truth;
+- tool results spill above `64 KiB` or earlier when retaining them would consume protected runway;
+- artifact range reads are bounded by remaining inline runway;
+- aggregate raw tool-output cap: `64 MiB`;
+- answer capture cap: `4 MiB`, enforced without committing a prefix;
 - timeout defaults to `1200s`.
 
-Artifacts are under `.pi/delegate/<session-id>-<pid>/<task-id>/` and include `seed.json`, `child-prompt.txt`, `context-omission-ledger.json`, `budget-plan.json`, `manifest.json`, `child-session/`, `spill/`, and later `result.json` / `outcome.json` when produced. Child stdout/stderr are captured through the background task output path; the delegate artifact constants include child stream filenames, but current launch/finalize code does not mirror streams into those delegate files.
+When protected runway becomes low, the child disables tools and is instructed to answer immediately from evidence already gathered. Pi and the provider—not the package estimator—own final live context admission. A genuine provider context rejection remains a loud failure and is never retried on another route.
+
+Artifacts are under `.pi/delegate/<session-id>-<pid>/<task-id>/` and include `seed.json`, `child-prompt.txt`, `context-omission-ledger.json`, `budget-plan.json`, `manifest.json`, `child-session/`, `spill/`, `runtime-budget.json`, and later `result.json` / `outcome.json` when produced. Child stdout/stderr are captured through the background task output path; terminal failures report that real merged output path when it exists and do not claim absent delegate-local stream files.
 
 ## Spilled tool output
 
-Oversized child tool results are written in full to `spill/...` artifacts and replaced in the transcript by receipts carrying path, byte length, SHA-256, tool name, call id, turn sequence, and source call index. The raw oversized payload is not forwarded as a fallback and is not truncated.
+Oversized child tool results are written in full to `spill/...` artifacts and replaced in the transcript by receipts carrying path, byte length, SHA-256, content format, tool name, call id, turn sequence, and source call index. Single text blocks retain their exact UTF-8 bytes; malformed lone-surrogate text fails loudly instead of being substituted. Multi-block and image-bearing results use a structured JSON envelope preserving text, block boundaries, MIME type, and complete base64 image data. The raw oversized payload is not forwarded as a fallback and is not truncated.
 
-Inside the child, `delegate_read_artifact({artifact, offset, length})` reads an exact byte range. It refuses path escape, negative/non-integer offsets, non-positive lengths, and reads past EOF rather than returning a short/clamped range.
+Inside the child, `delegate_read_artifact({artifact, offset, length})` reads an exact byte range and returns those bytes as base64. It refuses path escape, negative/non-integer offsets, non-positive lengths, and reads past EOF rather than returning a short/clamped range. Base64 prevents a range that splits a UTF-8 sequence from being silently changed to replacement characters.
 
 ## Completion
 

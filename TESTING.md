@@ -114,8 +114,7 @@ Two unit gates protect Fusion's persisted artifact bytes, which are a frozen for
 - `tests/unit/delegate-seed.test.ts` — verbatim visible text, thinking/tool-payload
   exclusion, marker-only images, sibling-batch exclusion, byte-identical construction
   across repeated builds and separate processes, and receive-side seed verification.
-- `tests/unit/delegate-budget.test.ts` — reserve arithmetic, boundary accept/reject,
-  and the total runtime governor.
+- `tests/unit/delegate-budget.test.ts` — reserve arithmetic, backed-family versus conservative launch policy, incident byte-class fixture replay, provable multibyte counter-forecast, retained-growth runway, boundary accept/reject, and advisory runtime measurement.
 - `tests/unit/delegate-result-package.test.ts` — hash verification, strict base64,
   encoding refusal for lone surrogates, route-mismatch and missing-attestation
   detection, and explicitly unavailable usage.
@@ -132,8 +131,13 @@ Two unit gates protect Fusion's persisted artifact bytes, which are a frozen for
   resolves the exact pinned provider, retains the package guard, and commits.
 - `tests/scripted-provider/delegate-child-guard.test.ts` — the child guard inside a
   real Pi agent loop: a 2 MB tool result spilled to a hashed artifact with the payload
-  kept out of the transcript, a blocked over-budget model call, exact bounded range
-  reads, route-drift refusal, and turn-limit enforcement.
+  kept out of the transcript, structured preservation of image-bearing results,
+  repeated sub-64-KiB results spilling against protected route runway, BUG-185
+  regression coverage proving advisory estimates do not abort a valid live request,
+  graceful no-tool finalization, byte-exact base64 range reads including a split UTF-8
+  sequence, malformed-Unicode spill refusal, exclusion of intermediate tool-use
+  narration from the committed answer, multi-turn usage accumulation, route-drift
+  refusal, answer capture, and turn-limit enforcement.
 - `tests/sdk/delegate-sdk.test.ts` — the full public loop through the shipped
   entrypoint with a fake child `pi`: launch receipt, projected context actually
   reaching the child, default isolated argv, explicit ambient argv/warning/metadata,

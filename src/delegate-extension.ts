@@ -466,7 +466,7 @@ export function registerDelegateExtension(
         child_session_id: prepared.preflight.childSessionId,
         artifact_dir: prepared.facts.artifactDir,
         seed_sha256: prepared.facts.seedSha256,
-        seed_utf8_bytes: prepared.preflight.plan.seed_utf8_bytes,
+        seed_utf8_bytes: Buffer.byteLength(prepared.preflight.seed.serialized, 'utf8'),
         budget: prepared.facts.budget,
         extension_mode: extensionMode,
         auto_deliver: autoDeliver,
@@ -480,7 +480,8 @@ export function registerDelegateExtension(
             `Route pinned: ${route.qualified_id} (${route.origin}); it is never substituted.`,
             `Child session: ${prepared.preflight.childSessionId} (separate from this session)`,
             `Artifacts: ${prepared.facts.artifactDir}`,
-            `Seed: ${String(prepared.preflight.plan.seed_utf8_bytes)} bytes, sha256 ${prepared.facts.seedSha256}`,
+            `Seed: ${String(Buffer.byteLength(prepared.preflight.seed.serialized, 'utf8'))} bytes, sha256 ${prepared.facts.seedSha256}`,
+            `Child prompt: ${String(prepared.preflight.plan.child_prompt_utf8_bytes)} bytes; launch estimate ${String(prepared.preflight.plan.launch_input_tokens_upper_bound)} / ${String(prepared.preflight.plan.route.allowed_input_tokens)} allowed input tokens; protected retained-growth runway ${String(prepared.preflight.plan.retained_growth_budget_tokens)} tokens.`,
             `Estimator: family ${prepared.facts.budget.family}, source ${prepared.facts.budget.rate_source.source}, rate ${String(prepared.facts.budget.rate_source.effective_rate_bytes_per_token_x100)}/100 B/tok + ${String(prepared.facts.budget.rate_source.affine_f_tokens)} tokens${prepared.facts.budget.rate_source.warning === null ? '' : `; warning: ${prepared.facts.budget.rate_source.warning}`}`,
             `Capability: ${capability} (read/search/list only)`,
             `Extension mode: ${extensionMode}${extensionMode === 'ambient' ? ' — WARNING: arbitrary discovered extension code executes in the child; the tool allowlist does not sandbox it, so inspect-only process isolation is weakened.' : ' (ambient extension discovery disabled)'}`,
@@ -698,6 +699,8 @@ export function registerDelegateExtension(
         route: { provider: facts.route.provider, model: facts.route.model },
         taskStatus: task.status === 'completed' ? 'completed' : task.status,
         taskError: task.error,
+        taskOutputPath: task.outputPath,
+        taskOutputAbsPath: task.outputAbsPath,
       });
 
       if (terminal.error !== undefined || terminal.result === undefined) {

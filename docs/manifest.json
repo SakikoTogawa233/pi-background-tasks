@@ -13,18 +13,17 @@
       "state": "pass"
     },
     {
-      "authored_body_sha256": "sha256:36942d62aa217dad07813c7900291adbc39b1ac859b18d94f606db0ce2e13a9f",
+      "authored_body_sha256": "sha256:810591c82ced086e1622be9b037db88c8a667856580895dc90cd5af54c6e2107",
       "covers_sources": [
         "src/core/context/parent-snapshot.ts",
         "src/core/context/token-budget.ts",
         "src/core/context/visible-conversation-v2.ts"
       ],
       "doc_id": "concepts/context-projection-and-budgeting",
-      "notes": "Reviewed visible conversation transform identity, active-branch snapshotting, omission receipts and hashes, text/tool/thinking/image dispositions, token estimators, calibration, reserves, warnings, and fail-loud no-truncation behavior.",
       "rel": "docs/concepts/context-projection-and-budgeting.md",
       "required": true,
       "reviewer": "gpt-5.5-final-context-projection-reviewer",
-      "state": "pass"
+      "state": "stale-authored-prose"
     },
     {
       "authored_body_sha256": "sha256:72c53dcc104f9b5efa57e38bcb21a4c3c620d5caf1571af82348f94dcafbe941",
@@ -75,7 +74,7 @@
       "state": "stale-authored-prose"
     },
     {
-      "authored_body_sha256": "sha256:bc319ce7e62d2592c71476f950947c8ff011fb74e7f2093b0169f77d59980f18",
+      "authored_body_sha256": "sha256:67fbb232e66bf0b9f4c1a81b54ec5476c0aae929ed0f0777d57601afcac8e08b",
       "covers_sources": [
         "extensions/delegate-child.ts",
         "src/core/delegate/artifacts.ts",
@@ -833,7 +832,7 @@
     "image": "https://raw.githubusercontent.com/ismailsaleekh/pi-background-tasks/main/logo.png",
     "name": "pi-background-tasks",
     "type": "module",
-    "version": "2.3.0"
+    "version": "2.4.0"
   },
   "public_surface_ids": [
     "command:bg",
@@ -1172,7 +1171,7 @@
           ],
           "type": "object"
         },
-        "source": "src/delegate-extension.ts:515"
+        "source": "src/delegate-extension.ts:516"
       },
       {
         "description": "Start a named long-running shell command in the background and return immediately with a task ID and output path. By default, completed, failed, or killed terminal state is delivered automatically as <background-task-notification> and starts a follow-up agent turn; do not sleep or poll merely to wait. Output is written to .pi/tasks and model-visible logs are bounded to 50.0KB.",

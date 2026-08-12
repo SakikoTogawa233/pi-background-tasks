@@ -299,24 +299,148 @@ void describe('delegate child guard in a real agent loop', { concurrency: false 
   );
 
   void it(
-    'blocks a model call that would exceed the route window and reports a typed failure',
+    'preserves image-bearing tool results in a hashed structured spill',
+    { timeout: 30_000 },
+    async () => {
+      const h = await harness({ scenario: 'image-tool-result' });
+      try {
+        await h.session.prompt('inspect the image result and answer');
+        await h.session.agent.waitForIdle();
+        const verified = await readResult(h);
+        assert.equal(verified.answer, 'DELEGATE_FINAL_ANSWER');
+        assert.equal(verified.package.spilled_artifacts.length, 1);
+        const receipt = verified.package.spilled_artifacts[0];
+        assert.ok(receipt);
+        assert.equal(receipt.content_format, 'tool_result_content_json_v1');
+        const raw = await readFile(join(h.artifactDir, receipt.artifact), 'utf8');
+        const envelope = JSON.parse(raw) as Record<string, unknown>;
+        assert.equal(
+          envelope['schema_version'],
+          'pi-background-tasks.delegate-tool-result-content.v1',
+        );
+        const content = envelope['content'];
+        assert.ok(Array.isArray(content));
+        assert.equal(content.length, 2);
+        const image = content[1];
+        assert.ok(typeof image === 'object' && image !== null);
+        assert.equal(Reflect.get(image, 'type'), 'image');
+        assert.equal(Reflect.get(image, 'mimeType'), 'image/png');
+        const data = Reflect.get(image, 'data');
+        assert.equal(typeof data, 'string');
+        assert.equal(
+          Buffer.from(data, 'base64').toString('utf8'),
+          'IMAGE_SENTINEL_BYTES'.repeat(256),
+        );
+      } finally {
+        await dispose(h);
+      }
+    },
+  );
+
+  void it(
+    'rejects malformed Unicode tool text instead of hashing substituted bytes',
     { timeout: 20_000 },
     async () => {
-      // A tiny allowance forces the very first context measurement over budget.
+      const h = await harness({ scenario: 'invalid-unicode-tool-result' });
+      try {
+        await h.session.prompt('exercise malformed Unicode handling');
+        await h.session.agent.waitForIdle();
+        assert.ok(!existsSync(join(h.artifactDir, 'result.json')));
+        const terminal = await readTerminal(h);
+        assert.equal(terminal['code'], 'artifact_spill_failed');
+        assert.match(String(terminal['message']), /without substitution/);
+      } finally {
+        await dispose(h);
+      }
+    },
+  );
+
+  void it(
+    'commits only final clean-stop text and excludes intermediate tool-use narration',
+    { timeout: 20_000 },
+    async () => {
+      const h = await harness({ scenario: 'intermediate-narration' });
+      try {
+        await h.session.prompt('investigate before answering');
+        await h.session.agent.waitForIdle();
+        const verified = await readResult(h);
+        assert.equal(verified.answer, 'DELEGATE_FINAL_ANSWER');
+        assert.equal(verified.package.usage.status, 'observed');
+        if (verified.package.usage.status === 'observed') {
+          assert.equal(verified.package.usage.usage.input, 24);
+          assert.equal(verified.package.usage.usage.output, 12);
+          assert.equal(verified.package.usage.usage.totalTokens, 36);
+          assert.equal(verified.package.usage.usage.cost.total, 0.006);
+        }
+        assert.ok(
+          JSON.stringify(h.session.sessionManager.getEntries()).includes(
+            'INTERMEDIATE_NARRATION_MUST_NOT_BE_COMMITTED',
+          ),
+          'intermediate narration should remain available in the transcript',
+        );
+      } finally {
+        await dispose(h);
+      }
+    },
+  );
+
+  void it(
+    'does not repeat Fusion BUG-185 by aborting a live request from an advisory token estimate',
+    { timeout: 20_000 },
+    async () => {
+      // A one-token advisory allowance guarantees the estimate is over. The
+      // package must request graceful finalization and let Pi/provider capacity
+      // handling proceed rather than self-reporting provider exhaustion.
       const h = await harness({
         scenario: 'plain-answer',
         limits: limits({ allowed_input_tokens: 1 }),
       });
       try {
-        await h.session.prompt('this will not fit');
+        await h.session.prompt('this estimate is deliberately over its advisory allowance');
         await h.session.agent.waitForIdle();
+        const verified = await readResult(h);
+        assert.equal(verified.answer, 'DELEGATE_FINAL_ANSWER');
+        assert.ok(!existsSync(join(h.artifactDir, 'child-terminal.json')));
+        const runtime = JSON.parse(
+          await readFile(join(h.artifactDir, 'runtime-budget.json'), 'utf8'),
+        ) as Record<string, unknown>;
+        assert.equal(runtime['finalization_requested'], true);
+      } finally {
+        await dispose(h);
+      }
+    },
+  );
+
+  void it(
+    'spills repeated sub-64-KiB results against route runway and still completes',
+    { timeout: 30_000 },
+    async () => {
+      const h = await harness({
+        scenario: 'subthreshold-growth',
+        limits: limits({
+          allowed_input_tokens: 120_000,
+          max_turns: 12,
+          max_tool_result_bytes: 64 * 1024,
+        }),
+      });
+      try {
+        await h.session.prompt('perform the repeated reads and then answer');
+        await h.session.agent.waitForIdle();
+        const verified = await readResult(h);
+        assert.equal(verified.answer, 'DELEGATE_FINAL_ANSWER');
+        assert.equal(verified.package.tool_calls, 8);
         assert.ok(
-          !existsSync(join(h.artifactDir, 'result.json')),
-          'a degraded run must never commit a success package',
+          verified.package.spilled_artifacts.length > 0,
+          'route pressure must spill results that are individually below 64 KiB',
         );
-        const terminal = await readTerminal(h);
-        assert.equal(terminal['code'], 'provider_context_budget_exhausted');
-        assert.match(String(terminal['message']), /input tokens against a 1-token allowance/);
+        assert.ok(
+          verified.package.spilled_artifacts.every((receipt) => receipt.byte_length === 32 * 1024),
+        );
+        const runtime = JSON.parse(
+          await readFile(join(h.artifactDir, 'runtime-budget.json'), 'utf8'),
+        ) as Record<string, unknown>;
+        assert.ok(Number(runtime['context_pressure_spill_bytes']) > 0);
+        assert.ok(Number(runtime['retained_tool_result_bytes']) < 8 * 32 * 1024);
       } finally {
         await dispose(h);
       }
@@ -334,13 +458,38 @@ void describe('delegate child guard in a real agent loop', { concurrency: false 
         const entries: readonly unknown[] = h.session.sessionManager.getEntries();
         const serialized = JSON.stringify(entries);
         assert.ok(
-          serialized.includes('RANGEMARKER'),
-          'the exact requested range must be returned to the child',
+          serialized.includes('UkFOR0VNQVJLRVI='),
+          'the exact requested range must be returned as lossless base64',
         );
         assert.ok(
           serialized.includes('refused rather than silently shortened'),
           'an over-long range read must fail loudly rather than return a short read',
         );
+      } finally {
+        await dispose(h);
+      }
+    },
+  );
+
+  void it(
+    'preserves a byte range that splits a multibyte UTF-8 sequence',
+    { timeout: 30_000 },
+    async () => {
+      const h = await harness({
+        scenario: 'split-utf8-range',
+        limits: limits({ max_tool_result_bytes: 512 }),
+      });
+      try {
+        await h.session.prompt('read exactly the second byte of the first UTF-8 sequence');
+        await h.session.agent.waitForIdle();
+        const serialized = JSON.stringify(h.session.sessionManager.getEntries());
+        assert.ok(
+          serialized.includes('qQ=='),
+          'the isolated 0xA9 continuation byte must survive as exact base64',
+        );
+        assert.ok(!serialized.includes('�'), 'the exact byte must never become U+FFFD');
+        const verified = await readResult(h);
+        assert.equal(verified.answer, 'DELEGATE_FINAL_ANSWER');
       } finally {
         await dispose(h);
       }
@@ -403,6 +552,23 @@ void describe('delegate child guard in a real agent loop', { concurrency: false 
     },
   );
 
+  void it('enforces the declared answer capture contract without committing a prefix', { timeout: 20_000 }, async () => {
+    const h = await harness({
+      scenario: 'plain-answer',
+      limits: limits({ max_answer_bytes: 8 }),
+    });
+    try {
+      await h.session.prompt('produce an answer larger than the test capture contract');
+      await h.session.agent.waitForIdle();
+      assert.ok(!existsSync(join(h.artifactDir, 'result.json')));
+      const terminal = await readTerminal(h);
+      assert.equal(terminal['code'], 'child_capture_limit');
+      assert.match(String(terminal['message']), /no prefix is committed/);
+    } finally {
+      await dispose(h);
+    }
+  });
+
   void it('never commits a whitespace-only answer', { timeout: 20_000 }, async () => {
     const h = await harness({ scenario: 'whitespace-answer' });
     try {
@@ -417,24 +583,19 @@ void describe('delegate child guard in a real agent loop', { concurrency: false 
   });
 
   void it(
-    'fails closed when the context guard itself throws, never dispatching unguarded content',
+    'turns zero advisory runway into a no-tool finalization rather than a false context failure',
     { timeout: 20_000 },
     async () => {
-      // A negative allowance makes the governor refuse on the very first call;
-      // combined with the fail-closed catch, no unguarded set can be dispatched.
       const h = await harness({
         scenario: 'guard-throw',
         limits: limits({ allowed_input_tokens: 0 }),
       });
       try {
-        await h.session.prompt('this must not reach the provider unguarded');
+        await h.session.prompt('finalize without treating an estimate as provider truth');
         await h.session.agent.waitForIdle();
-        assert.ok(
-          !existsSync(join(h.artifactDir, 'result.json')),
-          'a suppressed run must never commit a success package',
-        );
-        const terminal = await readTerminal(h);
-        assert.equal(terminal['code'], 'provider_context_budget_exhausted');
+        const verified = await readResult(h);
+        assert.equal(verified.answer, 'GUARD_THROW_SENTINEL_ANSWER');
+        assert.ok(!existsSync(join(h.artifactDir, 'child-terminal.json')));
       } finally {
         await dispose(h);
       }
