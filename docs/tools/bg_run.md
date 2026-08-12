@@ -97,6 +97,8 @@ Legacy argument preparation can derive a missing `name` from `description` or `c
 
 Use for long-running tests, builds, servers, watchers, sleeps, and child agent work. Do not use normal foreground shell tools for commands expected to outlive the current turn.
 
+For an Anthropic child `pi`, keep normal extension discovery enabled. Do not pass `--no-extensions` unless the command also explicitly loads this package's `extensions/anthropic-attribution.ts` with `-e`/`--extension`.
+
 ## Defaults
 
 - `notifyOnCompletion`: `true`.
@@ -154,6 +156,8 @@ Creates `.pi/tasks/<session-id>-<pid>/<task-id>.output` and `.json`. If `isAgent
 
 The command runs through the platform shell and is not sandboxed. Use `isAgent:true` only to request Pi-agent telemetry wrapping; setting it does not make execution safer. Model-visible logs are bounded and point to the full output path.
 
+`bg_run` does not parse or repair arbitrary child `pi` argv. An Anthropic command that uses `--no-extensions` without explicitly loading the attribution extension bypasses the package's attribution/sanitization contract and is unsupported.
+
 ## Related docs
 
 - [Completion delivery](../concepts/completion-delivery.md)
@@ -162,6 +166,7 @@ The command runs through the platform shell and is not sandboxed. Use `isAgent:t
 - [`bg_kill`](bg_kill.md)
 - [`/bg`](../commands/bg.md)
 - [Background task runtime](../subsystems/background-task-runtime.md)
+- [Anthropic attribution](../subsystems/anthropic-attribution.md)
 
 ## Source ownership/reference
 

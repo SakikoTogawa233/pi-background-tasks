@@ -27,7 +27,7 @@
 | Fact | Value |
 | --- | --- |
 | Package | `pi-background-tasks` |
-| Version | `2.2.0` |
+| Version | `2.2.1` |
 | Node engine | `>=22.19.0` |
 | Pi entrypoints | `./extensions/anthropic-attribution.ts`, `./extensions/background-tasks.ts` |
 | Package image | [logo.png](https://raw.githubusercontent.com/ismailsaleekh/pi-background-tasks/main/logo.png) |
@@ -141,7 +141,7 @@ More walkthrough detail: [Getting started](docs/getting-started.md).
 |---|---:|---|---|---|---|
 | Ordinary foreground Pi work | Yes | Full current session | Whatever tools the active session has | Short reads/edits/commands where you want live back-and-forth | Pi waits for the work before responding. |
 | `/bg` | No | No model child unless your command starts one | Runs your shell command; **not sandboxed** | User-started local commands, servers, watches | UI notification and footer tracking; `/bg` uses notification-only by default. |
-| `bg_run` | No | No model child unless command starts one | Runs your shell command; **not sandboxed** | Agent-started long commands | Returns task id/output path; defaults to notification plus automatic follow-up wake. |
+| `bg_run` | No | No model child unless command starts one | Runs your shell command; **not sandboxed** | Agent-started long commands | Returns task id/output path; defaults to notification plus automatic follow-up wake. For an Anthropic child `pi`, do not pass `--no-extensions` unless you also explicitly load this package's attribution extension. |
 | `bg_delegate` + `bg_result` | No launch; retrieval is point-in-time | Frozen visible conversation projection | Inspect-only child: read, grep, find, ls, artifact read; no shell, writes, network, recursion | Context-aware read-only investigation while parent continues | Launch returns immediately; result is committed by child and hash-verified by retrieval. |
 | `bg_run_pi_attested` | No | Prompt passed to one direct child Pi run | Direct `pi --mode json`; no shell command; writes requested report path | Evidence-oriented direct Pi task | Emits local attestation sidecar only after successful completion. |
 | `/fusion` / `fusion_reason` | Background launch; point-in-time `bg_result` retrieval | Versioned conversation projection plus prompt | Candidates/evaluator/repair/merger run with no tools | Self-contained reasoning and synthesis | Returns after durable preflight; three candidates → blind evaluator → optional bounded repair → merger. |
@@ -165,6 +165,8 @@ See [Choose a workflow](docs/choose-a-workflow.md) for a decision tree and trade
 ```
 
 Expected: returns immediately with a task id, PID when available, and `.pi/tasks/...output`. The command runs as an ordinary local shell command with your user permissions; it can invoke networked tools or paid services if the command itself does so.
+
+If `bg_run` starts an Anthropic child `pi`, keep normal extension discovery enabled. Do not add `--no-extensions` unless the command also supplies this package's `extensions/anthropic-attribution.ts` via `-e`/`--extension`; `bg_run` does not rewrite arbitrary shell argv.
 
 ### `bg_delegate`: context-seeded read-only investigation
 

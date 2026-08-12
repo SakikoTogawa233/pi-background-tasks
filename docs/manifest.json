@@ -27,7 +27,7 @@
       "state": "pass"
     },
     {
-      "authored_body_sha256": "sha256:f4268bb078855d3563ec4bfa249f3aabc67fe855e40dd030d7fe71e81cb03782",
+      "authored_body_sha256": "sha256:72c53dcc104f9b5efa57e38bcb21a4c3c620d5caf1571af82348f94dcafbe941",
       "covers_sources": [
         "extensions/anthropic-attribution.ts",
         "src/core/anthropic-attribution-path.ts",
@@ -833,7 +833,7 @@
     "image": "https://raw.githubusercontent.com/ismailsaleekh/pi-background-tasks/main/logo.png",
     "name": "pi-background-tasks",
     "type": "module",
-    "version": "2.2.0"
+    "version": "2.2.1"
   },
   "public_surface_ids": [
     "command:bg",

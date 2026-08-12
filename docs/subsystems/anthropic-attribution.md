@@ -48,7 +48,7 @@ Ambient discovery is insufficient for child paths that use `--no-extensions`. `r
 
 Non-Anthropic child argv does not resolve or add this extension. Missing package extension bytes fail before child creation; no route substitution or sanitizer fallback is attempted.
 
-Arbitrary shell commands started through `bg_run` are not rewritten. A child `pi` command normally receives installed extensions through Pi discovery, but callers can explicitly disable that discovery; the package does not parse and override arbitrary shell authority.
+Arbitrary shell commands started through `bg_run` are not rewritten. An Anthropic child `pi` launched this way must keep normal extension discovery enabled. If the command deliberately uses `--no-extensions`, it must also explicitly load this package's `extensions/anthropic-attribution.ts` with `-e`/`--extension`; otherwise attribution and sanitization are bypassed and the launch is unsupported. The package does not parse or override arbitrary shell authority.
 
 ## Cache retention
 
