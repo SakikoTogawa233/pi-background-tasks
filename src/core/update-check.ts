@@ -66,6 +66,11 @@ export function parsePackageInfo(payload: unknown): PackageInfo {
 
 const realFetch: FetchLike = (url, init) => fetch(url, init);
 
+/** Duck-type AbortError because Node versions differ on DOMException inheritance. */
+function isAbortError(error: unknown): boolean {
+  return typeof error === 'object' && error !== null && Reflect.get(error, 'name') === 'AbortError';
+}
+
 /** Time-boxed, never-throwing lookup of the latest published version of a package. */
 export async function fetchLatestVersion(
   options: FetchLatestVersionOptions,
@@ -74,7 +79,11 @@ export async function fetchLatestVersion(
   const timeoutMs = options.timeoutMs ?? DEFAULT_UPDATE_TIMEOUT_MS;
   const doFetch = options.fetchImpl ?? realFetch;
   const controller = new AbortController();
+  let timedOut = false;
   const timer = setTimeout(() => {
+    // Ownership matters: a fetch implementation may reject with AbortError for
+    // another reason. Only the abort initiated by this timer is an expected skip.
+    timedOut = true;
     controller.abort();
   }, timeoutMs);
   try {
@@ -84,7 +93,10 @@ export async function fetchLatestVersion(
     const payload = await response.json();
     return parseLatestVersionPayload(payload);
   } catch (error) {
-    if (options.onError) options.onError(error instanceof Error ? error : new Error(String(error)));
+    const expectedTimeoutAbort = timedOut && controller.signal.aborted && isAbortError(error);
+    if (options.onError && !expectedTimeoutAbort) {
+      options.onError(error instanceof Error ? error : new Error(String(error)));
+    }
     return undefined;
   } finally {
     clearTimeout(timer);
