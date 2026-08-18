@@ -1,3 +1,4 @@
+import { join } from 'node:path';
 import type {
   ExtensionAPI,
   ExtensionCommandContext,
@@ -20,6 +21,7 @@ import {
   normalizeMaxBytes,
   normalizeTaskName,
   parseBgCommandArgs,
+  sanitizePathSegment,
   taskDisplayName,
   truncateChars,
   type BgKillDetails,
@@ -38,6 +40,11 @@ import {
 } from './core/update-check.js';
 import { BackgroundTaskRegistry } from './core/registry.js';
 import {
+  createForegroundBashExecutor,
+  registerForegroundBashFeature,
+} from './core/foreground-bash.js';
+import { runWindowsTaskkill } from './core/windows-taskkill.js';
+import {
   installBackgroundTaskExtensionApi,
   type BackgroundTaskExtensionService,
 } from './core/extension-api.js';
@@ -53,8 +60,8 @@ import { registerDelegateExtension } from './delegate-extension.js';
  * Project-local Pi background task manager.
  *
  * Scope:
- * - Explicit background shell jobs only: /bg and bg_run spawn commands directly.
- * - No Ctrl+B support for backgrounding an already-running built-in bash tool.
+ * - Explicit background shell jobs: /bg and bg_run spawn commands directly.
+ * - Foreground bash jobs can be adopted through Ctrl+B or total-runtime timeout.
  * - No detached/restart reattachment: live child processes belong to this Pi
  *   extension runtime and are killed on session shutdown/reload.
  */
@@ -228,6 +235,43 @@ export default function backgroundTasksExtension(pi: ExtensionAPI): void {
     getContext: () => currentCtx,
     isShuttingDown: () => registry.isShuttingDown(),
   });
+  const foregroundBash = createForegroundBashExecutor({
+    adoptTask: (input) => {
+      const ctx = input.context.extensionContext;
+      if (ctx === undefined) throw new Error('Foreground bash adoption context is missing');
+      currentCtx = ctx;
+      const task = registry.adoptRunningChild(ctx, input.child, {
+        command: input.command,
+        startedAt: input.startedAt,
+        outputPath: input.outputPath,
+        notifyOnCompletion: input.notifyOnCompletion,
+        triggerOnCompletion: input.triggerOnCompletion,
+      });
+      return { taskId: task.id };
+    },
+    sendMessage: (message) => {
+      pi.sendMessage(message, { deliverAs: 'nextTurn', triggerTurn: false });
+    },
+    outputPathForCall: (toolCallId, sequence) =>
+      join(
+        '.pi',
+        'tasks',
+        `session-${String(process.pid)}-${String(process.pid)}`,
+        `foreground-${String(sequence)}-${sanitizePathSegment(toolCallId)}.output`,
+      ),
+    killProcessGroup: async (pid, signal) => {
+      if (process.platform === 'win32') {
+        await runWindowsTaskkill(pid, 'terminate', { env: process.env });
+        return;
+      }
+      process.kill(-pid, signal);
+    },
+    notify: (text, level, context) => {
+      const ctx = context.extensionContext;
+      if (ctx?.hasUI) ctx.ui.notify(text, level);
+    },
+  });
+  registerForegroundBashFeature(pi, foregroundBash);
 
   registerFusionExtension(pi, {
     startManagedTask: async (ctx, options) => {
