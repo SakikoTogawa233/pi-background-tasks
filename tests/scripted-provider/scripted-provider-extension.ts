@@ -30,6 +30,8 @@ type Scenario =
   | 'wake-false'
   | 'failed-follow-up'
   | 'display-only-bg'
+  | 'foreground-bash-follow-up'
+  | 'foreground-bash-manual-pty'
   | 'json-tool-telemetry'
   | 'fusion-reason';
 type ScriptedStopReason = 'stop' | 'length' | 'toolUse';
@@ -54,6 +56,8 @@ function parseScenario(value: string | undefined): Scenario {
     value === 'wake-false' ||
     value === 'failed-follow-up' ||
     value === 'display-only-bg' ||
+    value === 'foreground-bash-follow-up' ||
+    value === 'foreground-bash-manual-pty' ||
     value === 'json-tool-telemetry' ||
     value === 'fusion-reason'
   )
@@ -197,6 +201,44 @@ function responseFor(
       );
     }
     return assistant([text('JSON tool telemetry complete.')], 'stop');
+  }
+
+  if (
+    scenario === 'foreground-bash-follow-up' ||
+    scenario === 'foreground-bash-manual-pty'
+  ) {
+    if (callCount === 1) {
+      const manual = scenario === 'foreground-bash-manual-pty';
+      const marker = manual ? 'FG_MANUAL_RUNNING_SENTINEL' : 'FG_AUTO_RUNNING_SENTINEL';
+      const completed = manual ? 'FG_MANUAL_COMPLETED' : 'FG_AUTO_COMPLETED';
+      const command = shellNode(
+        `console.log(${JSON.stringify(marker)}); setTimeout(() => console.log(${JSON.stringify(completed)}), ${manual ? '2400' : '2200'});`,
+      );
+      return assistant(
+        [
+          toolCall(
+            'bash',
+            manual ? { command } : { command, timeout: 1 },
+            manual ? 'call-foreground-bash-manual' : 'call-foreground-bash-auto',
+          ),
+        ],
+        'toolUse',
+      );
+    }
+    if (callCount === 2) {
+      return assistant(
+        [text('Foreground bash returned an early background handoff receipt; yielding without polling.')],
+        'stop',
+      );
+    }
+    return assistant(
+      [
+        text(
+          `Foreground bash completion follow-up observed with task id, command, output path, and terminal status (${scenario}).`,
+        ),
+      ],
+      'stop',
+    );
   }
 
   if (scenario === 'bg-run-follow-up') {
