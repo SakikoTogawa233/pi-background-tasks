@@ -1,8 +1,8 @@
 import { spawn as nodeSpawn, type SpawnOptions } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
-import { createWriteStream, existsSync } from 'node:fs';
+import { createWriteStream, existsSync, mkdirSync, statSync, writeFileSync } from 'node:fs';
 import { mkdir, realpath, writeFile } from 'node:fs/promises';
-import { join } from 'node:path';
+import { isAbsolute, join } from 'node:path';
 import type { Api, Model } from '@earendil-works/pi-ai';
 import type { ExtensionContext } from '@earendil-works/pi-coding-agent';
 import { formatSize } from '@earendil-works/pi-coding-agent';
@@ -147,6 +147,16 @@ export type CompletionNotificationSender = (
   message: CompletionNotificationMessage,
   options: CompletionNotificationOptions,
 ) => void;
+
+export interface AdoptRunningChildOptions {
+  command: string;
+  name?: string | undefined;
+  startedAt?: number | undefined;
+  notifyOnCompletion?: boolean | undefined;
+  triggerOnCompletion?: boolean | undefined;
+  /** Existing foreground output file whose append ownership transfers to the registry. */
+  outputPath?: string | undefined;
+}
 
 export interface BackgroundTaskRegistryOptions {
   onChange?: () => void;
@@ -777,15 +787,130 @@ export class BackgroundTaskRegistry {
     return snapshot(task);
   }
 
-  async ensureRuntimeDir(ctx: BackgroundTaskContext): Promise<RuntimeDir> {
-    if (this.runtimeDir) return this.runtimeDir;
+  private runtimeDirForContext(ctx: BackgroundTaskContext): RuntimeDir {
     const sessionId = sanitizePathSegment(ctx.sessionId ?? `session-${String(process.pid)}`);
     const runId = `${sessionId}-${String(process.pid)}`;
-    const runtimeDirAbs = join(ctx.cwd, '.pi', 'tasks', runId);
-    const runtimeDirDisplay = join('.pi', 'tasks', runId);
-    await mkdir(runtimeDirAbs, { recursive: true });
-    this.runtimeDir = { abs: runtimeDirAbs, display: runtimeDirDisplay };
-    return this.runtimeDir;
+    return {
+      abs: join(ctx.cwd, '.pi', 'tasks', runId),
+      display: join('.pi', 'tasks', runId),
+    };
+  }
+
+  private ensureRuntimeDirSync(ctx: BackgroundTaskContext): RuntimeDir {
+    if (this.runtimeDir) return this.runtimeDir;
+    const dir = this.runtimeDirForContext(ctx);
+    mkdirSync(dir.abs, { recursive: true });
+    this.runtimeDir = dir;
+    return dir;
+  }
+
+  async ensureRuntimeDir(ctx: BackgroundTaskContext): Promise<RuntimeDir> {
+    if (this.runtimeDir) return this.runtimeDir;
+    const dir = this.runtimeDirForContext(ctx);
+    await mkdir(dir.abs, { recursive: true });
+    this.runtimeDir = dir;
+    return dir;
+  }
+
+  adoptRunningChild(
+    ctx: BackgroundTaskContext,
+    child: BackgroundTaskChildProcess,
+    options: AdoptRunningChildOptions,
+  ): BgTask {
+    const normalizedCommand = options.command.trim();
+    if (!normalizedCommand) throw new Error('Background command is empty');
+    if (this.shuttingDown)
+      throw new Error('Cannot adopt a background task while Pi is shutting down');
+
+    const dir = this.ensureRuntimeDirSync(ctx);
+    const id = this.makeTaskIdFn();
+    const defaultOutputAbsPath = join(dir.abs, `${id}.output`);
+    const outputAbsPath =
+      options.outputPath === undefined
+        ? defaultOutputAbsPath
+        : isAbsolute(options.outputPath)
+          ? options.outputPath
+          : join(ctx.cwd, options.outputPath);
+    const outputPath = options.outputPath ?? join(dir.display, `${id}.output`);
+    writeFileSync(outputAbsPath, '', { flag: 'a', encoding: 'utf8' });
+    const task: BgTask = {
+      id,
+      name: normalizeTaskName(options.name) ?? deriveTaskNameFromCommand(normalizedCommand),
+      command: normalizedCommand,
+      status: 'running',
+      outputPath,
+      outputAbsPath,
+      metadataAbsPath: join(dir.abs, `${id}.json`),
+      cwd: ctx.cwd,
+      startTime: options.startedAt ?? this.now(),
+      exitCode: undefined,
+      pid: child.pid,
+      bytesWritten: statSync(outputAbsPath).size,
+      isAgent: false,
+      notified: false,
+      notifyOnCompletion: options.notifyOnCompletion ?? true,
+      triggerOnCompletion: options.triggerOnCompletion ?? true,
+      child,
+      waiters: [],
+    };
+    this.tasks.set(id, task);
+
+    const stream = createWriteStream(outputAbsPath, { flags: 'a', encoding: 'utf8' });
+    task.stream = stream;
+    stream.on('error', (error) => {
+      task.error = `Output file write failed: ${error.message}`;
+      if (task.status === 'running') {
+        task.killKind = 'output_cap';
+        try {
+          this.requestKill(task, 'SIGTERM');
+        } catch (killError) {
+          void this.finalizeTask(
+            task,
+            'failed',
+            null,
+            undefined,
+            `${task.error}; kill failed: ${BackgroundTaskRegistry.errorMessage(killError)}`,
+          );
+        }
+      }
+    });
+
+    child.stdout?.on('data', (data) => {
+      this.appendChildOutput(task, data, 'stdout');
+    });
+    child.stderr?.on('data', (data) => {
+      this.appendChildOutput(task, data, 'stderr');
+    });
+    child.on('error', (error) => {
+      this.writeNotice(task, `\n[background task child error: ${error.message}]\n`);
+      void this.finalizeTask(task, 'failed', null, undefined, error.message);
+    });
+    child.on('close', (code, signalName) => {
+      let status: TaskStatus;
+      let error: string | undefined;
+      if (task.killKind === 'user' || task.killKind === 'shutdown') {
+        status = 'killed';
+      } else if (task.killKind === 'output_cap') {
+        status = 'failed';
+        error = task.error ?? `Output exceeded cap of ${formatSize(this.maxOutputBytes)}`;
+      } else if ((code ?? 0) === 0) {
+        status = 'completed';
+      } else {
+        status = 'failed';
+        const exitCode = code === null ? 'null' : String(code);
+        error = `Exited with code ${exitCode}${signalName ? ` (${signalName})` : ''}`;
+      }
+      void this.finalizeTask(task, status, code, signalName, error);
+    });
+
+    void this.writeMetadata(task).catch((error: unknown) => {
+      this.logger.error(
+        `[background-tasks] failed to write initial metadata for adopted task ${task.id}:`,
+        error,
+      );
+    });
+    this.onChange();
+    return task;
   }
 
   async startTask(
