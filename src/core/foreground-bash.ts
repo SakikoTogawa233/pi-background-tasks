@@ -4,7 +4,7 @@ import { dirname, isAbsolute, resolve } from 'node:path';
 import {
   DEFAULT_MAX_BYTES,
   DEFAULT_MAX_LINES,
-  createBashTool,
+  createBashToolDefinition,
   formatSize,
   truncateTail,
   type BashToolDetails,
@@ -13,6 +13,7 @@ import {
   type ExtensionContext,
 } from '@earendil-works/pi-coding-agent';
 import type { KeyId } from '@earendil-works/pi-tui';
+import { Type } from 'typebox';
 
 export const DEFAULT_AUTO_BACKGROUND_TIMEOUT_MS = 120_000;
 export const FAST_PATH_GRACE_MS = 2_000;
@@ -606,10 +607,20 @@ export function registerForegroundBashFeature(
   pi: Pick<ExtensionAPI, 'registerTool' | 'registerShortcut'>,
   controller: ForegroundBashController,
 ): void {
-  const builtInBash = createBashTool(process.cwd());
+  const builtInBash = createBashToolDefinition(process.cwd());
   pi.registerTool({
-    ...builtInBash,
-    description: `${builtInBash.description} Commands still running after 120 seconds are moved into the background task registry; press Ctrl+B to background the most recent active command sooner.`,
+    name: 'bash',
+    label: 'bash',
+    description:
+      'Execute a bash command in the current working directory. Returns stdout and stderr. Output is truncated to last 2000 lines or 50KB (whichever is hit first). If truncated, full output is saved to a temp file. Optionally provide a timeout in seconds. Commands still running after 120 seconds are moved into the background task registry; press Ctrl+B to background the most recent active command sooner.',
+    promptSnippet: 'Execute bash commands (ls, grep, find, etc.)',
+    promptGuidelines: ['Inspect PI_* environment variables for current model and session details.'],
+    parameters: Type.Object({
+      command: Type.String({ description: 'Bash command to execute' }),
+      timeout: Type.Optional(
+        Type.Number({ description: 'Timeout in seconds (optional, no default timeout)' }),
+      ),
+    }),
     execute(toolCallId, params, signal, onUpdate, ctx) {
       return controller.execute(
         params,
@@ -624,6 +635,8 @@ export function registerForegroundBashFeature(
         onUpdate === undefined ? undefined : (result) => onUpdate(result),
       );
     },
+    renderCall: builtInBash.renderCall!,
+    renderResult: builtInBash.renderResult!,
   });
   pi.registerShortcut('ctrl+b' satisfies KeyId, {
     description: 'Move the most recent active foreground bash command to the background',
