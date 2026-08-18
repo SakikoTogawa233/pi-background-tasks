@@ -6,8 +6,10 @@
  *
  * 1. The package overrides the built-in `bash` tool so a long-running
  *    foreground command is automatically moved to the background after
- *    `DEFAULT_AUTO_BACKGROUND_TIMEOUT_MS` (120_000 ms). The model may override
- *    the threshold per call with a `timeout` parameter (seconds).
+ *    `DEFAULT_AUTO_BACKGROUND_TIMEOUT_MS` (120_000 ms) of total runtime measured
+ *    from child spawn. The 2s fast path controls only streaming and the Ctrl+B
+ *    hint. The model may override the threshold per call with a `timeout`
+ *    parameter (seconds).
  * 2. `Ctrl+B` manually backgrounds the currently running foreground bash
  *    process via a signal-based handoff (`triggerBackground()`), resolving the
  *    tool call immediately while the process keeps running.
@@ -34,11 +36,13 @@
  *       controller.execute(params, ctx, signal?, onUpdate?): Promise<ToolResult>
  *       controller.triggerBackground(): boolean
  *       controller.hasForegroundProcess(): boolean
+ *   - background handoff messages use customType `foreground-bash-backgrounded`
+ *     with details { taskId, command, outputPath, reason, timeoutSeconds }
  *   - registerForegroundBashFeature(pi, controller): void
  *       registers the `bash` tool override and the `ctrl+b` shortcut
  */
 import assert from 'node:assert/strict';
-import { EventEmitter } from 'node:events';
+import { EventEmitter, getEventListeners } from 'node:events';
 import { describe, it, mock } from 'node:test';
 import {
   BACKGROUND_HINT_DELAY_MS,
@@ -199,6 +203,16 @@ function enableMockTimers(): void {
   mock.timers.enable({ apis: ['setTimeout', 'setInterval', 'Date'], now: 1_000 });
 }
 
+function assertExecutorListenersRemoved(child: FakeBashChild, signal?: AbortSignal): void {
+  assert.equal(child.listenerCount('error'), 0, 'child error listener must be removed');
+  assert.equal(child.listenerCount('close'), 0, 'child close listener must be removed');
+  assert.equal(child.stdout.listenerCount('data'), 0, 'stdout listener must be removed');
+  assert.equal(child.stderr.listenerCount('data'), 0, 'stderr listener must be removed');
+  if (signal !== undefined) {
+    assert.equal(getEventListeners(signal, 'abort').length, 0, 'abort listener must be removed');
+  }
+}
+
 // ─── Constants ──────────────────────────────────────────────────────
 
 void describe('foreground-bash constants', () => {
@@ -301,6 +315,11 @@ void describe('executor fast path', () => {
       await assert.rejects(pending, /boom|code 3/);
       assert.equal(harness.adopted.length, 0);
       assert.equal(harness.messages.length, 0);
+      assertExecutorListenersRemoved(spawnAt(harness, 0).child);
+      mock.timers.tick(DEFAULT_AUTO_BACKGROUND_TIMEOUT_MS * 2);
+      await flush();
+      assert.equal(harness.notifications.length, 0);
+      assert.equal(harness.groupKills.length, 0);
     } finally {
       mock.timers.reset();
     }
@@ -341,6 +360,11 @@ void describe('executor fast path', () => {
       spawnAt(harness, 0).child.fail(new Error('spawn bash ENOENT'));
       await assert.rejects(pending, /ENOENT/);
       assert.equal(harness.adopted.length, 0);
+      assertExecutorListenersRemoved(spawnAt(harness, 0).child);
+      mock.timers.tick(DEFAULT_AUTO_BACKGROUND_TIMEOUT_MS * 2);
+      await flush();
+      assert.equal(harness.notifications.length, 0);
+      assert.equal(harness.groupKills.length, 0);
     } finally {
       mock.timers.reset();
     }
@@ -396,7 +420,10 @@ void describe('executor auto-background', () => {
       await flush();
       assert.equal(harness.adopted.length, 0, 'must not background during the fast-path grace');
 
-      mock.timers.tick(DEFAULT_AUTO_BACKGROUND_TIMEOUT_MS);
+      mock.timers.tick(DEFAULT_AUTO_BACKGROUND_TIMEOUT_MS - FAST_PATH_GRACE_MS - 1);
+      await flush();
+      assert.equal(harness.adopted.length, 0, 'must not background before total t=120s');
+      mock.timers.tick(1);
       await flush();
       const result = await pending;
 
@@ -406,6 +433,7 @@ void describe('executor auto-background', () => {
       assert.equal(adoptAt(harness, 0).command, 'npm test');
       assert.equal(adoptAt(harness, 0).outputPath, '/tmp/fg-bash-test/call-auto.output');
       assert.equal(adoptAt(harness, 0).child, spawnAt(harness, 0).child);
+      assert.equal(adoptAt(harness, 0).startedAt, 1_000, 'runtime starts when the child spawns');
       assert.equal(harness.groupKills.length, 0, 'backgrounded processes must not be killed');
       assert.equal(executor.hasForegroundProcess(), false);
     } finally {
@@ -423,13 +451,22 @@ void describe('executor auto-background', () => {
         { toolCallId: 'call-notify', cwd: '/work' },
       );
       await flush();
-      mock.timers.tick(DEFAULT_AUTO_BACKGROUND_TIMEOUT_MS + FAST_PATH_GRACE_MS);
+      mock.timers.tick(DEFAULT_AUTO_BACKGROUND_TIMEOUT_MS);
       await flush();
       await pending;
 
       assert.equal(harness.messages.length, 1);
+      assert.equal(messageAt(harness, 0).message.customType, 'foreground-bash-backgrounded');
+      assert.equal(messageAt(harness, 0).message.display, true);
       assert.equal(messageAt(harness, 0).options.deliverAs, 'followUp');
       assert.equal(messageAt(harness, 0).options.triggerTurn, true);
+      assert.deepEqual(messageAt(harness, 0).message.details, {
+        taskId: 'task-001',
+        command: 'npm test',
+        outputPath: '/tmp/fg-bash-test/call-notify.output',
+        reason: 'timeout',
+        timeoutSeconds: 120,
+      });
       assert.match(messageAt(harness, 0).message.content, /backgrounded/i);
       assert.match(messageAt(harness, 0).message.content, /task-001/);
       assert.match(messageAt(harness, 0).message.content, /npm test/);
@@ -453,14 +490,77 @@ void describe('executor auto-background', () => {
         { toolCallId: 'call-custom', cwd: '/work' },
       );
       await flush();
-      mock.timers.tick(FAST_PATH_GRACE_MS + 4_000);
+      mock.timers.tick(4_999);
       await flush();
-      assert.equal(harness.adopted.length, 0, 'must not background before the explicit timeout');
-      mock.timers.tick(1_000);
+      assert.equal(harness.adopted.length, 0, 'must not background before total t=5s');
+      mock.timers.tick(1);
       await flush();
       const result = await pending;
       assert.match(resultText(result), /backgrounded/i);
       assert.equal(harness.adopted.length, 1);
+      assert.deepEqual(messageAt(harness, 0).message.details, {
+        taskId: 'task-001',
+        command: 'npm test',
+        outputPath: '/tmp/fg-bash-test/call-custom.output',
+        reason: 'timeout',
+        timeoutSeconds: 5,
+      });
+    } finally {
+      mock.timers.reset();
+    }
+  });
+
+  void it('lets an explicit timeout expire before the 2s streaming grace', async () => {
+    enableMockTimers();
+    try {
+      const harness = createHarness();
+      const executor = createForegroundBashExecutor(harness.deps);
+      const pending = executor.execute(
+        { command: 'npm test', timeout: 1 },
+        { toolCallId: 'call-short-timeout', cwd: '/work' },
+      );
+      await flush();
+      mock.timers.tick(999);
+      await flush();
+      assert.equal(harness.adopted.length, 0);
+      mock.timers.tick(1);
+      await flush();
+      const result = await pending;
+
+      assert.match(resultText(result), /backgrounded/i);
+      assert.equal(harness.adopted.length, 1);
+      assert.equal(
+        harness.notifications.filter((entry) => /ctrl\+b/i.test(entry.text)).length,
+        0,
+        'the hint timer is independent and must not delay auto-backgrounding',
+      );
+    } finally {
+      mock.timers.reset();
+    }
+  });
+
+  void it('lets completion at the timeout boundary win when close is observed first', async () => {
+    enableMockTimers();
+    try {
+      const harness = createHarness();
+      const executor = createForegroundBashExecutor(harness.deps);
+      const pending = executor.execute(
+        { command: 'npm test' },
+        { toolCallId: 'call-boundary-close', cwd: '/work' },
+      );
+      await flush();
+
+      mock.timers.setTime(1_000 + DEFAULT_AUTO_BACKGROUND_TIMEOUT_MS);
+      spawnAt(harness, 0).child.writeStdout('finished at boundary\n');
+      spawnAt(harness, 0).child.close(0);
+      const result = await pending;
+      mock.timers.tick(0);
+      await flush();
+
+      assert.match(resultText(result), /finished at boundary/);
+      assert.equal(harness.adopted.length, 0);
+      assert.equal(harness.messages.length, 0);
+      assert.equal(harness.groupKills.length, 0);
     } finally {
       mock.timers.reset();
     }
@@ -476,7 +576,7 @@ void describe('executor auto-background', () => {
         { toolCallId: 'call-once', cwd: '/work' },
       );
       await flush();
-      mock.timers.tick(DEFAULT_AUTO_BACKGROUND_TIMEOUT_MS + FAST_PATH_GRACE_MS);
+      mock.timers.tick(DEFAULT_AUTO_BACKGROUND_TIMEOUT_MS);
       await flush();
       await pending;
       assert.equal(harness.messages.length, 1);
@@ -531,7 +631,7 @@ void describe('executor timeout guards', () => {
         { toolCallId: 'call-disallowed', cwd: '/work' },
       );
       await flush();
-      mock.timers.tick(DEFAULT_AUTO_BACKGROUND_TIMEOUT_MS + FAST_PATH_GRACE_MS);
+      mock.timers.tick(DEFAULT_AUTO_BACKGROUND_TIMEOUT_MS);
       await flush();
 
       assert.equal(harness.adopted.length, 0, 'disallowed commands must not be adopted');
@@ -583,12 +683,41 @@ void describe('executor timeout guards', () => {
       mock.timers.reset();
     }
   });
+
+  void it('rejects a duplicate active toolCallId before a second spawn', async () => {
+    enableMockTimers();
+    try {
+      const harness = createHarness();
+      const executor = createForegroundBashExecutor(harness.deps);
+      const first = executor.execute(
+        { command: 'first-long' },
+        { toolCallId: 'call-duplicate', cwd: '/work' },
+      );
+      await flush();
+
+      const duplicate = assert.rejects(
+        executor.execute(
+          { command: 'second-long' },
+          { toolCallId: 'call-duplicate', cwd: '/work' },
+        ),
+        /toolCallId|tool call.*active|duplicate/i,
+      );
+      await flush();
+      assert.equal(harness.spawns.length, 1, 'duplicate rejection must happen before spawn');
+      await duplicate;
+
+      spawnAt(harness, 0).child.close(0);
+      await first;
+    } finally {
+      mock.timers.reset();
+    }
+  });
 });
 
 // ─── Executor: Ctrl+B manual background ─────────────────────────────
 
 void describe('executor triggerBackground (Ctrl+B)', () => {
-  void it('backgrounds the running foreground process immediately and resolves the tool call', async () => {
+  void it('backgrounds immediately when Ctrl+B is pressed before the 2s grace expires', async () => {
     enableMockTimers();
     try {
       const harness = createHarness();
@@ -597,8 +726,6 @@ void describe('executor triggerBackground (Ctrl+B)', () => {
         { command: 'dev-server' },
         { toolCallId: 'call-ctrlb', cwd: '/work' },
       );
-      await flush();
-      mock.timers.tick(FAST_PATH_GRACE_MS);
       await flush();
       assert.equal(executor.hasForegroundProcess(), true);
 
@@ -610,6 +737,17 @@ void describe('executor triggerBackground (Ctrl+B)', () => {
       assert.equal(harness.adopted.length, 1);
       assert.equal(adoptAt(harness, 0).command, 'dev-server');
       assert.equal(harness.groupKills.length, 0);
+      assert.equal(harness.messages.length, 1);
+      assert.equal(messageAt(harness, 0).message.customType, 'foreground-bash-backgrounded');
+      assert.equal(messageAt(harness, 0).message.display, true);
+      assert.deepEqual(messageAt(harness, 0).message.details, {
+        taskId: 'task-001',
+        command: 'dev-server',
+        outputPath: '/tmp/fg-bash-test/call-ctrlb.output',
+        reason: 'manual',
+        timeoutSeconds: 120,
+      });
+      assert.equal(harness.notifications.length, 0, 'Ctrl+B must not wait for the hint timer');
       // The process outlives the tool call.
       assert.equal(spawnAt(harness, 0).child.killCalls.length, 0);
     } finally {
@@ -659,6 +797,53 @@ void describe('executor triggerBackground (Ctrl+B)', () => {
     }
   });
 
+  void it('settles exactly once when completion races Ctrl+B in either order', async () => {
+    enableMockTimers();
+    try {
+      const manualHarness = createHarness();
+      const manualExecutor = createForegroundBashExecutor(manualHarness.deps);
+      let manualSettlements = 0;
+      const manual = manualExecutor
+        .execute(
+          { command: 'manual-wins' },
+          { toolCallId: 'call-race-manual', cwd: '/work' },
+        )
+        .finally(() => {
+          manualSettlements += 1;
+        });
+      await flush();
+      assert.equal(manualExecutor.triggerBackground(), true);
+      spawnAt(manualHarness, 0).child.close(0);
+      await manual;
+      await flush();
+      assert.equal(manualSettlements, 1);
+      assert.equal(manualHarness.adopted.length, 1);
+      assert.equal(manualHarness.messages.length, 1);
+
+      const closeHarness = createHarness();
+      const closeExecutor = createForegroundBashExecutor(closeHarness.deps);
+      let closeSettlements = 0;
+      const completed = closeExecutor
+        .execute(
+          { command: 'close-wins' },
+          { toolCallId: 'call-race-close', cwd: '/work' },
+        )
+        .finally(() => {
+          closeSettlements += 1;
+        });
+      await flush();
+      spawnAt(closeHarness, 0).child.close(0);
+      await completed;
+      assert.equal(closeExecutor.triggerBackground(), false);
+      await flush();
+      assert.equal(closeSettlements, 1);
+      assert.equal(closeHarness.adopted.length, 0);
+      assert.equal(closeHarness.messages.length, 0);
+    } finally {
+      mock.timers.reset();
+    }
+  });
+
   void it('a timed-out call that was backgrounded cannot be backgrounded twice', async () => {
     enableMockTimers();
     try {
@@ -669,7 +854,7 @@ void describe('executor triggerBackground (Ctrl+B)', () => {
         { toolCallId: 'call-double', cwd: '/work' },
       );
       await flush();
-      mock.timers.tick(DEFAULT_AUTO_BACKGROUND_TIMEOUT_MS + FAST_PATH_GRACE_MS);
+      mock.timers.tick(DEFAULT_AUTO_BACKGROUND_TIMEOUT_MS);
       await flush();
       await pending;
       assert.equal(executor.triggerBackground(), false);
@@ -763,6 +948,29 @@ void describe('executor streaming and hint', () => {
 // ─── Executor: abort ────────────────────────────────────────────────
 
 void describe('executor abort handling', () => {
+  void it('rejects a pre-aborted signal before spawning', async () => {
+    enableMockTimers();
+    try {
+      const harness = createHarness();
+      const executor = createForegroundBashExecutor(harness.deps);
+      const controller = new AbortController();
+      controller.abort(new Error('already aborted'));
+      const pending = executor.execute(
+        { command: 'must-not-spawn' },
+        { toolCallId: 'call-pre-aborted', cwd: '/work' },
+        controller.signal,
+      );
+      const rejected = assert.rejects(pending, /abort/i);
+
+      await flush();
+      assert.equal(harness.spawns.length, 0);
+      await rejected;
+      assert.equal(executor.hasForegroundProcess(), false);
+    } finally {
+      mock.timers.reset();
+    }
+  });
+
   void it('kills the process group and rejects when the abort signal fires', async () => {
     enableMockTimers();
     try {
@@ -784,6 +992,160 @@ void describe('executor abort handling', () => {
       await assert.rejects(pending, /abort/i);
       assert.equal(harness.adopted.length, 0);
       assert.equal(executor.hasForegroundProcess(), false);
+      assertExecutorListenersRemoved(spawnAt(harness, 0).child, controller.signal);
+      mock.timers.tick(DEFAULT_AUTO_BACKGROUND_TIMEOUT_MS * 2);
+      await flush();
+      assert.equal(harness.messages.length, 0);
+      assert.equal(harness.notifications.length, 0);
+    } finally {
+      mock.timers.reset();
+    }
+  });
+
+  void it('does not kill an adopted task when aborted after manual handoff', async () => {
+    enableMockTimers();
+    try {
+      const harness = createHarness();
+      const executor = createForegroundBashExecutor(harness.deps);
+      const controller = new AbortController();
+      const pending = executor.execute(
+        { command: 'manual-server' },
+        { toolCallId: 'call-manual-abort', cwd: '/work' },
+        controller.signal,
+      );
+      await flush();
+      assert.equal(executor.triggerBackground(), true);
+      await pending;
+      assertExecutorListenersRemoved(spawnAt(harness, 0).child, controller.signal);
+
+      controller.abort();
+      mock.timers.tick(DEFAULT_AUTO_BACKGROUND_TIMEOUT_MS * 2);
+      await flush();
+      assert.equal(harness.adopted.length, 1);
+      assert.equal(harness.groupKills.length, 0);
+      assert.equal(spawnAt(harness, 0).child.killCalls.length, 0);
+      assert.equal(harness.messages.length, 1);
+    } finally {
+      mock.timers.reset();
+    }
+  });
+
+  void it('does not kill an adopted task when aborted after automatic handoff', async () => {
+    enableMockTimers();
+    try {
+      const harness = createHarness();
+      const executor = createForegroundBashExecutor(harness.deps);
+      const controller = new AbortController();
+      const pending = executor.execute(
+        { command: 'automatic-server', timeout: 5 },
+        { toolCallId: 'call-auto-abort', cwd: '/work' },
+        controller.signal,
+      );
+      await flush();
+      mock.timers.tick(5_000);
+      await flush();
+      await pending;
+      assertExecutorListenersRemoved(spawnAt(harness, 0).child, controller.signal);
+
+      controller.abort();
+      mock.timers.tick(DEFAULT_AUTO_BACKGROUND_TIMEOUT_MS * 2);
+      await flush();
+      assert.equal(harness.adopted.length, 1);
+      assert.equal(harness.groupKills.length, 0);
+      assert.equal(spawnAt(harness, 0).child.killCalls.length, 0);
+      assert.equal(harness.messages.length, 1);
+    } finally {
+      mock.timers.reset();
+    }
+  });
+
+  void it('kills the process group and rejects when adoptTask fails', async () => {
+    enableMockTimers();
+    try {
+      const harness = createHarness({
+        adoptTask: () => {
+          throw new Error('registry adoption failed');
+        },
+      });
+      const executor = createForegroundBashExecutor(harness.deps);
+      const pending = executor.execute(
+        { command: 'handoff-failure' },
+        { toolCallId: 'call-adopt-failure', cwd: '/work' },
+      );
+      const rejected = assert.rejects(pending, /registry adoption failed/);
+      await flush();
+
+      assert.equal(executor.triggerBackground(), true);
+      await rejected;
+      assert.deepEqual(harness.groupKills, [
+        { pid: spawnAt(harness, 0).child.pid, signal: 'SIGTERM' },
+      ]);
+      assert.equal(harness.adopted.length, 0);
+      assert.equal(harness.messages.length, 0);
+      assert.equal(executor.hasForegroundProcess(), false);
+      assertExecutorListenersRemoved(spawnAt(harness, 0).child);
+      mock.timers.tick(DEFAULT_AUTO_BACKGROUND_TIMEOUT_MS * 2);
+      await flush();
+      assert.equal(harness.notifications.length, 0);
+      assert.equal(harness.groupKills.length, 1);
+    } finally {
+      mock.timers.reset();
+    }
+  });
+});
+
+// ─── Executor: cleanup ──────────────────────────────────────────────
+
+void describe('executor cleanup', () => {
+  void it('removes timers and listeners deterministically after foreground completion', async () => {
+    enableMockTimers();
+    try {
+      const harness = createHarness();
+      const executor = createForegroundBashExecutor(harness.deps);
+      const controller = new AbortController();
+      const updates: string[] = [];
+      const pending = executor.execute(
+        { command: 'echo clean' },
+        { toolCallId: 'call-cleanup', cwd: '/work' },
+        controller.signal,
+        (update: TextResult) => {
+          updates.push(resultText(update));
+        },
+      );
+      await flush();
+      const child = spawnAt(harness, 0).child;
+      assert.equal(child.listenerCount('error'), 1);
+      assert.equal(child.listenerCount('close'), 1);
+      assert.equal(child.stdout.listenerCount('data'), 1);
+      assert.equal(child.stderr.listenerCount('data'), 1);
+      assert.equal(getEventListeners(controller.signal, 'abort').length, 1);
+
+      child.writeStdout('clean\n');
+      child.close(0);
+      await pending;
+      assertExecutorListenersRemoved(child, controller.signal);
+      const before = {
+        adopted: harness.adopted.length,
+        messages: harness.messages.length,
+        notifications: harness.notifications.length,
+        groupKills: harness.groupKills.length,
+        updates: updates.length,
+      };
+
+      mock.timers.tick(DEFAULT_AUTO_BACKGROUND_TIMEOUT_MS * 3);
+      controller.abort();
+      await flush();
+      assert.deepEqual(
+        {
+          adopted: harness.adopted.length,
+          messages: harness.messages.length,
+          notifications: harness.notifications.length,
+          groupKills: harness.groupKills.length,
+          updates: updates.length,
+        },
+        before,
+        'cleared timers and listeners must have no observable late effects',
+      );
     } finally {
       mock.timers.reset();
     }

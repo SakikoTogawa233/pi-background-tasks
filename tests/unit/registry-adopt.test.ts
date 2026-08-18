@@ -22,12 +22,12 @@
  */
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { mkdir, mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
-import type { BgTask } from '../../src/core/common.js';
+import type { BgTask, BgTaskSnapshot } from '../../src/core/common.js';
 import {
   BackgroundTaskRegistry,
   type BackgroundTaskContext,
@@ -68,6 +68,11 @@ class FakeChild extends EventEmitter {
   }
 }
 
+interface ProcessKillRecord {
+  pid: number;
+  signal?: NodeJS.Signals | number | undefined;
+}
+
 interface Harness {
   root: string;
   ctx: BackgroundTaskContext;
@@ -76,32 +81,63 @@ interface Harness {
     message: CompletionNotificationMessage;
     options: CompletionNotificationOptions;
   }>;
+  processKills: ProcessKillRecord[];
+  terminalSnapshots: BgTaskSnapshot[];
+  changeCount(): number;
 }
 
-async function createHarness(): Promise<Harness> {
+interface HarnessOptions {
+  maxOutputBytes?: number;
+}
+
+async function createHarness(options: HarnessOptions = {}): Promise<Harness> {
   const root = await mkdtemp(join(tmpdir(), 'pi-bg-adopt-'));
   const cwd = join(root, 'project');
   await mkdir(cwd, { recursive: true });
   let idSeq = 0;
   const notifications: Harness['notifications'] = [];
-  const registry = new BackgroundTaskRegistry({
+  const processKills: ProcessKillRecord[] = [];
+  const terminalSnapshots: BgTaskSnapshot[] = [];
+  let changes = 0;
+  const registryOptions: ConstructorParameters<typeof BackgroundTaskRegistry>[0] = {
     logger: {
       error: () => {},
     },
     makeTaskId: () => `adopt${String(++idSeq).padStart(3, '0')}`,
-    sendCompletionNotification: (message, options) => {
-      notifications.push({ message, options });
+    sendCompletionNotification: (message, notificationOptions) => {
+      notifications.push({ message, options: notificationOptions });
     },
-    onChange: () => {},
-    killProcess: () => true,
-  });
+    onChange: () => {
+      changes += 1;
+    },
+    publishTerminal: (task) => {
+      terminalSnapshots.push(task);
+    },
+    platform: 'linux',
+    killProcess: (pid, signal) => {
+      processKills.push({ pid, signal });
+      return true;
+    },
+  };
+  if (options.maxOutputBytes !== undefined) {
+    registryOptions.maxOutputBytes = options.maxOutputBytes;
+  }
+  const registry = new BackgroundTaskRegistry(registryOptions);
   const ctx: BackgroundTaskContext = {
     cwd,
     sessionId: 'adopt-test',
     modelRegistry: { getAll: () => [] },
     model: undefined,
   };
-  return { root, ctx, registry, notifications };
+  return {
+    root,
+    ctx,
+    registry,
+    notifications,
+    processKills,
+    terminalSnapshots,
+    changeCount: () => changes,
+  };
 }
 
 async function cleanup(root: string): Promise<void> {
@@ -133,6 +169,49 @@ async function waitFor(
 }
 
 void describe('BackgroundTaskRegistry.adoptRunningChild', () => {
+  void it('rejects adoption while the registry is shutting down', async () => {
+    const h = await createHarness();
+    try {
+      const child = new FakeChild(4240);
+      h.registry.setShuttingDown(true);
+
+      assert.throws(
+        () =>
+          h.registry.adoptRunningChild(h.ctx, child, {
+            command: 'npm test',
+          }),
+        /shutting down/i,
+      );
+      assert.equal(h.registry.allTasks().length, 0);
+      assert.equal(child.listenerCount('error'), 0);
+      assert.equal(child.listenerCount('close'), 0);
+      assert.equal(child.stdout.listenerCount('data'), 0);
+      assert.equal(child.stderr.listenerCount('data'), 0);
+      assert.equal(existsSync(join(h.ctx.cwd, '.pi')), false);
+    } finally {
+      await cleanup(h.root);
+    }
+  });
+
+  void it('rejects an empty command before registering the child', async () => {
+    const h = await createHarness();
+    try {
+      const child = new FakeChild(4241);
+      assert.throws(
+        () =>
+          h.registry.adoptRunningChild(h.ctx, child, {
+            command: '   ',
+          }),
+        /command.*empty|empty.*command/i,
+      );
+      assert.equal(h.registry.allTasks().length, 0);
+      assert.equal(child.listenerCount('close'), 0);
+      assert.equal(existsSync(join(h.ctx.cwd, '.pi')), false);
+    } finally {
+      await cleanup(h.root);
+    }
+  });
+
   void it('registers the running process as a first-class background task', async () => {
     const h = await createHarness();
     try {
@@ -151,6 +230,26 @@ void describe('BackgroundTaskRegistry.adoptRunningChild', () => {
       assert.equal(task.isAgent, false);
       assert.equal(h.registry.allTasks().includes(task), true);
       assert.equal(h.registry.resolveTask(task.id), task);
+
+      child.close(0, null);
+      await waitFor(() => task.status === 'completed', 'registered adopted task cleanup');
+    } finally {
+      await cleanup(h.root);
+    }
+  });
+
+  void it('derives the default name from the normalized command', async () => {
+    const h = await createHarness();
+    try {
+      const child = new FakeChild(4242);
+      const task = h.registry.adoptRunningChild(h.ctx, child, {
+        command: '  npm run test -- --watch  ',
+      });
+
+      assert.equal(task.command, 'npm run test -- --watch');
+      assert.equal(task.name, 'npm run test');
+      child.close(0, null);
+      await waitFor(() => task.status === 'completed', 'default-name task cleanup');
     } finally {
       await cleanup(h.root);
     }
@@ -165,11 +264,48 @@ void describe('BackgroundTaskRegistry.adoptRunningChild', () => {
       });
       child.writeStdout('line one\n');
       child.writeStderr('warn two\n');
-      await waitFor(() => task.bytesWritten > 0, 'adopted output capture');
+      await waitFor(() => {
+        if (!existsSync(task.outputAbsPath)) return false;
+        const output = readFileSync(task.outputAbsPath, 'utf8');
+        return output.includes('line one') && output.includes('warn two');
+      }, 'adopted output capture');
 
       const text = readFileSync(task.outputAbsPath, 'utf8');
       assert.match(text, /line one/);
       assert.match(text, /warn two/);
+      child.close(0, null);
+      await waitFor(() => task.status === 'completed', 'output capture task cleanup');
+    } finally {
+      await cleanup(h.root);
+    }
+  });
+
+  void it('finalizes an adopted task as failed when output exceeds the cap', async () => {
+    const h = await createHarness({ maxOutputBytes: 8 });
+    try {
+      const child = new FakeChild(4250);
+      const task = h.registry.adoptRunningChild(h.ctx, child, {
+        command: 'node noisy.js',
+      });
+
+      child.writeStdout('0123456789abcdef');
+      assert.deepEqual(h.processKills, [{ pid: -4250, signal: 'SIGTERM' }]);
+      child.close(null, 'SIGTERM');
+      await waitFor(() => task.status !== 'running', 'adopted output-cap finalization');
+      await waitFor(() => h.notifications.length === 1, 'adopted output-cap notification');
+
+      assert.equal(task.status, 'failed');
+      assert.equal(task.killKind, 'output_cap');
+      assert.match(task.error ?? '', /Output exceeded cap/);
+      assert.equal(h.notifications.length, 1);
+      assert.equal(h.terminalSnapshots.length, 1);
+
+      child.close(0, null);
+      await new Promise((resolve) => setImmediate(resolve));
+      assert.equal(task.status, 'failed');
+      assert.match(task.error ?? '', /Output exceeded cap/);
+      assert.equal(h.notifications.length, 1);
+      assert.equal(h.terminalSnapshots.length, 1);
     } finally {
       await cleanup(h.root);
     }
@@ -252,7 +388,30 @@ void describe('BackgroundTaskRegistry.adoptRunningChild', () => {
       await waitFor(() => h.notifications.length === 1, 'single raced notification');
 
       assert.equal(task.status, 'failed');
+      assert.equal(task.exitCode, null);
+      assert.match(task.error ?? '', /pipe exploded/);
+      assert.equal(notificationAt(h, 0).message.details.error, 'pipe exploded');
       assert.equal(h.notifications.length, 1);
+      assert.equal(h.terminalSnapshots.length, 1);
+      assert.equal(h.terminalSnapshots[0]?.status, 'failed');
+      assert.equal(h.terminalSnapshots[0]?.error, 'pipe exploded');
+      const metadata = JSON.parse(readFileSync(task.metadataAbsPath, 'utf8')) as Record<
+        string,
+        unknown
+      >;
+      assert.equal(metadata['status'], 'failed');
+      assert.equal(metadata['error'], 'pipe exploded');
+      assert.equal(metadata['exitCode'], null);
+      const changesAfterFinalization = h.changeCount();
+
+      child.close(0, null);
+      await new Promise((resolve) => setImmediate(resolve));
+      assert.equal(task.status, 'failed');
+      assert.equal(task.exitCode, null);
+      assert.match(task.error ?? '', /pipe exploded/);
+      assert.equal(h.notifications.length, 1);
+      assert.equal(h.terminalSnapshots.length, 1);
+      assert.equal(h.changeCount(), changesAfterFinalization);
     } finally {
       await cleanup(h.root);
     }
@@ -265,8 +424,9 @@ void describe('BackgroundTaskRegistry.adoptRunningChild', () => {
       const task: BgTask = h.registry.adoptRunningChild(h.ctx, child, {
         command: 'npm test',
       });
-      await h.registry.stopTask(task, 'user');
+      const stopTask = h.registry.stopTask(task, 'user');
       child.close(null, 'SIGTERM');
+      await stopTask;
       await waitFor(() => task.status !== 'running', 'adopted kill finalization');
 
       assert.equal(task.status, 'killed');
@@ -279,11 +439,43 @@ void describe('BackgroundTaskRegistry.adoptRunningChild', () => {
     }
   });
 
+  void it('includes adopted tasks in stopAllRunning', async () => {
+    const h = await createHarness();
+    try {
+      const firstChild = new FakeChild(4260);
+      const secondChild = new FakeChild(4261);
+      const first = h.registry.adoptRunningChild(h.ctx, firstChild, {
+        command: 'first-server',
+      });
+      const second = h.registry.adoptRunningChild(h.ctx, secondChild, {
+        command: 'second-server',
+      });
+
+      const stopping = h.registry.stopAllRunning('shutdown', 'Pi is shutting down');
+      assert.deepEqual(h.processKills, [
+        { pid: -4260, signal: 'SIGTERM' },
+        { pid: -4261, signal: 'SIGTERM' },
+      ]);
+      firstChild.close(null, 'SIGTERM');
+      secondChild.close(null, 'SIGTERM');
+      const result = await stopping;
+
+      assert.deepEqual(result, { stopped: 2, failures: [] });
+      assert.equal(first.status, 'killed');
+      assert.equal(second.status, 'killed');
+      assert.equal(first.error, 'Pi is shutting down');
+      assert.equal(second.error, 'Pi is shutting down');
+    } finally {
+      await cleanup(h.root);
+    }
+  });
+
   void it('defaults startTime to the adoption moment when startedAt is omitted', async () => {
     const h = await createHarness();
     try {
       const before = Date.now();
-      const task = h.registry.adoptRunningChild(h.ctx, new FakeChild(4249), {
+      const child = new FakeChild(4249);
+      const task = h.registry.adoptRunningChild(h.ctx, child, {
         command: 'npm test',
       });
       const after = Date.now();
@@ -291,6 +483,8 @@ void describe('BackgroundTaskRegistry.adoptRunningChild', () => {
         task.startTime >= before && task.startTime <= after,
         `startTime ${String(task.startTime)} must fall within [${String(before)}, ${String(after)}]`,
       );
+      child.close(0, null);
+      await waitFor(() => task.status === 'completed', 'default start-time task cleanup');
     } finally {
       await cleanup(h.root);
     }
