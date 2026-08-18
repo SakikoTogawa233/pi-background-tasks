@@ -37,7 +37,7 @@ const codeFacts = buildCodeFacts();
 const docsModel = loadDocsModel();
 
 assert.equal(docsModel.docs.length, 42, 'all docs/**/*.md are governed');
-assert.equal(codeFacts.public_surface_ids.length, 31, 'all command/tool/shortcut/renderer/EventBus/workflow surfaces are extracted');
+assert.equal(codeFacts.public_surface_ids.length, 33, 'all command/tool/shortcut/renderer/EventBus/workflow surfaces are extracted');
 assert.ok(codeFacts.public_surface_ids.includes('eventbus:background-task-v1'));
 assert.ok(codeFacts.public_surface_ids.includes('workflow:research'));
 assert.equal(docsModel.docs.find((doc) => doc.doc_id === 'INDEX').frontmatter.covers_surfaces.length, 0, 'INDEX must not own public surfaces');
