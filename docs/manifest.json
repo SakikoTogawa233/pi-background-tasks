@@ -49,9 +49,10 @@
       "state": "stale-authored-prose"
     },
     {
-      "authored_body_sha256": "sha256:253948c8b1f4dd339b0c1eeabd6e8addf584fe208a0f71c3a7f094921ff4547f",
+      "authored_body_sha256": "sha256:ab020dc1057fa567d246a25fb9dd8435a2facca2c57c5597e7356b5500127702",
       "covers_sources": [
         "src/core/common.ts",
+        "src/core/foreground-bash.ts",
         "src/core/registry.ts",
         "src/core/windows-taskkill.ts"
       ],
@@ -376,6 +377,7 @@
       "covers_sources": [],
       "covers_surfaces": [
         "shortcut:ctrl+alt+c",
+        "shortcut:ctrl+b",
         "shortcut:shift+down"
       ],
       "mode": "mixed",
@@ -411,10 +413,13 @@
       "audience": "maintainer",
       "covers_sources": [
         "src/core/common.ts",
+        "src/core/foreground-bash.ts",
         "src/core/registry.ts",
         "src/core/windows-taskkill.ts"
       ],
-      "covers_surfaces": [],
+      "covers_surfaces": [
+        "tool:bash"
+      ],
       "mode": "authored",
       "rel": "docs/subsystems/background-task-runtime.md",
       "review_policy": "behavioral",
@@ -850,7 +855,9 @@
     "renderer:background-task-notification",
     "renderer:fusion-result",
     "shortcut:ctrl+alt+c",
+    "shortcut:ctrl+b",
     "shortcut:shift+down",
+    "tool:bash",
     "tool:bg_delegate",
     "tool:bg_kill",
     "tool:bg_logs",
@@ -874,28 +881,28 @@
         "id": "command:bg",
         "kind": "command",
         "name": "bg",
-        "source": "src/extension.ts:517"
+        "source": "src/extension.ts:561"
       },
       {
         "description": "Clear finished background task footer notices",
         "id": "command:bg-clear",
         "kind": "command",
         "name": "bg-clear",
-        "source": "src/extension.ts:559"
+        "source": "src/extension.ts:603"
       },
       {
         "description": "Open the background task manager UI",
         "id": "command:bg-tasks",
         "kind": "command",
         "name": "bg-tasks",
-        "source": "src/extension.ts:551"
+        "source": "src/extension.ts:595"
       },
       {
         "description": "Show how to update pi-background-tasks to the latest published version",
         "id": "command:bg-update",
         "kind": "command",
         "name": "bg-update",
-        "source": "src/extension.ts:567"
+        "source": "src/extension.ts:611"
       },
       {
         "description": "Show or set Claude cache retention for this session (short, long, default)",
@@ -923,28 +930,28 @@
         "id": "command:jobs",
         "kind": "command",
         "name": "jobs",
-        "source": "src/extension.ts:605"
+        "source": "src/extension.ts:649"
       },
       {
         "description": "Stop a running background task: /kill <id>",
         "id": "command:kill",
         "kind": "command",
         "name": "kill",
-        "source": "src/extension.ts:649"
+        "source": "src/extension.ts:693"
       },
       {
         "description": "Show bounded output from a background task: /logs <id> [maxBytes]",
         "id": "command:logs",
         "kind": "command",
         "name": "logs",
-        "source": "src/extension.ts:618"
+        "source": "src/extension.ts:662"
       },
       {
         "description": "Open the Claude-like background task manager UI",
         "id": "command:tasks",
         "kind": "command",
         "name": "tasks",
-        "source": "src/extension.ts:543"
+        "source": "src/extension.ts:587"
       }
     ],
     "eventbus": [
@@ -972,7 +979,7 @@
         "id": "renderer:background-task-notification",
         "kind": "renderer",
         "name": "background-task-notification",
-        "source": "src/extension.ts:426"
+        "source": "src/extension.ts:470"
       },
       {
         "id": "renderer:fusion-result",
@@ -987,17 +994,52 @@
         "id": "shortcut:ctrl+alt+c",
         "kind": "shortcut",
         "name": "ctrl+alt+c",
-        "source": "src/extension.ts:597"
+        "source": "src/extension.ts:641"
+      },
+      {
+        "description": "Move the most recent active foreground bash command to the background",
+        "id": "shortcut:ctrl+b",
+        "kind": "shortcut",
+        "name": "ctrl+b",
+        "source": "src/core/foreground-bash.ts:641"
       },
       {
         "description": "Open focused background task footer dock",
         "id": "shortcut:shift+down",
         "kind": "shortcut",
         "name": "shift+down",
-        "source": "src/extension.ts:590"
+        "source": "src/extension.ts:634"
       }
     ],
     "tool": [
+      {
+        "description": "Execute a bash command in the current working directory. Returns stdout and stderr. Output is truncated to last 2000 lines or 50KB (whichever is hit first). If truncated, full output is saved to a temp file. Optionally provide a timeout in seconds. Commands still running after 120 seconds are moved into the background task registry; press Ctrl+B to background the most recent active command sooner.",
+        "id": "tool:bash",
+        "kind": "tool",
+        "label": "bash",
+        "name": "bash",
+        "promptGuidelines": [
+          "Inspect PI_* environment variables for current model and session details."
+        ],
+        "promptSnippet": "Execute bash commands (ls, grep, find, etc.)",
+        "schema": {
+          "properties": {
+            "command": {
+              "description": "Bash command to execute",
+              "type": "string"
+            },
+            "timeout": {
+              "description": "Timeout in seconds (optional, no default timeout)",
+              "type": "number"
+            }
+          },
+          "required": [
+            "command"
+          ],
+          "type": "object"
+        },
+        "source": "src/core/foreground-bash.ts:611"
+      },
       {
         "description": "Launch one background Pi agent seeded with a frozen projection of the current conversation, then return a launch receipt immediately. The child has its own session, a route pinned at launch that is never substituted, and read-only tools. Extension discovery is isolated by default; ambient mode supports extension-registered providers but executes arbitrary discovered extension code. Retrieve its verified answer with bg_result.",
         "id": "tool:bg_delegate",
@@ -1107,7 +1149,7 @@
           ],
           "type": "object"
         },
-        "source": "src/extension.ts:908"
+        "source": "src/extension.ts:952"
       },
       {
         "description": "Read bounded output from a background task for deliberate inspection; this is not a waiting primitive. Output is capped at 50.0KB for model safety and points to the full output file when truncated.",
@@ -1141,7 +1183,7 @@
           ],
           "type": "object"
         },
-        "source": "src/extension.ts:863"
+        "source": "src/extension.ts:907"
       },
       {
         "description": "Retrieve a hash-verified result from a bg_delegate or background Fusion task. Never blocks: a running task returns a typed not-ready result. Oversized answers are never truncated.",
@@ -1228,7 +1270,7 @@
           ],
           "type": "object"
         },
-        "source": "src/extension.ts:682"
+        "source": "src/extension.ts:726"
       },
       {
         "description": "Opt-in evidence-oriented direct Pi spawn. Launches exactly one `pi --mode json` child, records raw Pi events/stderr, hashes prompt/report/output, observes OAuth through ModelRegistry, and emits a strict attestation sidecar only after successful completion.",
@@ -1289,7 +1331,7 @@
           ],
           "type": "object"
         },
-        "source": "src/extension.ts:767"
+        "source": "src/extension.ts:811"
       },
       {
         "description": "Inspect one background task or list all running/recent background tasks. This is a point-in-time inspection tool, not a waiting primitive.",
@@ -1313,7 +1355,7 @@
           "required": [],
           "type": "object"
         },
-        "source": "src/extension.ts:832"
+        "source": "src/extension.ts:876"
       },
       {
         "description": "Start a five-model Fusion investigation as a tracked background task and return immediately after durable preflight. Retrieve the verified result with bg_result after notification. Candidate children run in clean bounded read-only contexts.",
@@ -1729,6 +1771,9 @@
     "src/core/extension-api.ts": [
       "api/eventbus-v1"
     ],
+    "src/core/foreground-bash.ts": [
+      "subsystems/background-task-runtime"
+    ],
     "src/core/fusion/artifacts.ts": [
       "subsystems/fusion"
     ],
@@ -1860,8 +1905,14 @@
     "shortcut:ctrl+alt+c": [
       "reference/shortcuts-and-dock"
     ],
+    "shortcut:ctrl+b": [
+      "reference/shortcuts-and-dock"
+    ],
     "shortcut:shift+down": [
       "reference/shortcuts-and-dock"
+    ],
+    "tool:bash": [
+      "subsystems/background-task-runtime"
     ],
     "tool:bg_delegate": [
       "tools/bg_delegate"

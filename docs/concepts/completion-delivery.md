@@ -24,9 +24,19 @@ Background tasks can finish silently, notify the terminal, or notify and wake th
 
 - `/bg` is display-only by default: it sets `notifyOnCompletion:true` and `triggerOnCompletion:false`.
 - `bg_run` defaults to durable notification plus follow-up turn: `notifyOnCompletion:true` and `triggerOnCompletion:true`.
+- An interactive foreground `bash` command adopted by `Ctrl+B` or its total-runtime threshold enters the registry with `notifyOnCompletion:true` and `triggerOnCompletion:true`.
 - `bg_status` and `bg_logs` are point-in-time inspection tools, not polling primitives.
 - Tool-launched Fusion tasks default to notification plus follow-up wake and are retrieved once with `bg_result`; `/fusion` uses notification-only.
 - A received `<background-task-notification>` is metadata-backed terminal-status truth. The output stream has finished/closed, but ordinary `.output` bytes are not explicitly fsynced. Do not call `bg_status` only to reconfirm status; call `bg_logs` only if output bytes are needed.
+
+## Foreground bash handoff versus completion
+
+Foreground handoff has two distinct deliveries:
+
+1. The `bash` tool returns an early receipt containing bounded output so far, the adopted task id, command, output path, and whether handoff was manual or timed out. A displayed `foreground-bash-backgrounded` message records the ownership change for the next turn.
+2. When the adopted process later exits, the registry sends the ordinary `background-task-notification` and triggers one follow-up turn.
+
+The handoff receipt is not terminal truth. After handoff, the registry exclusively owns output, kill, finalization, and shutdown; aborting the old tool call does not stop the task. The foreground controller does not emit another handoff message when the child exits, so completion wake-up remains exactly once under registry ownership.
 
 ## Notification payload
 
@@ -45,7 +55,7 @@ The structured details contain the task snapshot, including delivery flags and `
 
 ## Agent guidance
 
-After default `bg_run`, continue only independent useful work. If there is no such work, briefly acknowledge and end the turn; the follow-up notification will wake the agent. Do not sleep, poll `bg_status`, or repeatedly read `bg_logs` merely to wait.
+After default `bg_run` or a foreground-bash handoff, continue only independent useful work. If there is no such work, briefly acknowledge and end the turn; the follow-up notification will wake the agent. Do not sleep, poll `bg_status`, or repeatedly read `bg_logs` merely to wait.
 
 If either completion flag was intentionally disabled, manual inspection is allowed when deliberate, but still avoid tight polling.
 

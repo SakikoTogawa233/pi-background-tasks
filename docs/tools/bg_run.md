@@ -11,7 +11,7 @@ covers_sources: []
 
 <!-- pi-docs:begin name="tool-contract-bg_run" generator="scripts/docs/generate.mjs" -->
 - Label: **Background Run**
-- Source: `src/extension.ts:682`
+- Source: `src/extension.ts:726`
 - Description: Start a named long-running shell command in the background and return immediately with a task ID and output path. By default, completed, failed, or killed terminal state is delivered automatically as <background-task-notification> and starts a follow-up agent turn; do not sleep or poll merely to wait. Output is written to .pi/tasks and model-visible logs are bounded to 50.0KB.
 - Root schema: `object`
 
@@ -95,7 +95,9 @@ Legacy argument preparation can derive a missing `name` from `description` or `c
 
 ## When to use
 
-Use for long-running tests, builds, servers, watchers, sleeps, and child agent work. Do not use normal foreground shell tools for commands expected to outlive the current turn.
+Use for long-running tests, builds, servers, watchers, sleeps, and child agent work. Prefer this explicit path whenever a command is expected to outlive the current turn.
+
+Interactive foreground `bash` has a separate fallback: `Ctrl+B` can hand off its live process manually, and eligible commands still running after 120 seconds (or their public `bash.timeout` threshold) are adopted automatically. That fallback is not equivalent to `bg_run`: it is TUI-only, starts synchronously, uses `isAgent:false`, and offers no launch-time name or delivery controls. In non-interactive modes it waits for foreground completion instead of auto-backgrounding. `bg_run` creates a named task immediately in every mode and its `timeoutSeconds` terminates/fails the task rather than acting as a handoff threshold.
 
 For an Anthropic child `pi`, keep normal extension discovery enabled. Do not pass `--no-extensions` unless the command also explicitly loads this package's `extensions/anthropic-attribution.ts` with `-e`/`--extension`.
 

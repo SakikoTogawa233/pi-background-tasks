@@ -57,7 +57,13 @@ Use the footer dock or commands:
 
 Press **Shift↓** to open the dock when the `bg ...` footer appears. `/bg-clear` acknowledges finished-task footer notices.
 
-## 4. Start an agent-launched background task
+## 4. Hand off an unexpectedly long foreground command
+
+In an interactive TUI, press **Ctrl+B** while a foreground `bash` command is running. Pi returns an early receipt and the same process continues as a tracked task with continuous output. A still-running eligible command is handed off automatically after 120 seconds of total runtime; the 2-second message is only the fast-path/hint delay.
+
+This is a fallback, not the planned path for long work. Non-interactive sessions wait for foreground completion and do not manually or automatically hand off commands.
+
+## 5. Start an agent-launched background task
 
 When Pi itself should start a long command, use the `bg_run` tool with the strict schema:
 
@@ -73,7 +79,7 @@ When Pi itself should start a long command, use the `bg_run` tool with the stric
 
 Set `isAgent:true` only when the shell command launches a child Pi/LLM agent, such as `pi -p ...` or `pi --mode json ...`.
 
-## 5. Delegate read-only investigation
+## 6. Delegate read-only investigation
 
 Use `bg_delegate` when the worker needs the current conversation as background but should not block the parent:
 
@@ -102,7 +108,7 @@ After the completion notification, retrieve the committed answer:
 
 `bg_result` is point-in-time: a running task returns a typed not-ready state and never blocks. A committed answer is hash-verified before bytes are returned and is never silently truncated.
 
-## 6. Run first Fusion reasoning
+## 7. Run first Fusion reasoning
 
 For self-contained synthesis:
 

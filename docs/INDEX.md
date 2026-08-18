@@ -107,7 +107,9 @@ Generated navigation for every package-local documentation page. This index inte
 | `renderer:background-task-notification` | [concepts/completion-delivery](./concepts/completion-delivery.md) |
 | `renderer:fusion-result` | [subsystems/fusion](./subsystems/fusion.md) |
 | `shortcut:ctrl+alt+c` | [reference/shortcuts-and-dock](./reference/shortcuts-and-dock.md) |
+| `shortcut:ctrl+b` | [reference/shortcuts-and-dock](./reference/shortcuts-and-dock.md) |
 | `shortcut:shift+down` | [reference/shortcuts-and-dock](./reference/shortcuts-and-dock.md) |
+| `tool:bash` | [subsystems/background-task-runtime](./subsystems/background-task-runtime.md) |
 | `tool:bg_delegate` | [tools/bg_delegate](./tools/bg_delegate.md) |
 | `tool:bg_kill` | [tools/bg_kill](./tools/bg_kill.md) |
 | `tool:bg_logs` | [tools/bg_logs](./tools/bg_logs.md) |
@@ -128,31 +130,33 @@ Generated navigation for every package-local documentation page. This index inte
 
 | Kind | Name | ID | Provenance |
 | --- | --- | --- | --- |
-| command | `bg` | `command:bg` | `src/extension.ts:517` |
-| command | `bg-clear` | `command:bg-clear` | `src/extension.ts:559` |
-| command | `bg-tasks` | `command:bg-tasks` | `src/extension.ts:551` |
-| command | `bg-update` | `command:bg-update` | `src/extension.ts:567` |
+| command | `bg` | `command:bg` | `src/extension.ts:561` |
+| command | `bg-clear` | `command:bg-clear` | `src/extension.ts:603` |
+| command | `bg-tasks` | `command:bg-tasks` | `src/extension.ts:595` |
+| command | `bg-update` | `command:bg-update` | `src/extension.ts:611` |
 | command | `claude-cache` | `command:claude-cache` | `src/core/anthropic-attribution.ts:1928` |
 | command | `fusion` | `command:fusion` | `src/fusion-extension.ts:996` |
 | command | `fusion-models` | `command:fusion-models` | `src/fusion-extension.ts:1029` |
-| command | `jobs` | `command:jobs` | `src/extension.ts:605` |
-| command | `kill` | `command:kill` | `src/extension.ts:649` |
-| command | `logs` | `command:logs` | `src/extension.ts:618` |
-| command | `tasks` | `command:tasks` | `src/extension.ts:543` |
+| command | `jobs` | `command:jobs` | `src/extension.ts:649` |
+| command | `kill` | `command:kill` | `src/extension.ts:693` |
+| command | `logs` | `command:logs` | `src/extension.ts:662` |
+| command | `tasks` | `command:tasks` | `src/extension.ts:587` |
+| tool | `bash` | `tool:bash` | `src/core/foreground-bash.ts:611` |
 | tool | `bg_delegate` | `tool:bg_delegate` | `src/delegate-extension.ts:340` |
-| tool | `bg_kill` | `tool:bg_kill` | `src/extension.ts:908` |
-| tool | `bg_logs` | `tool:bg_logs` | `src/extension.ts:863` |
+| tool | `bg_kill` | `tool:bg_kill` | `src/extension.ts:952` |
+| tool | `bg_logs` | `tool:bg_logs` | `src/extension.ts:907` |
 | tool | `bg_result` | `tool:bg_result` | `src/delegate-extension.ts:516` |
-| tool | `bg_run` | `tool:bg_run` | `src/extension.ts:682` |
-| tool | `bg_run_pi_attested` | `tool:bg_run_pi_attested` | `src/extension.ts:767` |
-| tool | `bg_status` | `tool:bg_status` | `src/extension.ts:832` |
+| tool | `bg_run` | `tool:bg_run` | `src/extension.ts:726` |
+| tool | `bg_run_pi_attested` | `tool:bg_run_pi_attested` | `src/extension.ts:811` |
+| tool | `bg_status` | `tool:bg_status` | `src/extension.ts:876` |
 | tool | `fusion_investigate` | `tool:fusion_investigate` | `src/fusion-extension.ts:1197` |
 | tool | `fusion_reason` | `tool:fusion_reason` | `src/fusion-extension.ts:1179` |
 | tool | `fusion_research` | `tool:fusion_research` | `src/fusion-extension.ts:1216` |
 | tool | `fusion_validate` | `tool:fusion_validate` | `src/fusion-extension.ts:1236` |
-| shortcut | `ctrl+alt+c` | `shortcut:ctrl+alt+c` | `src/extension.ts:597` |
-| shortcut | `shift+down` | `shortcut:shift+down` | `src/extension.ts:590` |
-| renderer | `background-task-notification` | `renderer:background-task-notification` | `src/extension.ts:426` |
+| shortcut | `ctrl+alt+c` | `shortcut:ctrl+alt+c` | `src/extension.ts:641` |
+| shortcut | `ctrl+b` | `shortcut:ctrl+b` | `src/core/foreground-bash.ts:641` |
+| shortcut | `shift+down` | `shortcut:shift+down` | `src/extension.ts:634` |
+| renderer | `background-task-notification` | `renderer:background-task-notification` | `src/extension.ts:470` |
 | renderer | `fusion-result` | `renderer:fusion-result` | `src/fusion-extension.ts:980` |
 | eventbus | `background-task-v1` | `eventbus:background-task-v1` | `src/core/extension-api.ts` |
 | workflow | `investigate` | `workflow:investigate` | `src/core/fusion/workflows.ts:80` |

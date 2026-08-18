@@ -37,6 +37,7 @@ Every production file under `src/**` and `extensions/**` has exactly one primary
 | `src/core/delegate/types.ts` | [subsystems/delegation](./subsystems/delegation.md) |
 | `src/core/durable-fs.ts` | [subsystems/child-launch-durability-and-safety](./subsystems/child-launch-durability-and-safety.md) |
 | `src/core/extension-api.ts` | [api/eventbus-v1](./api/eventbus-v1.md) |
+| `src/core/foreground-bash.ts` | [subsystems/background-task-runtime](./subsystems/background-task-runtime.md) |
 | `src/core/fusion/artifacts.ts` | [subsystems/fusion](./subsystems/fusion.md) |
 | `src/core/fusion/budget.ts` | [subsystems/fusion](./subsystems/fusion.md) |
 | `src/core/fusion/child-protocol.ts` | [subsystems/fusion](./subsystems/fusion.md) |
@@ -83,7 +84,9 @@ Every production file under `src/**` and `extensions/**` has exactly one primary
 - `renderer:background-task-notification`
 - `renderer:fusion-result`
 - `shortcut:ctrl+alt+c`
+- `shortcut:ctrl+b`
 - `shortcut:shift+down`
+- `tool:bash`
 - `tool:bg_delegate`
 - `tool:bg_kill`
 - `tool:bg_logs`
