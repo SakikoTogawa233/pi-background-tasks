@@ -254,7 +254,7 @@ void describe('foreground bash scripted-provider follow-up', { concurrency: fals
         assert.deepEqual(
           assistantToolNames(h.session),
           ['bash'],
-          'the scripted model must not poll bg_status/bg_logs or invoke any other tool',
+          'the scripted model must not poll bg_status/bg_logs or invoke another tool',
         );
 
         const note = customNotifications(h.session)[0];

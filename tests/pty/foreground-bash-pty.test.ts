@@ -55,7 +55,7 @@ expect {
   );
 
   void it(
-    'auto-backgrounds at public timeout:1 without any keypress',
+    'auto-backgrounds at public timeout:1 without a keypress',
     { timeout: 45_000 },
     async (t) => {
       if (!(await ptyInputSupported())) {

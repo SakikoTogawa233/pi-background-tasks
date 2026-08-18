@@ -333,7 +333,7 @@ void describe('adopted task Windows kill routing', () => {
     }
   });
 
-  void it('reports a missing adopted PID without invoking any kill fallback', async () => {
+  void it('reports a missing adopted PID without invoking a kill fallback', async () => {
     const calls: KillTreeCall[] = [];
     const h = await createHarness({
       killTree: (pid, phase, signal) => {
