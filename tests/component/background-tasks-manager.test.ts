@@ -94,6 +94,15 @@ function task(overrides: Partial<BackgroundTaskForUi> = {}): BackgroundTaskForUi
   };
 }
 
+function adoptedTask(overrides: Partial<BackgroundTaskForUi> = {}): BackgroundTaskForUi {
+  return task({
+    id: 'badopt001',
+    name: 'Adopted Foreground Bash',
+    command: 'npm run dev',
+    ...overrides,
+  });
+}
+
 function manager(
   options: Partial<ConstructorParameters<typeof BackgroundTasksManager>[3]> = {},
   tasks: BackgroundTaskForUi[] = [task()],
@@ -427,6 +436,121 @@ void describe('BackgroundTasksManager component', () => {
       assert.equal(hf.seen.has('bfailed01'), false);
     } finally {
       hf.instance.dispose();
+    }
+  });
+
+  void it('treats an adopted-task snapshot as an ordinary active task across list, detail logs, kill, and history', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'pi-bg-adopted-ui-'));
+    try {
+      const outputAbsPath = join(dir, 'adopted.output');
+      await writeFile(
+        outputAbsPath,
+        'foreground output before Ctrl+B\nbackground output after handoff\n',
+        'utf8',
+      );
+      const adopted = adoptedTask({
+        outputAbsPath,
+        outputPath: '.pi/tasks/test/badopt001.output',
+        bytesWritten: 64,
+        pid: 7331,
+      });
+      const stopped: BackgroundTaskForUi[] = [];
+      const h = manager(
+        {
+          stopTask: async (selected) => {
+            stopped.push(selected);
+            selected.status = 'killed';
+            selected.endTime = Date.now();
+          },
+        },
+        [adopted],
+      );
+      try {
+        let text = stripAnsi(h.instance.render(100).join('\n'));
+        assert.match(text, /1 active shell/);
+        assert.match(text, /Adopted Foreground Ba/);
+        assert.match(text, /badopt001/);
+
+        h.instance.handleInput('\r');
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        text = stripAnsi(h.instance.render(100).join('\n'));
+        assert.match(text, /foreground output before Ctrl\+B/);
+        assert.match(text, /background output after handoff/);
+        assert.match(text, /pid 7331/);
+
+        h.instance.handleInput('\x1b[D');
+        h.instance.handleInput('k');
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        assert.deepEqual(stopped, [adopted], 'k must route the selected adopted task unchanged');
+
+        text = stripAnsi(h.instance.render(100).join('\n'));
+        assert.match(text, /0 active/);
+        assert.match(text, /1 history/);
+        assert.match(text, /Adopted Foreground Ba/);
+        assert.match(text, /stopped/);
+      } finally {
+        h.instance.dispose();
+      }
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  void it('stops mixed normal and adopted snapshots together without source-specific UI routing', async () => {
+    const normal = task({ id: 'bnormal01', name: 'Normal Background Task' });
+    const adopted = adoptedTask();
+    const h = manager({}, [normal, adopted]);
+    try {
+      h.instance.handleInput('a');
+      h.instance.handleInput('a');
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      assert.deepEqual(h.stopped.sort(), ['badopt001', 'bnormal01']);
+      assert.equal(normal.status, 'killed');
+      assert.equal(adopted.status, 'killed');
+      const text = stripAnsi(h.instance.render(100).join('\n'));
+      assert.match(text, /Stopped 2 running tasks/);
+      assert.match(text, /2 history/);
+    } finally {
+      h.instance.dispose();
+    }
+  });
+
+  void it('moves a failed adopted snapshot from unread history to seen when its detail opens', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'pi-bg-adopted-failed-'));
+    try {
+      const outputAbsPath = join(dir, 'failed.output');
+      await writeFile(outputAbsPath, 'foreground started\nadopted process failed\n', 'utf8');
+      const adopted = adoptedTask({
+        id: 'badoptfail',
+        status: 'failed',
+        error: 'Exited with code 7',
+        exitCode: 7,
+        endTime: Date.now(),
+        outputAbsPath,
+        bytesWritten: 42,
+      });
+      const h = manager({}, [adopted]);
+      try {
+        let text = stripAnsi(h.instance.render(100).join('\n'));
+        assert.match(text, /1 failed/);
+        assert.match(text, /1 unread/);
+        assert.equal(h.seen.has(adopted.id), false);
+
+        h.instance.handleInput('\r');
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        assert.equal(h.seen.has(adopted.id), true);
+        text = stripAnsi(h.instance.render(100).join('\n'));
+        assert.match(text, /adopted process failed/);
+
+        h.instance.handleInput('\x1b[D');
+        text = stripAnsi(h.instance.render(100).join('\n'));
+        assert.doesNotMatch(text, /1 unread/);
+        assert.doesNotMatch(text, /●/);
+      } finally {
+        h.instance.dispose();
+      }
+    } finally {
+      await rm(dir, { recursive: true, force: true });
     }
   });
 

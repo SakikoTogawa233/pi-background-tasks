@@ -15,6 +15,12 @@ import { spawn, spawnSync } from 'node:child_process';
 import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
+import type { BgTask } from '../../src/core/common.js';
+import type {
+  BackgroundTaskChildProcess,
+  BackgroundTaskContext,
+  BackgroundTaskRegistry,
+} from '../../src/core/registry.js';
 import { replaceFileDurable, writeFileDurable } from '../../src/core/durable-fs.js';
 
 const isWindows = process.platform === 'win32';
@@ -41,6 +47,32 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => {
     setTimeout(resolve, ms);
   });
+}
+
+interface AdoptRunningChildOptions {
+  command: string;
+  name?: string;
+  startedAt?: number;
+  notifyOnCompletion?: boolean;
+  triggerOnCompletion?: boolean;
+}
+
+type AdoptRunningChild = (
+  ctx: BackgroundTaskContext,
+  child: BackgroundTaskChildProcess,
+  options: AdoptRunningChildOptions,
+) => BgTask;
+
+function adoptRunningChild(
+  registry: BackgroundTaskRegistry,
+  ctx: BackgroundTaskContext,
+  child: BackgroundTaskChildProcess,
+  options: AdoptRunningChildOptions,
+): BgTask {
+  const method = (registry as BackgroundTaskRegistry & { adoptRunningChild?: AdoptRunningChild })
+    .adoptRunningChild;
+  assert.ok(method, 'BackgroundTaskRegistry.adoptRunningChild is missing');
+  return method.call(registry, ctx, child, options);
 }
 
 /** True while a PID is still visible to tasklist. */
@@ -213,6 +245,74 @@ void describe('windows integration', { concurrency: false }, () => {
       }
       // Root-only child.kill() would leave this descendant alive.
       assert.ok(grandchildGone, 'taskkill /T /F must remove the whole process tree');
+    });
+  });
+
+  void it('stops an adopted parent and its grandchild through the registry taskkill tree route', async () => {
+    requireWindows();
+    const { BackgroundTaskRegistry } = await import('../../src/core/registry.js');
+    assert.ok(
+      (BackgroundTaskRegistry.prototype as { adoptRunningChild?: AdoptRunningChild })
+        .adoptRunningChild,
+      'BackgroundTaskRegistry.adoptRunningChild is missing',
+    );
+    await withTempDir(async (dir) => {
+      const grandchild = join(dir, 'adopted-grandchild.cjs');
+      const parent = join(dir, 'adopted-parent.cjs');
+      const pidFile = join(dir, 'adopted-grandchild.pid');
+      await writeFile(
+        grandchild,
+        `require('node:fs').writeFileSync(${JSON.stringify(pidFile)}, String(process.pid));\n` +
+          'setInterval(() => {}, 1000);\n',
+        'utf8',
+      );
+      await writeFile(
+        parent,
+        `const { spawn } = require('node:child_process');\n` +
+          `spawn(process.execPath, [${JSON.stringify(grandchild)}], { stdio: 'ignore' });\n` +
+          'setInterval(() => {}, 1000);\n',
+        'utf8',
+      );
+      const child = spawn(process.execPath, [parent], { stdio: 'ignore', windowsHide: true });
+      const parentPid = child.pid;
+      assert.ok(parentPid, 'adopted parent pid should exist');
+
+      let grandchildPid = 0;
+      for (let attempt = 0; attempt < 100 && grandchildPid === 0; attempt++) {
+        await sleep(50);
+        try {
+          grandchildPid = Number.parseInt(await readFile(pidFile, 'utf8'), 10);
+        } catch {
+          grandchildPid = 0;
+        }
+      }
+      assert.ok(grandchildPid > 0, 'adopted grandchild should report its pid');
+      assert.ok(processExists(grandchildPid), 'adopted grandchild should be running before stopTask');
+
+      const registry = new BackgroundTaskRegistry({
+        sendCompletionNotification: () => {},
+        logger: { error: () => {} },
+      });
+      const ctx: BackgroundTaskContext = {
+        cwd: dir,
+        sessionId: 'windows-adopt-integration',
+        modelRegistry: { getAll: () => [] },
+        model: undefined,
+      };
+      await registry.ensureRuntimeDir(ctx);
+      const task = adoptRunningChild(registry, ctx, child, {
+        command: `${process.execPath} ${parent}`,
+        name: 'Adopted Windows Process Tree',
+      });
+      await registry.stopTask(task, 'user');
+      assert.equal(task.status, 'killed');
+
+      let grandchildGone = false;
+      for (let attempt = 0; attempt < 100 && !grandchildGone; attempt++) {
+        await sleep(50);
+        grandchildGone = !processExists(grandchildPid);
+      }
+      assert.ok(grandchildGone, 'registry.stopTask must remove the adopted process tree');
     });
   });
 
