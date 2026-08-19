@@ -219,6 +219,17 @@ function notifyWith(re: RegExp): (event: object) => boolean {
   return (event) => field(event, 'type') === 'extension_ui_request' && re.test(eventMessage(event));
 }
 
+function isSingleDoneBackgroundStatus(event: object): boolean {
+  const statusText = field(event, 'statusText');
+  return (
+    field(event, 'type') === 'extension_ui_request' &&
+    field(event, 'method') === 'setStatus' &&
+    field(event, 'statusKey') === 'background-tasks' &&
+    typeof statusText === 'string' &&
+    statusText.includes(' bg 1 done · Shift↓ · /bg-clear ')
+  );
+}
+
 function extractTaskId(event: object): string {
   const match = /\((b[0-9a-f]+)\)/.exec(eventMessage(event));
   assert.ok(match?.[1], `Could not extract task id from ${eventMessage(event)}`);
@@ -238,6 +249,33 @@ function commandNames(event: object): string[] {
 }
 
 void describe('rpc', () => {
+  void it('matches only the single completed background-task RPC status', () => {
+    const terminalStatus = {
+      type: 'extension_ui_request',
+      method: 'setStatus',
+      statusKey: 'background-tasks',
+      statusText: '\u001b[34m bg 1 done · Shift↓ · /bg-clear \u001b[0m',
+    };
+
+    assert.equal(isSingleDoneBackgroundStatus(terminalStatus), true);
+    assert.equal(isSingleDoneBackgroundStatus({ ...terminalStatus, method: 'notify' }), false);
+    assert.equal(isSingleDoneBackgroundStatus({ ...terminalStatus, statusKey: 'other' }), false);
+    assert.equal(
+      isSingleDoneBackgroundStatus({
+        ...terminalStatus,
+        statusText: ' bg 1 running · 1 done · Shift↓ · /bg-clear ',
+      }),
+      false,
+    );
+    assert.equal(
+      isSingleDoneBackgroundStatus({
+        ...terminalStatus,
+        statusText: ' bg 2 done · Shift↓ · /bg-clear ',
+      }),
+      false,
+    );
+  });
+
   void it('discovers commands and covers /bg + /logs slash flow', async () => {
     await withRpc(async (rpc, cwd) => {
       const c = await rpc.send({ type: 'get_commands' });
@@ -259,7 +297,7 @@ void describe('rpc', () => {
       );
       const started = await rpc.wait(notifyWith(/Started RPC Echo/));
       const id = extractTaskId(started);
-      await new Promise((resolve) => setTimeout(resolve, 250));
+      await rpc.wait(isSingleDoneBackgroundStatus);
       await rpc.prompt(`/logs ${id} 200`);
       const logs = await rpc.wait(notifyWith(/rpc-ok[\s\S]*Full output/));
       assert.ok(logs);
