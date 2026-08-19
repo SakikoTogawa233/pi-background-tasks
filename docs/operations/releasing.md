@@ -65,8 +65,8 @@ Use `npm pack --dry-run --json` output as the payload source of truth. Verify at
 
 Separate these activities:
 
-1. **npm release candidate:** version comes from `package.json`; run ordinary release checks and inspect the pack payload. The one-time new-package bootstrap for `2.5.0` is documented in `PUBLISHING.md`.
+1. **npm release candidate:** version comes from `package.json`; run ordinary release checks and inspect the pack payload. The new-package authentication bootstrap for `2.5.0` is documented in `PUBLISHING.md`.
 2. **git tag certification:** verify the Sakiko repo is at the exact release commit and clean. Release automation uses `npm run release:check-version -- --ref-type tag --ref-name "v$VERSION"`; with no arguments, the check reads the GitHub tag-ref environment. It never publishes.
 3. **post-publish install smoke:** install by `npm:@sakiko233/pi-background-tasks@$VERSION` in an isolated Pi agent dir. Use git install smoke only after the corresponding Sakiko tag exists.
 
-After the initial npm bootstrap and package-specific Trusted Publisher setup, `.github/workflows/release.yml` publishes unpublished versions through npm OIDC and creates the matching GitHub Release. It stores no npm token.
+`.github/workflows/release.yml` authenticates npm publication by mapping the authorized `NPM_TOKEN` GitHub Actions repository secret to `NODE_AUTH_TOKEN`, as supported by the registry configuration from `actions/setup-node`. It publishes unpublished versions with `npm publish --provenance --access public` and creates the matching GitHub Release. Registry authentication uses the npm token; the provenance attestation separately uses GitHub Actions' OIDC identity. Never commit or print the token value. A future Trusted Publisher migration must update the workflow and governed release docs together.

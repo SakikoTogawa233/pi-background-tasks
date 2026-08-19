@@ -61,6 +61,25 @@ void describe('docs package integration contract', () => {
     }
   });
 
+  void it('pins repository-secret npm authentication and separate provenance identity', () => {
+    const workflow = text('.github/workflows/release.yml');
+    assert.match(workflow, /registry-url: 'https:\/\/registry\.npmjs\.org'/);
+    assert.match(workflow, /npm publish --provenance --access public/);
+    assert.match(workflow, /NODE_AUTH_TOKEN: \$\{\{ secrets\.NPM_TOKEN \}\}/);
+    assert.match(workflow, /id-token: write/);
+    assert.doesNotMatch(workflow, /Publish to npm \(trusted publisher \/ OIDC\)/);
+
+    const publishing = text('PUBLISHING.md');
+    assert.match(publishing, /GitHub Actions repository secret `NPM_TOKEN`/);
+    assert.match(publishing, /maps the `NPM_TOKEN` GitHub Actions repository secret to `NODE_AUTH_TOKEN`/);
+    assert.match(publishing, /provenance using GitHub Actions' OIDC identity/);
+
+    const releasing = text('docs/operations/releasing.md');
+    assert.match(releasing, /mapping the authorized `NPM_TOKEN` GitHub Actions repository secret to `NODE_AUTH_TOKEN`/);
+    assert.match(releasing, /Registry authentication uses the npm token/);
+    assert.match(releasing, /provenance attestation separately uses GitHub Actions' OIDC identity/);
+  });
+
   void it('pins reviewed runtime and generated artifact semantics', () => {
     const contracts = text('docs/reference/runtime-contracts.md');
     assert.match(contracts, /candidate-<slot>\.attempt-<n>/);

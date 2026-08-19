@@ -20,11 +20,13 @@ The release workflow creates `v$VERSION` after the npm release gates pass. Do no
 - Clean worktree and final release commit on `main`.
 - Frontier model evidence, if any, uses Pi subscription/OAuth channels only; never metered APIs.
 
-## Initial npm publication and Trusted Publisher bootstrap
+## npm authentication and initial package bootstrap
 
-`@sakiko233/pi-background-tasks` is a brand-new npm package. npm cannot configure a package-specific Trusted Publisher until the package exists, so an authorized npm owner must perform the initial authenticated publication of `2.5.0` outside GitHub Actions. Do not add an `NPM_TOKEN` or any placeholder secret to this repository.
+`@sakiko233/pi-background-tasks` is a brand-new npm package, so package-specific Trusted Publisher configuration is not available before its initial publication. The repository therefore stores an authorized npm access token as the GitHub Actions repository secret `NPM_TOKEN`. Never commit the token or place its value in workflow files, documentation, logs, or package artifacts.
 
-After that initial publication, configure npm Trusted Publisher for GitHub Actions with repository `SakikoTogawa233/pi-background-tasks` and workflow filename `release.yml`, then run the workflow manually. The workflow uses OIDC with provenance and public access; it detects that npm already has `2.5.0` and can still create the missing `v2.5.0` GitHub Release. Future versions can be published entirely by the trusted-publisher workflow.
+`.github/workflows/release.yml` passes that secret to npm as `NODE_AUTH_TOKEN`, the environment variable supported by the registry configuration created by `actions/setup-node`. This token authenticates both the initial publication of `2.5.0` and later unpublished versions. The unchanged `--provenance` option separately asks npm to generate provenance using GitHub Actions' OIDC identity; provenance does not replace the token used for registry authentication.
+
+After the package exists, maintainers may configure npm Trusted Publisher for repository `SakikoTogawa233/pi-background-tasks` and workflow filename `release.yml` in a separately reviewed migration. Until the workflow and these governed docs are changed together, releases use the `NPM_TOKEN` repository secret rather than OIDC-only publishing.
 
 ## Ordinary release checks
 
@@ -61,14 +63,13 @@ Use `npm pack --dry-run --json --ignore-scripts` output as the payload source of
 
 ## Publish to npm
 
-For `2.5.0`, the authorized npm owner performs the one-time bootstrap described above:
+The release workflow publishes unpublished versions, including the initial `2.5.0` bootstrap, with:
 
 ```bash
-npm login
-npm publish --access public
+npm publish --provenance --access public
 ```
 
-After Trusted Publisher is configured, `.github/workflows/release.yml` publishes later versions with `npm publish --provenance --access public`; no npm secret is stored in GitHub.
+`actions/setup-node` writes npm's registry configuration, and the publish step maps the `NPM_TOKEN` GitHub Actions repository secret to `NODE_AUTH_TOKEN`. The token authorizes registry publication; GitHub OIDC supplies the identity for the provenance attestation. Keep those authentication and attestation roles distinct when maintaining the workflow.
 
 Post-publish smoke with isolated Pi state:
 

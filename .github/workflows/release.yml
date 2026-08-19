@@ -1,8 +1,8 @@
 name: Release
 
-# Publishes unpublished package versions through npm Trusted Publisher (OIDC)
-# and creates the matching GitHub release. No NPM_TOKEN is used. npm is pinned
-# because the runner's bundled version may not support trusted publishing.
+# Publishes unpublished package versions with the npm token stored in the
+# NPM_TOKEN repository secret and creates the matching GitHub release. npm
+# provenance uses GitHub's OIDC identity independently of registry authentication.
 
 on:
   push:
@@ -32,7 +32,7 @@ jobs:
           registry-url: 'https://registry.npmjs.org'
           package-manager-cache: false
 
-      - name: Ensure npm supports trusted publishing
+      - name: Install npm with provenance support
         run: npm install -g "npm@^11.5.1"
 
       - name: Read package metadata
@@ -99,9 +99,11 @@ jobs:
         if: steps.check.outputs.publish == 'true' || steps.github_release.outputs.create == 'true'
         run: npm run release:check-version -- --ref-type tag --ref-name "v${{ steps.meta.outputs.version }}"
 
-      - name: Publish to npm (trusted publisher / OIDC)
+      - name: Publish to npm (repository secret with provenance)
         if: steps.check.outputs.publish == 'true'
         run: npm publish --provenance --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
       - name: Create GitHub release
         if: steps.github_release.outputs.create == 'true'
