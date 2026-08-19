@@ -1003,8 +1003,30 @@ void describe('BackgroundTaskRegistry', () => {
   });
 
   void it('bounds only the durable terminal transition while stopTask awaits gated full finalization', async () => {
+    mock.timers.enable({ apis: ['setTimeout'] });
     const gate = deferred<void>();
-    const h = await createHarness({ platform: 'linux', stopWaitMs: 40 });
+    const terminalMetadataDurable = deferred<void>();
+    const expectedMetadataWrites = [
+      { status: 'running', notified: false },
+      { status: 'killed', notified: false },
+      { status: 'killed', notified: true },
+    ];
+    let metadataWrites = 0;
+    const h = await createHarness({
+      platform: 'linux',
+      stopWaitMs: 40,
+      writeJsonAtomic: async (path, value) => {
+        const writeNumber = ++metadataWrites;
+        const metadata = requiredJsonObject(value, `metadata write ${String(writeNumber)}`);
+        assert.deepEqual(
+          { status: metadata['status'], notified: metadata['notified'] },
+          expectedMetadataWrites[writeNumber - 1],
+          `unexpected metadata write ${String(writeNumber)}`,
+        );
+        await writeJsonAtomic(path, value);
+        if (writeNumber === 2) terminalMetadataDurable.resolve(undefined);
+      },
+    });
     try {
       const task = await h.registry.startTask(h.ctx, 'node fake.js', {
         name: 'Complete Finalization',
@@ -1015,32 +1037,46 @@ void describe('BackgroundTaskRegistry', () => {
       });
       const child = lastSpawn(h).child;
       let stopResolved = false;
-      const stopping = h.registry.stopTask(task, 'user').then((stopped) => {
-        stopResolved = true;
-        return stopped;
-      });
+      const stopping = h.registry.stopTask(task, 'user');
+      void stopping.then(
+        () => {
+          stopResolved = true;
+        },
+        () => undefined,
+      );
       child.close(null, 'SIGTERM');
-      await waitFor(() => task.status === 'killed', 'durable terminal transition');
-      await new Promise((resolve) => setTimeout(resolve, 100));
+      await terminalMetadataDurable.promise;
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
 
+      assert.equal(task.status, 'killed');
+      assert.equal(metadataWrites, 2, 'phase A must end at the second metadata write');
+      assert.equal(stopResolved, false, 'stopTask must still be awaiting phase B');
+      mock.timers.tick(100);
+      await Promise.resolve();
       assert.equal(
         stopResolved,
         false,
-        'stopTask must await full finalization after phase A reaches terminal status',
+        'the 40ms stop wait must not bound phase B after durable terminal status',
       );
+
       gate.resolve(undefined);
       await assert.doesNotReject(stopping);
+      await h.registry.waitForFinalization(task);
 
       const metadata = parseJsonObject(
         await readFile(task.metadataAbsPath, 'utf8'),
         'final notification metadata must be an object',
       );
+      assert.equal(metadataWrites, 3);
       assert.equal(metadata['status'], 'killed');
       assert.equal(metadata['notified'], true);
       assert.equal(task.notified, true);
       assert.equal(h.notifications.length, 1);
-      await h.registry.waitForFinalization(task);
     } finally {
+      mock.timers.reset();
       await cleanup(h.root);
     }
   });
