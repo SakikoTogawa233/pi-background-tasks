@@ -1,5 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
 import { readFileSync, realpathSync, statSync } from 'node:fs';
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
@@ -89,6 +90,56 @@ void describe('Pi launch resolution', () => {
       assert.equal(spec.executable, process.execPath);
       assert.equal(spec.argvPrefix.length, 1);
       assert.equal(spec.argvPrefix[0], realpathSync(join(fixture.packageRoot, 'dist', 'cli.cjs')));
+    } finally {
+      await removeFixture(fixture.root);
+    }
+  });
+
+  void it('launches package-backed Windows delegate argv and stdin exactly without PATH lookup', async () => {
+    const fixture = await createPackageFixture({ bin: { pi: 'dist/cli.cjs' } }, [
+      'dist/cli.cjs',
+    ]);
+    try {
+      const observedPath = join(fixture.root, 'delegate-child-observed.json');
+      const cliPath = join(fixture.packageRoot, 'dist', 'cli.cjs');
+      await writeFile(
+        cliPath,
+        `const fs = require('node:fs');\n` +
+          `fs.writeFileSync(process.env.PI_BG_TEST_OBSERVED, JSON.stringify({ argv: process.argv.slice(2), stdin: fs.readFileSync(0, 'utf8'), taskId: process.env.PI_BG_DELEGATE_TASK_ID }));\n`,
+        'utf8',
+      );
+      const piArgs = [
+        '--session-id',
+        'delegate-child-contract',
+        '--session-dir',
+        join(fixture.root, 'task sessions'),
+        '--extension',
+        join(fixture.root, 'delegate-child.js'),
+        '--no-extensions',
+        '--no-builtin-tools',
+        '--tools',
+        'read,grep,find,ls',
+      ];
+      const seed = '{"schema_version":"delegate-seed-contract"}\n';
+      const spec = resolvePiLaunch(fixture.deps);
+      const result = spawnSync(spec.executable, piLaunchArgv(spec, piArgs), {
+        encoding: 'utf8',
+        env: {
+          ...process.env,
+          PATH: join(fixture.root, 'path-must-not-be-used'),
+          PI_BG_TEST_OBSERVED: observedPath,
+          PI_BG_DELEGATE_TASK_ID: 'delegate-contract-task',
+        },
+        input: seed,
+        shell: false,
+        windowsHide: true,
+      });
+      assert.equal(result.status, 0, result.stderr);
+      assert.deepEqual(JSON.parse(readFileSync(observedPath, 'utf8')), {
+        argv: piArgs,
+        stdin: seed,
+        taskId: 'delegate-contract-task',
+      });
     } finally {
       await removeFixture(fixture.root);
     }

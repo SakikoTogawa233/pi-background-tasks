@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { mkdir, mkdtemp, rm } from 'node:fs/promises';
-import { join, resolve } from 'node:path';
+import { isAbsolute, join, normalize, resolve, sep } from 'node:path';
 import { tmpdir } from 'node:os';
 import {
   ModelRuntime,
@@ -299,7 +299,13 @@ void describe('foreground bash SDK production E2E', { concurrency: false }, () =
       assert.match(status.command, /SDK_AUTO_READY/);
       const logs = await exec(h.session, 'bg_logs', { taskId, maxBytes: 2000, tail: false });
       assert.match(resultText(logs), /SDK_AUTO_READY/);
-      assert.ok(status.outputPath.startsWith('.pi/tasks/'));
+      assert.equal(isAbsolute(status.outputPath), false, 'task output path must remain relative');
+      const outputPathParts = normalize(status.outputPath).split(sep);
+      assert.deepEqual(outputPathParts.slice(0, 2), ['.pi', 'tasks']);
+      assert.equal(outputPathParts.length, 4, 'task output path must include one run directory');
+      const outputFile = outputPathParts[3];
+      assert.ok(outputFile);
+      assert.match(outputFile, /\.output$/);
 
       await exec(h.session, 'bg_kill', { taskId });
     } finally {
