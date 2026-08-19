@@ -124,7 +124,7 @@ void describe('delegate ambient extension provider discovery', { concurrency: fa
         entry === '--extension' ? [ambient.argv[index + 1] ?? ''] : [],
       );
       assert.equal(explicitExtensions.length, 1);
-      assert.match(explicitExtensions[0] ?? '', /extensions\/delegate-child\.(?:ts|js)$/);
+      assert.match(explicitExtensions[0] ?? '', /extensions[\\/]delegate-child\.(?:ts|js)$/);
       assert.ok(existsSync(join(ambient.artifactDir, 'result.json')));
     },
   );
