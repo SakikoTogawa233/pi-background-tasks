@@ -1,6 +1,6 @@
 # Publishing @sakiko233/pi-background-tasks
 
-Release checklist for the Sakiko fork's npm and GitHub releases. The current release is `2.5.1`.
+Release checklist for the Sakiko fork's npm and GitHub releases. The current release is `2.5.2`.
 
 The release version is always read from `package.json`:
 

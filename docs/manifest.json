@@ -846,7 +846,7 @@
     "image": "https://raw.githubusercontent.com/SakikoTogawa233/pi-background-tasks/main/logo.png",
     "name": "@sakiko233/pi-background-tasks",
     "type": "module",
-    "version": "2.5.1"
+    "version": "2.5.2"
   },
   "public_surface_ids": [
     "command:bg",
