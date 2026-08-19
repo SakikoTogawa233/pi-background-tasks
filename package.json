@@ -68,6 +68,7 @@
     "format:check": "cd ../.. && npm run quality:ts:format",
     "test:compat": "tsx scripts/test-compat.ts",
     "test:pnpm-pack": "node scripts/test-pnpm-pack-install.mjs",
+    "cache:prime-packed-install": "node scripts/prime-packed-install-cache.mjs",
     "test:hook-contract": "tsx --test --test-concurrency=1 tests/scripted-provider/pi-hook-contract.test.ts",
     "docs:generate": "node scripts/docs/generate.mjs",
     "docs:verify": "node scripts/docs/verify.mjs",

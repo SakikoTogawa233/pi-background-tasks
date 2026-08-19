@@ -85,11 +85,14 @@ npm run test:windows
 Smoke/release checks:
 
 ```bash
+npm run cache:prime-packed-install
 npm run smoke
 npm run smoke:large-context
 npm run pack:dry-run
 npm run test:compat
 ```
+
+`npm run cache:prime-packed-install` is the online release gate that reads the sole production dependency and its transitive closure from `package-lock.json`, then primes their exact locked versions for the package suite's unchanged offline tarball install. It is cross-platform and fails loudly if the production dependency count or locked resolution changes unexpectedly.
 
 Current smoke is `tsx scripts/smoke.ts`. It creates a temporary Pi agent/session directory, sets offline/telemetry-suppression environment variables, and runs the package entrypoint with `/jobs`.
 

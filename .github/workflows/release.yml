@@ -73,6 +73,10 @@ jobs:
         if: steps.check.outputs.publish == 'true' || steps.github_release.outputs.create == 'true'
         run: npm run docs:verify && npm run test:docs
 
+      - name: Prime offline packed-install cache
+        if: steps.check.outputs.publish == 'true' || steps.github_release.outputs.create == 'true'
+        run: npm run cache:prime-packed-install
+
       - name: Test gate
         if: steps.check.outputs.publish == 'true' || steps.github_release.outputs.create == 'true'
         run: npm test

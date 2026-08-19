@@ -54,6 +54,9 @@ jobs:
         if: runner.os != 'Windows'
         run: npx tsx --test tests/unit/posix-invariance.test.ts
 
+      - name: Prime offline packed-install cache
+        run: npm run cache:prime-packed-install
+
       # The default gate: unit, SDK, RPC, component, and package suites.
       - name: Default test gate
         run: npm test

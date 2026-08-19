@@ -37,6 +37,7 @@ npm run test:rpc
 npm run test:component
 npm run test:package
 npm run test:hook-contract
+npm run cache:prime-packed-install
 npm run smoke
 npm run smoke:large-context
 npm run docs:verify
@@ -48,6 +49,8 @@ npm run test:pnpm-pack
 npm run test:compat
 npm view @sakiko233/pi-background-tasks name version --json
 ```
+
+Run `npm run cache:prime-packed-install` online before the default test gate. It reads the sole production dependency and its transitive closure from `package-lock.json` and caches their exact locked versions so the package suite's tarball install remains genuinely offline on a clean runner.
 
 `npm run test:full` is the full interactive gate (default gate plus PTY and agent-loop). Run it when certifying full TUI/agent-loop behavior, not for docs-only maintenance.
 
