@@ -11,16 +11,29 @@ function text(path: string): string {
 void describe('docs package integration contract', () => {
   void it('declares docs scripts, prepack gates, and packaged docs payload', () => {
     const pkg = JSON.parse(text('package.json')) as {
+      name: string;
+      version: string;
+      repository: { url: string };
+      homepage: string;
+      bugs: { url: string };
       files: string[];
       scripts: Record<string, string>;
       pi?: { image?: string };
     };
+    assert.equal(pkg.name, '@sakiko233/pi-background-tasks');
+    assert.equal(pkg.version, '2.5.0');
+    assert.equal(
+      pkg.repository.url,
+      'git+https://github.com/SakikoTogawa233/pi-background-tasks.git',
+    );
+    assert.equal(pkg.homepage, 'https://github.com/SakikoTogawa233/pi-background-tasks#readme');
+    assert.equal(pkg.bugs.url, 'https://github.com/SakikoTogawa233/pi-background-tasks/issues');
     assert.ok(pkg.files.includes('docs/'));
     assert.ok(pkg.files.includes('BACKGROUND-TASKS-INSTRUCTIONS.md'));
     assert.ok(pkg.files.includes('logo.png'));
     assert.equal(
       pkg.pi?.image,
-      'https://raw.githubusercontent.com/ismailsaleekh/pi-background-tasks/main/logo.png',
+      'https://raw.githubusercontent.com/SakikoTogawa233/pi-background-tasks/main/logo.png',
     );
     assert.equal(pkg.scripts['docs:generate'], 'node scripts/docs/generate.mjs');
     assert.equal(pkg.scripts['docs:verify'], 'node scripts/docs/verify.mjs');

@@ -13,7 +13,7 @@ This subsystem owns the package-wide Anthropic subscription attribution provider
 
 ## Global package behavior
 
-`package.json.pi.extensions` loads `extensions/anthropic-attribution.ts` for every normal `pi-background-tasks` installation, before the background-task entrypoint. The extension is provider-gated: non-Anthropic sessions and payloads are unchanged.
+`package.json.pi.extensions` loads `extensions/anthropic-attribution.ts` for every normal `@sakiko233/pi-background-tasks` installation, before the background-task entrypoint. The extension is provider-gated: non-Anthropic sessions and payloads are unchanged.
 
 For Anthropic sessions it registers the package-owned `anthropic` provider transport and applies the Claude Code subscription request contract:
 

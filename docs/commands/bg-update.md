@@ -12,10 +12,10 @@ covers_sources: []
 <!-- pi-docs:begin name="command-contract-bg-update" generator="scripts/docs/generate.mjs" -->
 | Command | Description | Provenance |
 | --- | --- | --- |
-| `/bg-update` | Show how to update pi-background-tasks to the latest published version | `src/extension.ts:611` |
+| `/bg-update` | Show how to update @sakiko233/pi-background-tasks to the latest published version | `src/extension.ts:611` |
 <!-- pi-docs:end name="command-contract-bg-update" -->
 
-Show update instructions for `pi-background-tasks`.
+Show update instructions for `@sakiko233/pi-background-tasks`.
 
 ## Synopsis
 
@@ -51,10 +51,10 @@ The registry request is time-boxed by `fetchLatestVersion` and failures resolve 
 The notification includes current installed version and, when known, latest published version, then prints:
 
 ```text
-pi install npm:pi-background-tasks@latest
-pi install npm:pi-background-tasks@<version>
-pi install git:github.com/ismailsaleekh/pi-background-tasks@main
-For a pinned git release, first verify the tag exists, then use git:github.com/ismailsaleekh/pi-background-tasks@<existing-tag>.
+pi install npm:@sakiko233/pi-background-tasks@latest
+pi install npm:@sakiko233/pi-background-tasks@<version>
+pi install git:github.com/SakikoTogawa233/pi-background-tasks@main
+For a pinned git release, first verify the tag exists, then use git:github.com/SakikoTogawa233/pi-background-tasks@<existing-tag>.
 This command only prints update instructions; it does not install or self-update.
 ```
 

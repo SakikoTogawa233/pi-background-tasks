@@ -322,7 +322,7 @@ void describe('rpc', () => {
       assert.equal(field(response, 'success'), true);
       await rpc.wait(
         notifyWith(
-          /pi install npm:pi-background-tasks@latest[\s\S]*does not install or self-update/,
+          /pi install npm:@sakiko233\/pi-background-tasks@latest[\s\S]*does not install or self-update/,
         ),
       );
     });

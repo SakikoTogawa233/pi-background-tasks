@@ -68,12 +68,12 @@ import { registerDelegateExtension } from './delegate-extension.js';
 
 const STATUS_INTERVAL_MS = 1000;
 const COMMAND_PREVIEW_CHARS = 90;
-const GIT_INSTALL_TARGET = 'git:github.com/ismailsaleekh/pi-background-tasks';
+const GIT_INSTALL_TARGET = 'git:github.com/SakikoTogawa233/pi-background-tasks';
 
 const packageInfo = readPackageInfo(new URL('../package.json', import.meta.url), (error) => {
   console.error(`[background-tasks] failed to read package version: ${error.message}`);
 });
-const PACKAGE_NAME = packageInfo.name ?? 'pi-background-tasks';
+const PACKAGE_NAME = packageInfo.name ?? '@sakiko233/pi-background-tasks';
 const PACKAGE_VERSION = packageInfo.version;
 const LIGHT_BLUE_BG = '\x1b[48;2;183;223;255m';
 const LIGHT_BLUE_FG = '\x1b[38;2;11;70;110m';
@@ -609,15 +609,15 @@ export default function backgroundTasksExtension(pi: ExtensionAPI): void {
   });
 
   pi.registerCommand('bg-update', {
-    description: 'Show how to update pi-background-tasks to the latest published version',
+    description: 'Show how to update @sakiko233/pi-background-tasks to the latest published version',
     handler: (_args, ctx) => {
       const current = PACKAGE_VERSION ?? 'unknown';
       const latest = latestKnownVersion;
       const pinnedNpm = latest ? `${PACKAGE_NAME}@${latest}` : `${PACKAGE_NAME}@<version>`;
       const lines = [
         latest
-          ? `pi-background-tasks ${current} is installed; ${latest} is the latest published version.`
-          : `pi-background-tasks ${current} is installed.`,
+          ? `${PACKAGE_NAME} ${current} is installed; ${latest} is the latest published version.`
+          : `${PACKAGE_NAME} ${current} is installed.`,
         'Update from npm:',
         `  pi install npm:${PACKAGE_NAME}@latest`,
         `  pi install npm:${pinnedNpm}`,

@@ -1545,7 +1545,7 @@ console.log(JSON.stringify({ type: "message_end", message: secondMessage }));
       restoreEnvValue(key, undefined);
     }
     const registry = await startRegistry(
-      JSON.stringify({ name: 'pi-background-tasks', version: '999.0.0' }),
+      JSON.stringify({ name: '@sakiko233/pi-background-tasks', version: '999.0.0' }),
     );
     process.env['PI_BG_REGISTRY_URL'] = registry.url;
     const { session } = await harness();
@@ -1588,14 +1588,14 @@ console.log(JSON.stringify({ type: "message_end", message: secondMessage }));
       assert.ok(updateCommand);
       await updateCommand.handler('', session.extensionRunner.createCommandContext());
       const message = notifications.at(-1)?.message ?? '';
-      assert.match(message, /pi install npm:pi-background-tasks@latest/);
-      assert.match(message, /pi install npm:pi-background-tasks@999\.0\.0/);
+      assert.match(message, /pi install npm:@sakiko233\/pi-background-tasks@latest/);
+      assert.match(message, /pi install npm:@sakiko233\/pi-background-tasks@999\.0\.0/);
       assert.match(
         message,
-        /pi install git:github\.com\/ismailsaleekh\/pi-background-tasks@main/,
+        /pi install git:github\.com\/SakikoTogawa233\/pi-background-tasks@main/,
       );
       assert.match(message, /first verify the tag exists/);
-      assert.doesNotMatch(message, /pi-background-tasks@v999\.0\.0/);
+      assert.doesNotMatch(message, /@sakiko233\/pi-background-tasks@v999\.0\.0/);
       assert.match(message, /999\.0\.0 is the latest published version/);
       assert.match(message, /does not install or self-update/);
     } finally {

@@ -47,7 +47,7 @@ try {
         name: 'pi-background-tasks-pnpm-pack-regression',
         version: '0.0.0',
         private: true,
-        dependencies: { 'pi-background-tasks': `file:${tarball}` },
+        dependencies: { '@sakiko233/pi-background-tasks': `file:${tarball}` },
       },
       null,
       2,
@@ -60,9 +60,17 @@ try {
 
   run(pnpm, ['install', '--ignore-scripts'], temp);
 
-  const installedManifestPath = join(temp, 'node_modules', 'pi-background-tasks', 'package.json');
+  const installedManifestPath = join(
+    temp,
+    'node_modules',
+    '@sakiko233',
+    'pi-background-tasks',
+    'package.json',
+  );
   if (!existsSync(installedManifestPath)) {
-    throw new Error('pnpm install did not produce node_modules/pi-background-tasks/package.json');
+    throw new Error(
+      'pnpm install did not produce node_modules/@sakiko233/pi-background-tasks/package.json',
+    );
   }
   const installed = JSON.parse(readFileSync(installedManifestPath, 'utf8'));
   const dependencies = installed.dependencies ?? {};

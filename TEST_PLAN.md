@@ -1,4 +1,4 @@
-# pi-background-tasks Test Plan
+# @sakiko233/pi-background-tasks Test Plan
 
 This package follows the package-local maintainer navigation:
 
@@ -12,7 +12,8 @@ The table below remains the exhaustive acceptance source. Do not replace it with
 
 | Field | Value |
 |---|---|
-| Package | `pi-background-tasks` |
+| Package | `@sakiko233/pi-background-tasks` |
+| Version | `2.5.0` |
 | Extension entrypoints | `extensions/anthropic-attribution.ts`, `extensions/background-tasks.ts` |
 | Public commands | `/bg`, `/jobs`, `/logs`, `/kill`, `/tasks`, `/bg-tasks`, `/bg-clear`, `/bg-update`, `/claude-cache`, `/fusion`, `/fusion-models` |
 | Public tools | foreground `bash` override; `bg_run`, `bg_delegate`, `bg_result`, `bg_run_pi_attested`, `bg_status`, `bg_logs`, `bg_kill`, `fusion_reason`, `fusion_investigate`, `fusion_research`, `fusion_validate` |
@@ -131,7 +132,7 @@ SDK/RPC/scripted-provider/package/compatibility coverage asserts exactly four to
 | Pack contents | `npm pack --dry-run`, `npm run test:pnpm-pack` |  |  |  |  |  | yes |  | Runtime files and third-party notice included; tests, fake child helpers, release-only scripts, artifacts, nested tarballs, and `node_modules` excluded. Default npm tarball install uses isolated HOME/XDG/npm cache and offline peer-ignore installation. Linux CI separately installs the tarball with pnpm 11.18.0 and `blockExoticSubdeps: true`. |
 | Maintainer docs gateway | `BACKGROUND-TASKS-INSTRUCTIONS.md` | docs focused |  |  |  |  |  |  | Gateway requires INDEX → read-before-edit → owning-doc navigation, records current docs generate/verify/attestation workflow, preserves subscription-only frontier routing, parent/child tool separation, durability/integrity, and no self-certification. Logo reference is package-local (`docs/assets/logo.svg`) when the asset-owner file is present. |
 | Shared architecture/API/runtime/operations docs | `docs/api`, `docs/concepts`, `docs/subsystems`, `docs/reference`, `docs/operations` | docs focused |  |  |  |  |  |  | The active docs engine validates frontmatter, package-local links/reference links, INDEX reachability, exact behavioral source ownership, generated runtime contracts, deterministic generated regions, and manifest freshness. Semantic receipt state is reported by default and enforced only by the optional strict attestation command. Unsupported extraction and legacy placeholders fail closed. |
-| Package maintenance version/tag wording | `PUBLISHING.md`, `docs/operations/releasing.md` | docs focused |  |  |  |  |  |  | Release commands derive `VERSION` from `package.json`; observed git tags stop at `v0.6.0`, so git install/tag certification is separate from npm publishing and no nonexistent v1 tag is advertised. |
+| Package maintenance version/tag wording | `PUBLISHING.md`, `docs/operations/releasing.md` | docs focused |  |  |  |  |  |  | Release commands derive `NAME` and `VERSION` from `package.json`; the one-time npm bootstrap and package-specific Trusted Publisher setup are explicit, and git installs are certified only after the Sakiko release tag exists. |
 
 ## Residual hardening coverage
 

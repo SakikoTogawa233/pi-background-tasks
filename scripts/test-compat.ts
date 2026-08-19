@@ -361,7 +361,14 @@ async function assertNoRemovedTypeBoxApis(packageDir: string, label: string): Pr
 
 function assertBundledTypeBox(temp: string, version: string, expectedRange: string): void {
   // The package must resolve Pi's bundled typebox, never a private copy.
-  const nested = join(temp, 'node_modules', 'pi-background-tasks', 'node_modules', 'typebox');
+  const nested = join(
+    temp,
+    'node_modules',
+    '@sakiko233',
+    'pi-background-tasks',
+    'node_modules',
+    'typebox',
+  );
   if (existsSync(nested))
     throw new Error(
       `Pi ${version}: package must not ship or install a private typebox at ${nested}`,
@@ -589,13 +596,14 @@ async function smokeVersion(version: RequiredPiVersion, tarballPath: string): Pr
     assertFusionLifecycleHookSupport(temp, version);
     assertAnthropicCacheAdapterSupport(temp, version);
     await assertNoRemovedTypeBoxApis(
-      join(temp, 'node_modules', 'pi-background-tasks'),
+      join(temp, 'node_modules', '@sakiko233', 'pi-background-tasks'),
       `Pi ${version}`,
     );
     const cli = join(temp, 'node_modules', '@earendil-works', 'pi-coding-agent', 'dist', 'cli.js');
     const extension = join(
       temp,
       'node_modules',
+      '@sakiko233',
       'pi-background-tasks',
       'extensions',
       'background-tasks.ts',
@@ -838,7 +846,7 @@ try {
   for (const version of requiredVersions) await smokeVersion(version, tarballPath);
   const currentHostVersion = await verifyCurrentHostFusionUsage();
   console.log(
-    `Smoke-loaded pi-background-tasks against Pi ${requiredVersions.join(', ')}; current host ${currentHostVersion} persisted and replayed full Fusion usage`,
+    `Smoke-loaded @sakiko233/pi-background-tasks against Pi ${requiredVersions.join(', ')}; current host ${currentHostVersion} persisted and replayed full Fusion usage`,
   );
 } finally {
   await rm(tarballPath, { force: true });

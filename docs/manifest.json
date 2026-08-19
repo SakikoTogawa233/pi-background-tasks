@@ -26,7 +26,7 @@
       "state": "stale-authored-prose"
     },
     {
-      "authored_body_sha256": "sha256:72c53dcc104f9b5efa57e38bcb21a4c3c620d5caf1571af82348f94dcafbe941",
+      "authored_body_sha256": "sha256:dde72171e9b2fe2c42de121eb6c0b99667d929f33b844d967089a15a37204664",
       "covers_sources": [
         "extensions/anthropic-attribution.ts",
         "src/core/anthropic-attribution-path.ts",
@@ -834,10 +834,10 @@
       "logo.png",
       "src/"
     ],
-    "image": "https://raw.githubusercontent.com/ismailsaleekh/pi-background-tasks/main/logo.png",
-    "name": "pi-background-tasks",
+    "image": "https://raw.githubusercontent.com/SakikoTogawa233/pi-background-tasks/main/logo.png",
+    "name": "@sakiko233/pi-background-tasks",
     "type": "module",
-    "version": "2.4.2"
+    "version": "2.5.0"
   },
   "public_surface_ids": [
     "command:bg",
@@ -898,7 +898,7 @@
         "source": "src/extension.ts:595"
       },
       {
-        "description": "Show how to update pi-background-tasks to the latest published version",
+        "description": "Show how to update @sakiko233/pi-background-tasks to the latest published version",
         "id": "command:bg-update",
         "kind": "command",
         "name": "bg-update",

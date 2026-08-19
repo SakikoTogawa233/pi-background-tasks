@@ -1,24 +1,30 @@
-# Publishing pi-background-tasks
+# Publishing @sakiko233/pi-background-tasks
 
-Release checklist for npm publishing and standalone git publishing.
+Release checklist for the Sakiko fork's npm and GitHub releases. The current release is `2.5.0`.
 
 The release version is always read from `package.json`:
 
 ```bash
-# From the pi-background-tasks package root:
+# From the @sakiko233/pi-background-tasks package root:
+NAME=$(node -p "require('./package.json').name")
 VERSION=$(node -p "require('./package.json').version")
-printf 'pi-background-tasks@%s\n' "$VERSION"
+printf '%s@%s\n' "$NAME" "$VERSION"
 ```
 
-Observed standalone git tags currently stop at `v0.6.0`; do **not** advertise a `v$VERSION` git install target until that tag exists in the standalone package repository.
+The release workflow creates `v$VERSION` after the npm release gates pass. Do not advertise a pinned git install until that GitHub release/tag exists.
 
 ## Preconditions
 
-- npm account with publish rights for `pi-background-tasks`.
-- Standalone GitHub repository: `github.com/ismailsaleekh/pi-background-tasks`.
-- Clean worktree and final release commit in the standalone package repository.
+- npm account with publish rights for the `@sakiko233` scope and `@sakiko233/pi-background-tasks`.
+- GitHub repository: `github.com/SakikoTogawa233/pi-background-tasks`.
+- Clean worktree and final release commit on `main`.
 - Frontier model evidence, if any, uses Pi subscription/OAuth channels only; never metered APIs.
-- No automated publish, push, or tag from repair runs unless the operator explicitly requests it.
+
+## Initial npm publication and Trusted Publisher bootstrap
+
+`@sakiko233/pi-background-tasks` is a brand-new npm package. npm cannot configure a package-specific Trusted Publisher until the package exists, so an authorized npm owner must perform the initial authenticated publication of `2.5.0` outside GitHub Actions. Do not add an `NPM_TOKEN` or any placeholder secret to this repository.
+
+After that initial publication, configure npm Trusted Publisher for GitHub Actions with repository `SakikoTogawa233/pi-background-tasks` and workflow filename `release.yml`, then run the workflow manually. The workflow uses OIDC with provenance and public access; it detects that npm already has `2.5.0` and can still create the missing `v2.5.0` GitHub Release. Future versions can be published entirely by the trusted-publisher workflow.
 
 ## Ordinary release checks
 
@@ -40,7 +46,7 @@ npm run pack:dry-run
 # With pnpm 11.18.0 on PATH:
 npm run test:pnpm-pack
 npm run test:compat
-npm view pi-background-tasks name version --json
+npm view @sakiko233/pi-background-tasks name version --json
 ```
 
 `npm run test:full` is the full interactive gate (default gate plus PTY and agent-loop). Run it when certifying full TUI/agent-loop behavior, not for docs-only maintenance.
@@ -51,18 +57,20 @@ Use `npm pack --dry-run --json --ignore-scripts` output as the payload source of
 
 ## Publish to npm
 
-Only after operator approval:
+For `2.5.0`, the authorized npm owner performs the one-time bootstrap described above:
 
 ```bash
 npm login
 npm publish --access public
 ```
 
+After Trusted Publisher is configured, `.github/workflows/release.yml` publishes later versions with `npm publish --provenance --access public`; no npm secret is stored in GitHub.
+
 Post-publish smoke with isolated Pi state:
 
 ```bash
-PI_CODING_AGENT_DIR=$(mktemp -d) pi -e npm:pi-background-tasks@$VERSION --offline --no-tools --no-session -p "/jobs"
-pi install npm:pi-background-tasks@$VERSION
+PI_CODING_AGENT_DIR=$(mktemp -d) pi -e npm:@sakiko233/pi-background-tasks@$VERSION --offline --no-tools --no-session -p "/jobs"
+pi install npm:@sakiko233/pi-background-tasks@$VERSION
 ```
 
 ## Standalone git tag certification
@@ -74,8 +82,8 @@ Before any git install instructions are published, verify in the standalone repo
 Git install smoke only after the tag exists:
 
 ```bash
-PI_CODING_AGENT_DIR=$(mktemp -d) pi -e git:github.com/ismailsaleekh/pi-background-tasks@v$VERSION --offline --no-tools --no-session -p "/jobs"
-pi install git:github.com/ismailsaleekh/pi-background-tasks@v$VERSION
+PI_CODING_AGENT_DIR=$(mktemp -d) pi -e git:github.com/SakikoTogawa233/pi-background-tasks@v$VERSION --offline --no-tools --no-session -p "/jobs"
+pi install git:github.com/SakikoTogawa233/pi-background-tasks@v$VERSION
 ```
 
 ## pi.dev/packages

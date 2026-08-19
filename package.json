@@ -1,6 +1,6 @@
 {
-  "name": "pi-background-tasks",
-  "version": "2.4.2",
+  "name": "@sakiko233/pi-background-tasks",
+  "version": "2.5.0",
   "description": "Pi extension for durable background shell tasks, read-only delegated agents, local attested Pi runs, and fixed-purpose Fusion workflows through child Pi processes.",
   "type": "module",
   "license": "ISC",
@@ -26,13 +26,13 @@
     "task-manager",
     "pi-dev"
   ],
-  "homepage": "https://github.com/ismailsaleekh/pi-background-tasks#readme",
+  "homepage": "https://github.com/SakikoTogawa233/pi-background-tasks#readme",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/ismailsaleekh/pi-background-tasks.git"
+    "url": "git+https://github.com/SakikoTogawa233/pi-background-tasks.git"
   },
   "bugs": {
-    "url": "https://github.com/ismailsaleekh/pi-background-tasks/issues"
+    "url": "https://github.com/SakikoTogawa233/pi-background-tasks/issues"
   },
   "files": [
     "extensions/",
@@ -80,7 +80,7 @@
     "prepack": "npm run docs:verify && npm run payload:check"
   },
   "pi": {
-    "image": "https://raw.githubusercontent.com/ismailsaleekh/pi-background-tasks/main/logo.png",
+    "image": "https://raw.githubusercontent.com/SakikoTogawa233/pi-background-tasks/main/logo.png",
     "extensions": [
       "./extensions/anthropic-attribution.ts",
       "./extensions/background-tasks.ts"

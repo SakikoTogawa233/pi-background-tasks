@@ -1993,6 +1993,7 @@ export async function recordAttestation(docId, options = {}) {
 }
 
 export function verifyPackageFacts(root, codeFacts, docsModel) {
+  if (codeFacts.package.name !== codeFacts.lock.name) throw new DocsGateError(`package.json name ${codeFacts.package.name} does not match package-lock name ${codeFacts.lock.name}`);
   if (codeFacts.package.version !== codeFacts.lock.version || codeFacts.package.version !== codeFacts.lock.rootVersion) throw new DocsGateError(`package.json version ${codeFacts.package.version} does not match package-lock versions ${codeFacts.lock.version}/${codeFacts.lock.rootVersion}`);
   const pkg = readJson(root, 'package.json');
   for (const mandatory of ['BACKGROUND-TASKS-INSTRUCTIONS.md', 'THIRD_PARTY_NOTICES.md', 'logo.png']) {
@@ -2004,12 +2005,13 @@ export function verifyPackageFacts(root, codeFacts, docsModel) {
     }
   }
   const image = pkg.pi?.image;
-  if (!image || !/^https:\/\/raw\.githubusercontent\.com\/ismailsaleekh\/pi-background-tasks\/main\/logo\.png$/u.test(image)) throw new DocsGateError('package pi.image must be the GitHub raw main logo.png URL');
+  if (!image || !/^https:\/\/raw\.githubusercontent\.com\/SakikoTogawa233\/pi-background-tasks\/main\/logo\.png$/u.test(image)) throw new DocsGateError('package pi.image must be the Sakiko GitHub raw main logo.png URL');
   const texts = markdownEntries(root, docsModel);
   for (const entry of texts.values()) {
-    const obsolete = new RegExp(`pi-background-tasks@(?:v)?(?!${codeFacts.package.version.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b)\\d+\\.\\d+\\.\\d+`, 'u');
-    if (obsolete.test(entry.body)) throw new DocsGateError(`${entry.rel}: obsolete pinned pi-background-tasks install version`);
-    if (/git:github\.com\/ismailsaleekh\/pi-background-tasks@v1\./u.test(entry.body)) throw new DocsGateError(`${entry.rel}: advertises a nonexistent v1 git tag`);
+    const obsolete = new RegExp(`@sakiko233/pi-background-tasks@(?:v)?(?!${codeFacts.package.version.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b)\\d+\\.\\d+\\.\\d+`, 'u');
+    if (obsolete.test(entry.body)) throw new DocsGateError(`${entry.rel}: obsolete pinned @sakiko233/pi-background-tasks install version`);
+    if (/npm:pi-background-tasks@/u.test(entry.body)) throw new DocsGateError(`${entry.rel}: uses the retired unscoped npm install target`);
+    if (/git:github\.com\/ismailsaleekh\/pi-background-tasks@/u.test(entry.body)) throw new DocsGateError(`${entry.rel}: uses the upstream repository as an install target`);
     if (/GENERATED:PI_BACKGROUND_TASKS_/u.test(entry.body) || /GENERATED_SCHEMA_PLACEHOLDER|GENERATED_SYNOPSIS_PLACEHOLDER/u.test(entry.body)) throw new DocsGateError(`${entry.rel}: contains legacy generated placeholder comments`);
   }
 }

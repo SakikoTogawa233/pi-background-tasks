@@ -1,0 +1,113 @@
+name: Release
+
+# Publishes unpublished package versions through npm Trusted Publisher (OIDC)
+# and creates the matching GitHub release. No NPM_TOKEN is used. npm is pinned
+# because the runner's bundled version may not support trusted publishing.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  id-token: write
+
+concurrency:
+  group: release-publish
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+          registry-url: 'https://registry.npmjs.org'
+          package-manager-cache: false
+
+      - name: Ensure npm supports trusted publishing
+        run: npm install -g "npm@^11.5.1"
+
+      - name: Read package metadata
+        id: meta
+        run: |
+          node -e "const p=require('./package.json');process.stdout.write('version='+p.version+'\n'+'name='+p.name+'\n')" >> "$GITHUB_OUTPUT"
+
+      - name: Detect unpublished version
+        id: check
+        run: |
+          CURRENT="${{ steps.meta.outputs.version }}"
+          NAME="${{ steps.meta.outputs.name }}"
+          PUBLISHED=$(npm view "${NAME}" version 2>/dev/null || true)
+          echo "current=${CURRENT} published=${PUBLISHED}"
+          if [ "${PUBLISHED}" = "${CURRENT}" ]; then
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "publish=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Detect existing GitHub release
+        id: github_release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="v${{ steps.meta.outputs.version }}"
+          if gh release view "${TAG}" >/dev/null 2>&1; then
+            echo "create=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "create=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Install dependencies
+        if: steps.check.outputs.publish == 'true' || steps.github_release.outputs.create == 'true'
+        run: npm ci
+
+      - name: Documentation gates
+        if: steps.check.outputs.publish == 'true' || steps.github_release.outputs.create == 'true'
+        run: npm run docs:verify && npm run test:docs
+
+      - name: Test gate
+        if: steps.check.outputs.publish == 'true' || steps.github_release.outputs.create == 'true'
+        run: npm test
+        env:
+          PI_OFFLINE: '1'
+          PI_SKIP_VERSION_CHECK: '1'
+          PI_TELEMETRY: '0'
+          CI: '1'
+
+      - name: Smoke and payload gates
+        if: steps.check.outputs.publish == 'true' || steps.github_release.outputs.create == 'true'
+        run: npm run smoke && npm run payload:check && npm run pack:dry-run
+        env:
+          PI_OFFLINE: '1'
+          PI_SKIP_VERSION_CHECK: '1'
+          PI_TELEMETRY: '0'
+          CI: '1'
+
+      - name: Check release version
+        if: steps.check.outputs.publish == 'true' || steps.github_release.outputs.create == 'true'
+        run: npm run release:check-version
+        env:
+          GITHUB_REF_TYPE: tag
+          GITHUB_REF_NAME: v${{ steps.meta.outputs.version }}
+
+      - name: Publish to npm (trusted publisher / OIDC)
+        if: steps.check.outputs.publish == 'true'
+        run: npm publish --provenance --access public
+
+      - name: Create GitHub release
+        if: steps.github_release.outputs.create == 'true'
+        run: |
+          gh release create "v${{ steps.meta.outputs.version }}" \
+            --target "${GITHUB_SHA}" \
+            --title "v${{ steps.meta.outputs.version }}" \
+            --generate-notes
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -12,15 +12,16 @@ covers_sources: []
 Package maintenance entrypoint: `PUBLISHING.md`. Source version is always `package.json`; never hard-code a release version in commands.
 
 ```bash
+NAME=$(node -p "require('./package.json').name")
 VERSION=$(node -p "require('./package.json').version")
-printf 'pi-background-tasks@%s\n' "$VERSION"
+printf '%s@%s\n' "$NAME" "$VERSION"
 ```
 
-Current observed standalone git tags stop at `v0.6.0`. Do not advertise or certify a `v1.x` git install tag until that tag exists in the standalone package repository.
+The current Sakiko fork release is `@sakiko233/pi-background-tasks@2.5.0`. The release workflow creates `v$VERSION`; do not certify a pinned git install until that tag exists in the Sakiko repository.
 
 ## Ordinary release checks
 
-Run from the `pi-background-tasks` package root in an isolated environment. These are release-candidate checks, not tag certification:
+Run from the `@sakiko233/pi-background-tasks` package root in an isolated environment. These are release-candidate checks, not tag certification:
 
 ```bash
 npm run typecheck
@@ -40,7 +41,7 @@ npm run docs:verify
 npm run payload:check
 # On a tag ref only: GITHUB_REF_TYPE=tag GITHUB_REF_NAME=v$VERSION npm run release:check-version
 npm run test:compat
-npm view pi-background-tasks name version --json
+npm view @sakiko233/pi-background-tasks name version --json
 ```
 
 `npm run test:full` additionally runs the preserved Expect PTY lane, the non-skipping `/usr/bin/tmux` real-Pi TUI lane, and scripted-provider agent-loop gates. Treat it as a full interactive gate; do not run it for routine docs edits.
@@ -63,8 +64,8 @@ Use `npm pack --dry-run --json` output as the payload source of truth. Verify at
 
 Separate these activities:
 
-1. **npm release candidate:** version comes from `package.json`; run ordinary release checks; inspect pack payload; publish only on operator approval.
-2. **git tag certification:** verify the standalone repo is at the exact release commit, clean, and already has or is about to receive tag `v$VERSION`. `npm run release:check-version` requires an explicit tag ref (`GITHUB_REF_TYPE=tag`, `GITHUB_REF_NAME=v$VERSION`) and never publishes. Tags currently observed stop at `v0.6.0`, so `v$VERSION` is not certified merely because npm has that version.
-3. **post-publish install smoke:** install by `npm:pi-background-tasks@$VERSION` in an isolated Pi agent dir. Use git install smoke only after the corresponding standalone tag exists.
+1. **npm release candidate:** version comes from `package.json`; run ordinary release checks and inspect the pack payload. The one-time new-package bootstrap for `2.5.0` is documented in `PUBLISHING.md`.
+2. **git tag certification:** verify the Sakiko repo is at the exact release commit and clean. `npm run release:check-version` requires an explicit tag ref (`GITHUB_REF_TYPE=tag`, `GITHUB_REF_NAME=v$VERSION`) and never publishes.
+3. **post-publish install smoke:** install by `npm:@sakiko233/pi-background-tasks@$VERSION` in an isolated Pi agent dir. Use git install smoke only after the corresponding Sakiko tag exists.
 
-No auto-publish. No automated push/tag from repair runs unless the operator explicitly asks.
+After the initial npm bootstrap and package-specific Trusted Publisher setup, `.github/workflows/release.yml` publishes unpublished versions through npm OIDC and creates the matching GitHub Release. It stores no npm token.

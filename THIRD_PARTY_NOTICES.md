@@ -1,5 +1,11 @@
 # Third-party notices
 
+## Project foundation and prior art
+
+This Sakiko fork builds on [`ismailsaleekh/pi-background-tasks`](https://github.com/ismailsaleekh/pi-background-tasks) for its background task registry, UI/task lifecycle, delegation, and Fusion foundation. The existing ISC license notice is preserved in the root [`LICENSE`](LICENSE).
+
+The signal-based/manual and timed foreground bash handoff approach references [`Mearman/tau`](https://github.com/Mearman/tau) as prior art. This notice describes conceptual provenance; it does not replace either project's own license terms.
+
 ## Anthropic system-prompt sanitization rules
 
 The exact-match Anthropic system-prompt sanitization rules in

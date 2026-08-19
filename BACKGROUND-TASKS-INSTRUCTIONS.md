@@ -1,7 +1,7 @@
-# pi-background-tasks — Mandatory Agent Gateway
+# @sakiko233/pi-background-tasks — Mandatory Agent Gateway
 
 **Read this before you read code, edit docs, edit code, or run anything in this package.**
-This gateway is for AI agents maintaining `pi-background-tasks`. It is package-local, deterministic, and intentionally stricter than generic repo instructions.
+This gateway is for AI agents maintaining `@sakiko233/pi-background-tasks`. It is package-local, deterministic, and intentionally stricter than generic repo instructions.
 
 **Logo reference:** use the package-local docs logo when present: [`docs/assets/logo.svg`](docs/assets/logo.svg). Do not invent remote logos; asset files remain asset-owner territory and must be verified in the docs/assets payload check.
 

@@ -1,18 +1,18 @@
 <div align="center">
   <img src="logo.png" alt="pi-background-tasks logo: a futuristic dispatcher coordinating parallel work nodes into a completed result" width="144" height="144">
 
-# pi-background-tasks
+# @sakiko233/pi-background-tasks
 
 **Keep Pi moving while long jobs, delegated investigations, and fixed-purpose multi-model Fusion work run in the background.**
 
-[![npm](https://img.shields.io/npm/v/pi-background-tasks?label=npm)](https://www.npmjs.com/package/pi-background-tasks)
+[![npm](https://img.shields.io/npm/v/@sakiko233/pi-background-tasks?label=npm)](https://www.npmjs.com/package/@sakiko233/pi-background-tasks)
 [![Pi extension](https://img.shields.io/badge/Pi-extension-19c7d4)](https://github.com/earendil-works/pi-coding-agent)
 [![Node](https://img.shields.io/badge/node-%3E%3D22.19-1f8f4d)](package.json)
 [![License](https://img.shields.io/badge/license-ISC-f5a623)](LICENSE)
 
 </div>
 
-`pi-background-tasks` adds background jobs, delegated agents, and multi-model Fusion for Pi:
+`@sakiko233/pi-background-tasks` adds background jobs, delegated agents, and multi-model Fusion for Pi:
 
 - **Run long work without blocking**: start named shell jobs, keep talking to Pi, and get durable completion notifications when they finish.
 - **Delegate context-aware investigation**: launch one route-pinned, inspect-only child Pi agent seeded with a frozen projection of the current conversation, then retrieve a hash-verified result.
@@ -26,11 +26,11 @@
 <!-- pi-docs:begin name="readme-package-facts" generator="scripts/docs/generate.mjs" -->
 | Fact | Value |
 | --- | --- |
-| Package | `pi-background-tasks` |
-| Version | `2.4.2` |
+| Package | `@sakiko233/pi-background-tasks` |
+| Version | `2.5.0` |
 | Node engine | `>=22.19.0` |
 | Pi entrypoints | `./extensions/anthropic-attribution.ts`, `./extensions/background-tasks.ts` |
-| Package image | [logo.png](https://raw.githubusercontent.com/ismailsaleekh/pi-background-tasks/main/logo.png) |
+| Package image | [logo.png](https://raw.githubusercontent.com/SakikoTogawa233/pi-background-tasks/main/logo.png) |
 <!-- pi-docs:end name="readme-package-facts" -->
 
 <!-- pi-docs:begin name="readme-public-surfaces" generator="scripts/docs/generate.mjs" -->
@@ -70,16 +70,16 @@ Version information comes from [`package.json`](package.json). Use npm `@latest`
 
 ```bash
 # Global install from npm
-pi install npm:pi-background-tasks@latest
+pi install npm:@sakiko233/pi-background-tasks@latest
 
 # Project-local install from npm
-pi install npm:pi-background-tasks@latest -l
+pi install npm:@sakiko233/pi-background-tasks@latest -l
 
 # Git main branch; not a release tag
-pi install git:github.com/ismailsaleekh/pi-background-tasks@main
+pi install git:github.com/SakikoTogawa233/pi-background-tasks@main
 
 # Project-local git main install
-pi install git:github.com/ismailsaleekh/pi-background-tasks@main -l
+pi install git:github.com/SakikoTogawa233/pi-background-tasks@main -l
 
 # Local checkout/package path, run from this package directory
 pi install .
@@ -328,6 +328,15 @@ Operations are `capabilities`, `run`, `status`, `logs`, and `kill`. This is the 
 | Package QA expectations | [TESTING.md](TESTING.md) and [TEST_PLAN.md](TEST_PLAN.md) |
 | Publishing notes | [PUBLISHING.md](PUBLISHING.md) |
 | License and derived-rule notice | [LICENSE](LICENSE) and [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) |
+
+## Credits / Prior Art
+
+This fork references and builds on:
+
+- [pi-tau](https://github.com/Mearman/tau), for its signal-based/manual and timed foreground bash handoff approach.
+- [pi-background-tasks](https://github.com/ismailsaleekh/pi-background-tasks), for the background task registry, UI/task lifecycle, delegation, and Fusion foundation.
+
+These credits are statements of technical provenance. Existing license notices remain in [LICENSE](LICENSE) and [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
 
 ## Contributing
 

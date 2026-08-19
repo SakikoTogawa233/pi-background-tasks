@@ -51,6 +51,10 @@ function runNpm(
 
 interface PackageJson {
   name: string;
+  version: string;
+  homepage: string;
+  repository: { type: string; url: string };
+  bugs: { url: string };
   type: string;
   keywords: string[];
   pi: { extensions: string[]; image?: string | undefined };
@@ -108,15 +112,28 @@ function requireStringArray(value: unknown, label: string): string[] {
 function parsePackageJson(value: unknown): PackageJson {
   assert.ok(isObject(value), 'package.json must be an object');
   const name = requireString(field(value, 'name'), 'name');
+  const version = requireString(field(value, 'version'), 'version');
+  const homepage = requireString(field(value, 'homepage'), 'homepage');
   const type = requireString(field(value, 'type'), 'type');
+  const repository = field(value, 'repository');
+  const bugs = field(value, 'bugs');
   const pi = field(value, 'pi');
   const scripts = field(value, 'scripts');
   const peerDependencies = field(value, 'peerDependencies');
+  assert.ok(isObject(repository));
+  assert.ok(isObject(bugs));
   assert.ok(isObject(pi));
   assert.ok(isObject(scripts));
   assert.ok(isObject(peerDependencies));
   return {
     name,
+    version,
+    homepage,
+    repository: {
+      type: requireString(field(repository, 'type'), 'repository.type'),
+      url: requireString(field(repository, 'url'), 'repository.url'),
+    },
+    bugs: { url: requireString(field(bugs, 'url'), 'bugs.url') },
     type,
     keywords: requireStringArray(field(value, 'keywords'), 'keywords'),
     pi: {
@@ -375,7 +392,16 @@ function parsePackEntries(stdout: string): NpmPackEntry[] {
 void describe('package', () => {
   void it('manifest/docs cover public extension surfaces', async () => {
     const p = await pkg();
-    assert.equal(p.name, 'pi-background-tasks');
+    assert.equal(p.name, '@sakiko233/pi-background-tasks');
+    assert.equal(p.version, '2.5.0');
+    assert.equal(p.homepage, 'https://github.com/SakikoTogawa233/pi-background-tasks#readme');
+    assert.deepEqual(p.repository, {
+      type: 'git',
+      url: 'git+https://github.com/SakikoTogawa233/pi-background-tasks.git',
+    });
+    assert.deepEqual(p.bugs, {
+      url: 'https://github.com/SakikoTogawa233/pi-background-tasks/issues',
+    });
     assert.equal(p.type, 'module');
     assert.ok(p.keywords.includes('pi-package'));
     assert.ok(p.keywords.includes('pi-extension'));
@@ -385,7 +411,7 @@ void describe('package', () => {
     ]);
     assert.equal(
       p.pi.image,
-      'https://raw.githubusercontent.com/ismailsaleekh/pi-background-tasks/main/logo.png',
+      'https://raw.githubusercontent.com/SakikoTogawa233/pi-background-tasks/main/logo.png',
     );
     assert.match(p.scripts['test:agent-loop'] ?? '', /scripted-provider/);
     assert.match(p.scripts['test:tmux'] ?? '', /tests\/tmux/);
@@ -1362,6 +1388,7 @@ void describe('package', () => {
     assert.equal(r.status, 0, r.stderr);
     const firstEntry = parsePackEntries(r.stdout)[0];
     assert.ok(firstEntry, 'npm pack must return one entry');
+    assert.equal(firstEntry.filename, 'sakiko233-pi-background-tasks-2.5.0.tgz');
     const files = firstEntry.files.map((file) => file.path).sort();
     for (const f of [
       'extensions/anthropic-attribution.ts',
@@ -1496,7 +1523,10 @@ void describe('package', () => {
         'src/ui/background-tasks-manager.ts',
         'src/ui/fusion-model-selector.ts',
       ]) {
-        assert.ok(existsSync(join(temp, 'node_modules', 'pi-background-tasks', f)), f);
+        assert.ok(
+          existsSync(join(temp, 'node_modules', '@sakiko233', 'pi-background-tasks', f)),
+          f,
+        );
       }
     } finally {
       await rm(temp, { recursive: true, force: true });

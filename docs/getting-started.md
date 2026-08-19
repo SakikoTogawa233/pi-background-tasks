@@ -14,19 +14,19 @@ This guide gets from install to useful background work in a few minutes.
 ## 1. Install
 
 ```bash
-pi install npm:pi-background-tasks@latest
+pi install npm:@sakiko233/pi-background-tasks@latest
 ```
 
 For a project-local install:
 
 ```bash
-pi install npm:pi-background-tasks@latest -l
+pi install npm:@sakiko233/pi-background-tasks@latest -l
 ```
 
 For current repository state rather than a release tag:
 
 ```bash
-pi install git:github.com/ismailsaleekh/pi-background-tasks@main
+pi install git:github.com/SakikoTogawa233/pi-background-tasks@main
 ```
 
 For a local checkout/package path:
