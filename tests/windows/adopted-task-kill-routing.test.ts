@@ -351,6 +351,13 @@ void describe('adopted task Windows kill routing', () => {
       assert.deepEqual(calls, []);
       assert.deepEqual(h.processKills, []);
       assert.deepEqual(child.killCalls, []);
+
+      child.close();
+      await waitFor(() => task.status === 'killed', 'missing-PID cleanup finalization');
+      assert.equal(task.status, 'killed');
+      assert.deepEqual(calls, []);
+      assert.deepEqual(h.processKills, []);
+      assert.deepEqual(child.killCalls, []);
     } finally {
       await rm(h.root, { recursive: true, force: true });
     }

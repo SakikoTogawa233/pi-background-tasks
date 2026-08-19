@@ -1,7 +1,7 @@
 import { describe, it, afterEach, type TestContext } from 'node:test';
 import assert from 'node:assert/strict';
 import { existsSync } from 'node:fs';
-import { chmod, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, readFile, readdir, realpath, rm, writeFile } from 'node:fs/promises';
 import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { delimiter, join } from 'node:path';
@@ -546,9 +546,10 @@ void describe('bg_delegate and bg_result public surface', { concurrency: false }
           await readFile(join(artifactDir, 'child-argv.json'), 'utf8'),
         ) as string[];
         const childExtension = argv[argv.indexOf('--extension') + 1];
+        assert.ok(childExtension, 'the child launch must include an extension path');
         assert.equal(
-          childExtension,
-          join(installed.packageRoot, 'extensions', 'delegate-child.ts'),
+          await realpath(childExtension),
+          await realpath(join(installed.packageRoot, 'extensions', 'delegate-child.ts')),
           'import.meta.url must keep package-relative child resources inside the installed package',
         );
         const result = await runTool(h, 'bg_result', { taskId });
