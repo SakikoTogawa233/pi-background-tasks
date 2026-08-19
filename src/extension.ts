@@ -218,6 +218,8 @@ export default function backgroundTasksExtension(pi: ExtensionAPI): void {
   let latestKnownVersion: string | undefined;
   let updateCheckStarted = false;
 
+  let eventService: BackgroundTaskExtensionService;
+  let eventServiceClosed = false;
   const registry = new BackgroundTaskRegistry({
     onChange: () => {
       updateUi();
@@ -229,12 +231,14 @@ export default function backgroundTasksExtension(pi: ExtensionAPI): void {
       eventService.publishTerminal(task);
     },
   });
-  const eventService: BackgroundTaskExtensionService = installBackgroundTaskExtensionApi({
-    events: pi.events,
-    registry,
-    getContext: () => currentCtx,
-    isShuttingDown: () => registry.isShuttingDown(),
-  });
+  const installEventService = (): BackgroundTaskExtensionService =>
+    installBackgroundTaskExtensionApi({
+      events: pi.events,
+      registry,
+      getContext: () => currentCtx,
+      isShuttingDown: () => registry.isShuttingDown(),
+    });
+  eventService = installEventService();
   const foregroundBash = createForegroundBashExecutor({
     adoptTask: (input) => {
       const ctx = input.context.extensionContext;
@@ -515,6 +519,10 @@ export default function backgroundTasksExtension(pi: ExtensionAPI): void {
   }
 
   pi.on('session_start', async (_event, ctx) => {
+    if (eventServiceClosed) {
+      eventService = installEventService();
+      eventServiceClosed = false;
+    }
     registry.setShuttingDown(false);
     currentCtx = ctx;
     await registry.ensureRuntimeDir(ctx);
@@ -530,31 +538,54 @@ export default function backgroundTasksExtension(pi: ExtensionAPI): void {
   pi.on('session_shutdown', async (_event, ctx) => {
     registry.setShuttingDown(true);
     currentCtx = undefined;
+    eventService.beginShutdown();
     if (statusInterval) {
       clearInterval(statusInterval);
       statusInterval = undefined;
     }
-    try {
-      const running = registry.allTasks().filter((task) => task.status === 'running');
-      if (running.length === 0) return;
-
-      const failures: string[] = [];
+    const failures = new Set<string>();
+    const settleCurrentTasks = async (): Promise<void> => {
       await Promise.all(
-        running.map(async (task) => {
+        registry.allTasks().map(async (task) => {
           try {
-            await registry.stopTask(task, 'shutdown', 'Killed during Pi session shutdown/reload');
+            if (task.status === 'running' && task.finalizationPromise === undefined) {
+              await registry.stopTask(
+                task,
+                'shutdown',
+                'Killed during Pi session shutdown/reload',
+              );
+            } else {
+              await registry.waitForFinalization(task);
+            }
           } catch (error) {
             const message = `${task.id}: ${error instanceof Error ? error.message : String(error)}`;
-            failures.push(message);
+            failures.add(message);
             console.error(`[background-tasks] shutdown cleanup failed for ${message}`);
           }
         }),
       );
-      if (failures.length > 0 && ctx.hasUI) {
-        ctx.ui.notify(`Background task cleanup failed:\n${failures.join('\n')}`, 'error');
+    };
+    try {
+      // Admission closed synchronously above. Every non-EventBus or EventBus run
+      // launch that acquired registry ownership before that boundary must finish
+      // registration, spawn, or failure before shutdown takes its first task
+      // snapshot. Calls beginning after the boundary are rejected by the same
+      // ownership gate.
+      await registry.waitForLaunchOperations();
+      // Existing kills must reach phase B before request drain: a kill request
+      // cannot emit its response (and release its terminal gate) until stopTask
+      // returns. Once those requests drain, settle a second snapshot for work
+      // completed by a preexisting non-launch request.
+      await settleCurrentTasks();
+      await eventService.drainRequests();
+      await settleCurrentTasks();
+      await registry.waitForTerminalPublications();
+      if (failures.size > 0 && ctx.hasUI) {
+        ctx.ui.notify(`Background task cleanup failed:\n${[...failures].join('\n')}`, 'error');
       }
     } finally {
       eventService.close();
+      eventServiceClosed = true;
     }
   });
 

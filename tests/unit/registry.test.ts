@@ -1,4 +1,4 @@
-import { describe, it } from 'node:test';
+import { describe, it, mock } from 'node:test';
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
 import { existsSync, readFileSync } from 'node:fs';
@@ -12,6 +12,7 @@ import {
   WIN32_CMD_PI_TELEMETRY_UNAVAILABLE_REASON,
   commandMayLaunchPiAgent,
   type BackgroundTaskContext,
+  type BackgroundTaskLaunchKind,
   type BackgroundTaskSpawn,
   type CompletionNotificationMessage,
   type CompletionNotificationOptions,
@@ -19,6 +20,7 @@ import {
 import type { Api, Model } from '@earendil-works/pi-ai';
 import type { BgTask, BgTaskSnapshot } from '../../src/core/common.js';
 import type { TaskkillOutcome, WindowsKillPhase } from '../../src/core/windows-taskkill.js';
+import { writeFileFsynced, writeJsonAtomic } from '../../src/core/attested-pi-run.js';
 
 type JsonObject = Record<PropertyKey, unknown>;
 
@@ -38,9 +40,15 @@ function requiredJsonObject(value: unknown, message: string): JsonObject {
 }
 
 class FakeChild extends EventEmitter {
+  stdin?: {
+    write(data: Buffer, callback: (error?: Error | null) => void): boolean;
+    end(callback?: () => void): void;
+    once(event: 'error', listener: (error: Error) => void): unknown;
+  };
   stdout = new EventEmitter();
   stderr = new EventEmitter();
   pid: number;
+  closed = false;
   killCalls: Array<NodeJS.Signals | undefined> = [];
   killImpl: (signal?: NodeJS.Signals) => boolean;
 
@@ -64,6 +72,7 @@ class FakeChild extends EventEmitter {
   }
 
   close(code: number | null = 0, signal: NodeJS.Signals | null = null): void {
+    this.closed = true;
     this.emit('close', code, signal);
   }
 
@@ -80,7 +89,9 @@ interface SpawnRecord {
 }
 
 interface HarnessOptions {
-  platform?: NodeJS.Platform;
+  platform: 'linux' | 'win32';
+  onChange?: () => void;
+  beforeLaunch?: (kind: BackgroundTaskLaunchKind) => Promise<void>;
   maxRecentTasks?: number;
   maxOutputBytes?: number;
   killGraceMs?: number;
@@ -96,6 +107,8 @@ interface HarnessOptions {
     options: CompletionNotificationOptions,
   ) => void;
   publishTerminal?: (task: BgTaskSnapshot) => void;
+  writeFileFsynced?: (path: string, data: Buffer | string) => Promise<void>;
+  writeJsonAtomic?: (path: string, value: unknown) => Promise<void>;
   logger?: Pick<Console, 'error'>;
   makeTaskId?: () => string;
   now?: () => number;
@@ -104,7 +117,17 @@ interface HarnessOptions {
   modelRegistry?: BackgroundTaskContext['modelRegistry'];
 }
 
-async function createHarness(options: HarnessOptions = {}) {
+async function createHarness(options: HarnessOptions) {
+  assert.equal(
+    options.killProcess === undefined || options.platform === 'linux',
+    true,
+    'tests that inject POSIX killProcess must explicitly select platform linux',
+  );
+  assert.equal(
+    options.platform !== 'win32' || options.killTree !== undefined,
+    true,
+    'tests that select platform win32 must inject deterministic killTree',
+  );
   const root = await mkdtemp(join(tmpdir(), 'pi-bg-registry-'));
   const cwd = join(root, 'project');
   await mkdir(cwd, { recursive: true });
@@ -116,8 +139,21 @@ async function createHarness(options: HarnessOptions = {}) {
     options: CompletionNotificationOptions;
   }> = [];
   const errors: unknown[][] = [];
+  const processKills: Array<{
+    pid: number;
+    signal: NodeJS.Signals | number | undefined;
+  }> = [];
   let changes = 0;
   const registryOptions: ConstructorParameters<typeof BackgroundTaskRegistry>[0] = {
+    platform: options.platform,
+    killProcess:
+      options.killProcess ??
+      ((targetPid, signal) => {
+        processKills.push({ pid: targetPid, signal });
+        const spawn = children.find(({ child }) => child.pid === Math.abs(targetPid));
+        assert.ok(spawn, `missing fake child for pid ${String(targetPid)}`);
+        return spawn.child.kill(signal as NodeJS.Signals | undefined);
+      }),
     logger: options.logger ?? {
       error: (...args: unknown[]) => {
         errors.push(args);
@@ -131,6 +167,7 @@ async function createHarness(options: HarnessOptions = {}) {
       }),
     onChange: () => {
       changes++;
+      options.onChange?.();
     },
     spawn: (shell, args, spawnOptions) => {
       const child = options.childFactory?.(++pid) ?? new FakeChild(++pid);
@@ -138,16 +175,19 @@ async function createHarness(options: HarnessOptions = {}) {
       return child;
     },
   };
+  if (options.beforeLaunch !== undefined) registryOptions.beforeLaunch = options.beforeLaunch;
   if (options.publishTerminal !== undefined)
     registryOptions.publishTerminal = options.publishTerminal;
-  if (options.platform !== undefined) registryOptions.platform = options.platform;
+  if (options.writeFileFsynced !== undefined)
+    registryOptions.writeFileFsynced = options.writeFileFsynced;
+  if (options.writeJsonAtomic !== undefined)
+    registryOptions.writeJsonAtomic = options.writeJsonAtomic;
   if (options.env !== undefined) registryOptions.env = options.env;
   if (options.maxRecentTasks !== undefined) registryOptions.maxRecentTasks = options.maxRecentTasks;
   if (options.maxOutputBytes !== undefined) registryOptions.maxOutputBytes = options.maxOutputBytes;
   if (options.killGraceMs !== undefined) registryOptions.killGraceMs = options.killGraceMs;
   if (options.stopWaitMs !== undefined) registryOptions.stopWaitMs = options.stopWaitMs;
   if (options.now !== undefined) registryOptions.now = options.now;
-  if (options.killProcess !== undefined) registryOptions.killProcess = options.killProcess;
   if (options.killTree !== undefined) registryOptions.killTree = options.killTree;
   const registry = new BackgroundTaskRegistry(registryOptions);
   const ctx: BackgroundTaskContext = {
@@ -164,6 +204,7 @@ async function createHarness(options: HarnessOptions = {}) {
     children,
     notifications,
     errors,
+    processKills,
     get changes() {
       return changes;
     },
@@ -303,6 +344,10 @@ function taskkillOutcome(exitCode: number | null, stderr = ''): TaskkillOutcome 
   };
 }
 
+function unexpectedKillTree(): Promise<TaskkillOutcome> {
+  throw new Error('this Windows launch-shape test must not request process-tree termination');
+}
+
 interface Deferred<T> {
   promise: Promise<T>;
   resolve(value: T): void;
@@ -349,6 +394,439 @@ async function startFakeTask(
 }
 
 void describe('BackgroundTaskRegistry', () => {
+  void it('owns every launch kind before its first await and drains the shutdown boundary', async () => {
+    const kinds: BackgroundTaskLaunchKind[] = ['task', 'managed', 'delegate', 'attested'];
+    const gates = new Map(kinds.map((kind) => [kind, deferred<void>()]));
+    const entered: BackgroundTaskLaunchKind[] = [];
+    const h = await createHarness({
+      platform: 'linux',
+      beforeLaunch: async (kind) => {
+        entered.push(kind);
+        await gates.get(kind)!.promise;
+      },
+    });
+    try {
+      const launches = [
+        h.registry.startTask(h.ctx, '', { notifyOnCompletion: false }),
+        h.registry.startManagedTask(h.ctx, {
+          id: 'invalid managed id',
+          name: 'Invalid managed launch',
+          command: 'invalid',
+          isAgent: false,
+          completion: Promise.resolve(),
+          cancel: () => undefined,
+          notifyOnCompletion: false,
+          triggerOnCompletion: false,
+          fusion: {
+            runId: 'invalid managed id',
+            workflow: 'reason',
+            artifactDir: '.pi/fusion/invalid',
+            artifactDirAbs: join(h.cwd, '.pi', 'fusion', 'invalid'),
+            state: 'invalid',
+            usageDelivered: false,
+          },
+        }),
+        h.registry.startDelegateTask(h.ctx, undefined as never),
+        h.registry.startAttestedPiTask(h.ctx, {
+          name: 'Invalid attested launch',
+          provider: 'openai-codex',
+          model: 'gpt-5.5',
+          thinking: 'high',
+          prompt: 'unused',
+          reportPath: 'report.md',
+          extraPiArgs: ['--thinking', 'low'],
+        }),
+      ];
+      assert.deepEqual(
+        entered,
+        kinds,
+        'every public launch must enter the seam synchronously under registry ownership',
+      );
+
+      h.registry.setShuttingDown(true);
+      let drainSettled = false;
+      const drain = h.registry.waitForLaunchOperations().then(() => {
+        drainSettled = true;
+      });
+      await Promise.resolve();
+      assert.equal(drainSettled, false, 'shutdown drain must await admitted launch ownership');
+
+      await Promise.all([
+        assert.rejects(h.registry.startTask(h.ctx, 'echo late'), /shutting down/),
+        assert.rejects(
+          h.registry.startManagedTask(h.ctx, {
+            id: 'late',
+            name: 'late',
+            command: 'late',
+            isAgent: false,
+            completion: Promise.resolve(),
+            cancel: () => undefined,
+            notifyOnCompletion: false,
+            triggerOnCompletion: false,
+            fusion: {
+              runId: 'late',
+              workflow: 'reason',
+              artifactDir: 'late',
+              artifactDirAbs: 'late',
+              state: 'late',
+              usageDelivered: false,
+            },
+          }),
+          /shutting down/,
+        ),
+        assert.rejects(h.registry.startDelegateTask(h.ctx, undefined as never), /shutting down/),
+        assert.rejects(
+          h.registry.startAttestedPiTask(h.ctx, {
+            name: 'late',
+            provider: 'late',
+            model: 'late',
+            prompt: 'late',
+            reportPath: 'late',
+          }),
+          /shutting down/,
+        ),
+      ]);
+      assert.deepEqual(entered, kinds, 'rejected launches must not enter launch work');
+
+      for (const kind of kinds) gates.get(kind)!.resolve(undefined);
+      const results = await Promise.allSettled(launches);
+      assert.deepEqual(
+        results.map((result) => result.status),
+        ['rejected', 'rejected', 'rejected', 'rejected'],
+      );
+      await drain;
+      assert.equal(drainSettled, true);
+      assert.equal(h.registry.allTasks().length, 0);
+      assert.equal(h.children.length, 0, 'failed admitted launches must not leak a child');
+    } finally {
+      await cleanup(h.root);
+    }
+  });
+
+  void it('keeps ordinary post-spawn metadata failure under launch ownership through child close and phase B', async () => {
+    const terminalWriteEntered = deferred<void>();
+    const releaseTerminalWrite = deferred<void>();
+    const responseGate = deferred<void>();
+    const killRequested = deferred<void>();
+    const killCalls: Array<NodeJS.Signals | number | undefined> = [];
+    let writes = 0;
+    let childRef: FakeChild | undefined;
+    const h = await createHarness({
+      platform: 'linux',
+      writeJsonAtomic: async (path, value) => {
+        writes += 1;
+        if (writes === 1) throw new Error('injected ordinary startup metadata failure');
+        if (writes === 2) {
+          terminalWriteEntered.resolve(undefined);
+          await releaseTerminalWrite.promise;
+        }
+        await writeJsonAtomic(path, value);
+      },
+      killProcess: (pid, signal) => {
+        assert.ok(childRef);
+        assert.equal(pid, -childRef.pid, 'startup failure must target the detached process tree');
+        killCalls.push(signal);
+        killRequested.resolve(undefined);
+        queueMicrotask(() => childRef?.close(null, 'SIGTERM'));
+        return true;
+      },
+      childFactory: (pid) => {
+        childRef = new FakeChild(pid);
+        return childRef;
+      },
+    });
+    try {
+      const launch = h.registry.startTask(h.ctx, 'node live.js', {
+        name: 'Ordinary startup failure',
+        notifyOnCompletion: false,
+        terminalPublicationGate: responseGate.promise,
+      });
+      const rejectedLaunch = assert.rejects(
+        launch,
+        /Failed to start background task: injected ordinary startup metadata failure/,
+      );
+      h.registry.setShuttingDown(true);
+      const drain = h.registry.waitForLaunchOperations();
+      let drainSettled = false;
+      void drain.then(() => {
+        drainSettled = true;
+      });
+
+      await killRequested.promise;
+      await terminalWriteEntered.promise;
+      assert.equal(drainSettled, false, 'launch drain must include terminal durability and phase B');
+      assert.deepEqual(killCalls, ['SIGTERM']);
+      releaseTerminalWrite.resolve(undefined);
+      await rejectedLaunch;
+      await drain;
+
+      const task = h.registry.allTasks()[0];
+      assert.ok(task);
+      assert.equal(task.status, 'failed');
+      assert.equal(task.error, 'injected ordinary startup metadata failure');
+      assert.equal(task.finalizationSettled, true);
+      assert.equal(childRef?.closed, true);
+      assert.equal(
+        h.registry.allTasks().some((owned) => owned.status === 'running'),
+        false,
+      );
+      assert.equal(h.children.filter(({ child }) => !child.closed).length, 0);
+      responseGate.resolve(undefined);
+      await h.registry.waitForTerminalPublications();
+    } finally {
+      await cleanup(h.root);
+    }
+  });
+
+  void it('lets shutdown retry a timed-out post-spawn startup cleanup without replacing its error', async () => {
+    mock.timers.enable({ apis: ['setTimeout'] });
+    const firstTermination = deferred<void>();
+    const killCalls: Array<NodeJS.Signals | number | undefined> = [];
+    let childRef: FakeChild | undefined;
+    let writes = 0;
+    const h = await createHarness({
+      platform: 'linux',
+      killGraceMs: 10,
+      stopWaitMs: 30,
+      writeJsonAtomic: async (path, value) => {
+        writes += 1;
+        if (writes === 1) throw new Error('injected retriable startup failure');
+        await writeJsonAtomic(path, value);
+      },
+      killProcess: (_pid, signal) => {
+        killCalls.push(signal);
+        if (killCalls.length === 1) firstTermination.resolve(undefined);
+        if (killCalls.length === 4) queueMicrotask(() => childRef?.close(null, 'SIGKILL'));
+        return true;
+      },
+      childFactory: (pid) => {
+        childRef = new FakeChild(pid);
+        return childRef;
+      },
+    });
+    try {
+      const launch = h.registry.startTask(h.ctx, 'node live.js', {
+        name: 'Retriable Startup Cleanup',
+        notifyOnCompletion: false,
+      });
+      const rejectedLaunch = assert.rejects(
+        launch,
+        /Failed to start background task: injected retriable startup failure; startup cleanup failed: Task .* did not exit within 30ms after cancellation/,
+      );
+      await firstTermination.promise;
+      mock.timers.tick(30);
+      await rejectedLaunch;
+
+      const task = h.registry.allTasks()[0];
+      assert.ok(task);
+      assert.equal(task.status, 'running');
+      assert.equal(task.stopPromise, undefined);
+      assert.equal(task.startupError, 'injected retriable startup failure');
+      assert.equal(task.error, 'injected retriable startup failure');
+      assert.equal(task.killKind, 'user');
+
+      const shutdown = h.registry.stopTask(
+        task,
+        'shutdown',
+        'Killed during Pi session shutdown/reload',
+      );
+      const shutdownConcurrent = h.registry.stopTask(task, 'shutdown');
+      assert.equal(shutdownConcurrent, shutdown);
+      mock.timers.tick(10);
+      await Promise.all([shutdown, shutdownConcurrent]);
+      await h.registry.waitForTerminalPublications();
+
+      assert.deepEqual(killCalls, ['SIGTERM', 'SIGKILL', 'SIGTERM', 'SIGKILL']);
+      assert.equal(childRef?.closed, true);
+      assert.equal(task.status, 'failed');
+      assert.equal(task.error, 'injected retriable startup failure');
+      assert.equal(task.finalizationSettled, true);
+      assert.equal(task.terminalPublished, true);
+      assert.equal(h.children.filter(({ child }) => !child.closed).length, 0);
+    } finally {
+      mock.timers.reset();
+      await cleanup(h.root);
+    }
+  });
+
+  void it('keeps delegate post-spawn metadata failure under tree-kill ownership through finalization', async () => {
+    const killRequested = deferred<void>();
+    const killCalls: Array<NodeJS.Signals | number | undefined> = [];
+    let childRef: FakeChild | undefined;
+    let writes = 0;
+    const h = await createHarness({
+      platform: 'linux',
+      writeJsonAtomic: async (path, value) => {
+        writes += 1;
+        if (writes === 1) throw new Error('injected delegate startup metadata failure');
+        await writeJsonAtomic(path, value);
+      },
+      killProcess: (pid, signal) => {
+        assert.ok(childRef);
+        assert.equal(pid, -childRef.pid, 'delegate startup failure must target its process tree');
+        killCalls.push(signal);
+        killRequested.resolve(undefined);
+        queueMicrotask(() => childRef?.close(null, 'SIGTERM'));
+        return true;
+      },
+      childFactory: (pid) => {
+        childRef = new FakeChild(pid);
+        childRef.stdin = {
+          once: () => undefined,
+          write: (_data, callback) => {
+            callback();
+            return true;
+          },
+          end: () => undefined,
+        };
+        return childRef;
+      },
+    });
+    try {
+      const launch = h.registry.startDelegateTask(h.ctx, {
+        name: 'Delegate startup failure',
+        argv: ['--mode', 'json', 'prompt'],
+        stdinBytes: Buffer.from('seed', 'utf8'),
+        env: process.env,
+        facts: {
+          taskId: 'bdelegate-startup-failure',
+          launchNonce: 'nonce',
+          artifactDir: '.pi/delegate/test',
+          artifactDirAbs: join(h.cwd, '.pi', 'delegate', 'test'),
+          seedSha256: 'a'.repeat(64),
+          childSessionId: 'delegate-child-test',
+          route: {
+            provider: 'openai-codex',
+            model: 'gpt-5.5',
+            qualifiedId: 'openai-codex/gpt-5.5',
+          },
+          budget: {} as never,
+          extensionMode: 'isolated',
+          autoDeliver: 'never',
+        },
+        notifyOnCompletion: false,
+        triggerOnCompletion: false,
+      });
+      const rejectedLaunch = assert.rejects(
+        launch,
+        /Failed to start delegate task: injected delegate startup metadata failure/,
+      );
+      h.registry.setShuttingDown(true);
+      const drain = h.registry.waitForLaunchOperations();
+      await killRequested.promise;
+      await rejectedLaunch;
+      await drain;
+
+      const task = h.registry.resolveTask('bdelegate-startup-failure');
+      assert.equal(task.status, 'failed');
+      assert.equal(task.error, 'injected delegate startup metadata failure');
+      assert.equal(task.finalizationSettled, true);
+      assert.deepEqual(killCalls, ['SIGTERM']);
+      assert.equal(childRef?.closed, true);
+      assert.equal(h.children.filter(({ child }) => !child.closed).length, 0);
+    } finally {
+      await cleanup(h.root);
+    }
+  });
+
+  void it('lets an admitted launch register after shutdown closes admission so the snapshot can stop it', async () => {
+    const gate = deferred<void>();
+    let childRef: FakeChild | undefined;
+    const killCalls: Array<NodeJS.Signals | number | undefined> = [];
+    const h = await createHarness({
+      platform: 'linux',
+      beforeLaunch: async (kind) => {
+        assert.equal(kind, 'task');
+        await gate.promise;
+      },
+      killProcess: (_pid, signal) => {
+        killCalls.push(signal);
+        queueMicrotask(() => childRef?.close(null, signal === 'SIGKILL' ? 'SIGKILL' : 'SIGTERM'));
+        return true;
+      },
+      childFactory: (pid) => {
+        childRef = new FakeChild(pid);
+        return childRef;
+      },
+    });
+    try {
+      const launch = h.registry.startTask(h.ctx, 'sleep forever', {
+        name: 'Crossing launch',
+        notifyOnCompletion: false,
+      });
+      h.registry.setShuttingDown(true);
+      const drain = h.registry.waitForLaunchOperations();
+      gate.resolve(undefined);
+      const task = await launch;
+      await drain;
+      assert.equal(h.registry.resolveTask(task.id), task);
+      assert.equal(h.children.length, 1);
+
+      const snapshot = h.registry.allTasks();
+      assert.deepEqual(snapshot, [task]);
+      await Promise.all(snapshot.map((owned) => h.registry.stopTask(owned, 'shutdown')));
+      assert.equal(task.status, 'killed');
+      assert.deepEqual(killCalls, ['SIGTERM']);
+      assert.equal(h.registry.allTasks().some((owned) => owned.status === 'running'), false);
+    } finally {
+      await cleanup(h.root);
+    }
+  });
+
+  void it('preserves natural finalization against competing user and shutdown stops', async () => {
+    const terminalWriteEntered = deferred<void>();
+    const releaseTerminalWrite = deferred<void>();
+    let writes = 0;
+    const killCalls: Array<NodeJS.Signals | number | undefined> = [];
+    const h = await createHarness({
+      platform: 'linux',
+      killProcess: (_pid, signal) => {
+        killCalls.push(signal);
+        return true;
+      },
+      writeJsonAtomic: async (path, value) => {
+        writes += 1;
+        if (writes === 2) {
+          terminalWriteEntered.resolve(undefined);
+          await releaseTerminalWrite.promise;
+        }
+        await writeJsonAtomic(path, value);
+      },
+    });
+    try {
+      const { task, child } = await startFakeTask(h, 'Natural finalization wins');
+      child.close(0, null);
+      await terminalWriteEntered.promise;
+      assert.ok(task.finalizationPromise, 'close must synchronously claim finalization');
+      assert.equal(task.status, 'running', 'phase A must still be gated on terminal durability');
+
+      const originalError = task.error;
+      const originalKillKind = task.killKind;
+      await Promise.all([
+        assert.rejects(
+          h.registry.stopTask(task, 'user', 'user stop must lose'),
+          /finalization is already in progress and is not running; cannot apply user stop/,
+        ),
+        assert.rejects(
+          h.registry.stopTask(task, 'shutdown', 'shutdown stop must lose'),
+          /finalization is already in progress and is not running; cannot apply shutdown stop/,
+        ),
+      ]);
+      assert.deepEqual(killCalls, []);
+      assert.equal(task.killKind, originalKillKind);
+      assert.equal(task.error, originalError);
+
+      releaseTerminalWrite.resolve(undefined);
+      await h.registry.waitForFinalization(task);
+      assert.equal(task.status, 'completed');
+      assert.equal(task.killKind, undefined);
+      assert.equal(task.error, undefined);
+      assert.deepEqual(killCalls, []);
+    } finally {
+      await cleanup(h.root);
+    }
+  });
+
   void it('preserves full shell command bytes except surrounding whitespace', async () => {
     const h = await createHarness({ platform: 'linux' });
     try {
@@ -419,6 +897,7 @@ void describe('BackgroundTaskRegistry', () => {
     }
 
     const disabled = await createHarness({
+      platform: 'linux',
       env: { ...process.env, PI_BG_DISABLE_PI_TELEMETRY: '1' },
     });
     try {
@@ -436,6 +915,7 @@ void describe('BackgroundTaskRegistry', () => {
   void it('leaves Pi agent commands unchanged under Windows cmd and records telemetry unavailability', async () => {
     const h = await createHarness({
       platform: 'win32',
+      killTree: unexpectedKillTree,
       env: { ComSpec: 'C:\\Windows\\System32\\cmd.exe' },
     });
     try {
@@ -475,7 +955,11 @@ void describe('BackgroundTaskRegistry', () => {
   });
 
   void it('rejects unresolved Windows bash before creating a task', async () => {
-    const h = await createHarness({ platform: 'win32', env: { PI_BG_SHELL: 'bash', PATH: '' } });
+    const h = await createHarness({
+      platform: 'win32',
+      killTree: unexpectedKillTree,
+      env: { PI_BG_SHELL: 'bash', PATH: '' },
+    });
     try {
       await assert.rejects(
         h.registry.startTask(h.ctx, 'echo ok', { name: 'Bad Bash', notifyOnCompletion: false }),
@@ -492,7 +976,7 @@ void describe('BackgroundTaskRegistry', () => {
     let childRef: FakeChild | undefined;
     const killCalls: Array<{ pid: number; signal?: NodeJS.Signals | number }> = [];
     const h = await createHarness({
-      platform: 'darwin',
+      platform: 'linux',
       killProcess: (pid, signal) => {
         const call: { pid: number; signal?: NodeJS.Signals | number } = { pid };
         if (signal !== undefined) call.signal = signal;
@@ -518,9 +1002,9 @@ void describe('BackgroundTaskRegistry', () => {
     }
   });
 
-  void it('waits for notification metadata persistence before stopTask resolves', async () => {
+  void it('bounds only the durable terminal transition while stopTask awaits gated full finalization', async () => {
     const gate = deferred<void>();
-    const h = await createHarness({ platform: 'darwin' });
+    const h = await createHarness({ platform: 'linux', stopWaitMs: 40 });
     try {
       const task = await h.registry.startTask(h.ctx, 'node fake.js', {
         name: 'Complete Finalization',
@@ -536,12 +1020,16 @@ void describe('BackgroundTaskRegistry', () => {
         return stopped;
       });
       child.close(null, 'SIGTERM');
-      await waitFor(() => task.status === 'killed', 'terminal task status');
-      await new Promise((resolve) => setImmediate(resolve));
+      await waitFor(() => task.status === 'killed', 'durable terminal transition');
+      await new Promise((resolve) => setTimeout(resolve, 100));
 
-      assert.equal(stopResolved, false, 'terminal status alone must not resolve stopTask');
+      assert.equal(
+        stopResolved,
+        false,
+        'stopTask must await full finalization after phase A reaches terminal status',
+      );
       gate.resolve(undefined);
-      await stopping;
+      await assert.doesNotReject(stopping);
 
       const metadata = parseJsonObject(
         await readFile(task.metadataAbsPath, 'utf8'),
@@ -551,6 +1039,56 @@ void describe('BackgroundTaskRegistry', () => {
       assert.equal(metadata['notified'], true);
       assert.equal(task.notified, true);
       assert.equal(h.notifications.length, 1);
+      await h.registry.waitForFinalization(task);
+    } finally {
+      await cleanup(h.root);
+    }
+  });
+
+  void it('deduplicates finalization waits and fails loudly for inconsistent lifecycle state', async () => {
+    const h = await createHarness({ platform: 'linux' });
+    try {
+      const { task, child } = await startFakeTask(h, 'Explicit Finalization Wait');
+      assert.throws(
+        () => h.registry.waitForFinalization(task),
+        /has not entered finalization/,
+      );
+      child.fail(new Error('first terminal event'));
+      child.close(0, null);
+      const finalization = task.finalizationPromise;
+      assert.ok(finalization, 'the first terminal event must assign the finalization promise');
+      assert.equal(
+        task.finalizationPromise,
+        finalization,
+        'duplicate terminal events must retain one finalization promise',
+      );
+      await h.registry.waitForFinalization(task);
+      assert.equal(task.status, 'failed');
+    } finally {
+      await cleanup(h.root);
+    }
+  });
+
+  void it('waits for a terminal task full finalization independently of running-task stops', async () => {
+    const gate = deferred<void>();
+    const h = await createHarness({ platform: 'linux' });
+    try {
+      const task = await h.registry.startTask(h.ctx, 'node fake.js', {
+        name: 'Shutdown Terminal Finalization',
+        notifyOnCompletion: true,
+        terminalPublicationGate: gate.promise,
+      });
+      lastSpawn(h).child.close(0, null);
+      await waitFor(() => task.status === 'completed', 'terminal status before shutdown wait');
+      let shutdownWaitResolved = false;
+      const shutdownWait = h.registry.waitForFinalization(task).then(() => {
+        shutdownWaitResolved = true;
+      });
+      await new Promise((resolve) => setImmediate(resolve));
+      assert.equal(shutdownWaitResolved, false);
+      gate.resolve(undefined);
+      await shutdownWait;
+      assert.equal(task.notified, true);
     } finally {
       await cleanup(h.root);
     }
@@ -602,17 +1140,12 @@ void describe('BackgroundTaskRegistry', () => {
   });
 
   void it('uses taskkill tree termination on Windows and never falls back to child.kill', async () => {
-    let processKillCalled = false;
     let childRef: FakeChild | undefined;
     const killTreeCalls: Array<{ pid: number; phase: WindowsKillPhase }> = [];
     const h = await createHarness({
       platform: 'win32',
       killGraceMs: 20,
       stopWaitMs: 500,
-      killProcess: () => {
-        processKillCalled = true;
-        return true;
-      },
       killTree: (pid, phase) => {
         killTreeCalls.push({ pid, phase });
         if (phase === 'force') {
@@ -632,7 +1165,7 @@ void describe('BackgroundTaskRegistry', () => {
     try {
       const { task, child } = await startFakeTask(h, 'Windows Kill');
       await h.registry.stopTask(task, 'user');
-      assert.equal(processKillCalled, false);
+      assert.deepEqual(h.processKills, [], 'Windows termination must not use POSIX process kill');
       assert.deepEqual(killTreeCalls, [
         { pid: child.pid, phase: 'terminate' },
         { pid: child.pid, phase: 'force' },
@@ -671,7 +1204,8 @@ void describe('BackgroundTaskRegistry', () => {
           }
           return new Promise<TaskkillOutcome>(() => undefined);
         }
-        assert.equal(signal, undefined, 'force taskkill must not reuse the soft abort signal');
+        assert.ok(signal, 'force taskkill must own a distinct abort signal');
+        assert.equal(signal.aborted, false);
         assert.equal(softAbortCount, 1, 'soft attempt should be aborted before force starts');
         queueMicrotask(() => {
           childRef?.close(null, 'SIGKILL');
@@ -777,32 +1311,79 @@ void describe('BackgroundTaskRegistry', () => {
     }
   });
 
-  void it('surfaces Windows force failure loudly without root-only fallback', async () => {
+  void it('retries a settled Windows force failure with fresh shared taskkill state', async () => {
+    mock.timers.enable({ apis: ['setTimeout'] });
+    const phases: Array<{ phase: WindowsKillPhase; signal: AbortSignal | undefined }> = [];
+    let forceAttempt = 0;
+    let childRef: FakeChild | undefined;
+    const terminals: BgTaskSnapshot[] = [];
     const h = await createHarness({
       platform: 'win32',
       killGraceMs: 20,
-      stopWaitMs: 500,
-      killTree: (_pid, phase) =>
-        Promise.resolve(
-          phase === 'terminate'
-            ? taskkillOutcome(1, 'soft denied')
-            : taskkillOutcome(5, 'force denied'),
-        ),
-      childFactory: (pid) =>
-        new FakeChild(pid, () => {
+      stopWaitMs: 100,
+      publishTerminal: (terminal) => terminals.push(terminal),
+      killTree: (_pid, phase, signal) => {
+        phases.push({ phase, signal });
+        assert.ok(signal, `${phase} taskkill must own abortable attempt state`);
+        if (phase === 'terminate') return Promise.resolve(taskkillOutcome(1, 'soft denied'));
+        forceAttempt += 1;
+        if (forceAttempt === 1) return Promise.resolve(taskkillOutcome(5, 'force denied'));
+        queueMicrotask(() => childRef?.close(null, 'SIGKILL'));
+        return Promise.resolve(taskkillOutcome(0));
+      },
+      childFactory: (pid) => {
+        childRef = new FakeChild(pid, () => {
           throw new Error('root-only kill must not run');
-        }),
+        });
+        return childRef;
+      },
     });
     try {
-      const { task, child } = await startFakeTask(h, 'Windows Force Failure');
-      await assert.rejects(
-        () => h.registry.stopTask(task, 'user'),
-        /Windows taskkill \/T \/F force termination failed[\s\S]*Descendant processes may have leaked/,
+      const { task, child } = await startFakeTask(h, 'Windows Force Failure Retry');
+      const first = h.registry.stopTask(task, 'user', 'first Windows intent');
+      const firstConcurrent = h.registry.stopTask(
+        task,
+        'shutdown',
+        'competing first-attempt shutdown',
       );
+      assert.equal(firstConcurrent, first, 'first Windows attempt must have one shared owner');
+      await Promise.resolve();
+      mock.timers.tick(20);
+      const firstResults = await Promise.allSettled([first, firstConcurrent]);
+      for (const result of firstResults) {
+        assert.equal(result.status, 'rejected');
+        assert.match(
+          result.status === 'rejected' ? String(result.reason) : '',
+          /Windows taskkill \/T \/F force termination failed[\s\S]*Descendant processes may have leaked/,
+        );
+      }
       assert.equal(task.status, 'running');
-      assert.match(task.error ?? '', /force denied/);
+
+      const retry = h.registry.stopTask(task, 'shutdown', 'retry must not overwrite intent');
+      const retryConcurrent = h.registry.stopTask(task, 'user', 'competing retry');
+      assert.equal(retryConcurrent, retry, 'retry must have one fresh shared owner');
+      await Promise.resolve();
+      mock.timers.tick(20);
+      await Promise.all([retry, retryConcurrent]);
+      await h.registry.waitForTerminalPublications();
+
+      assert.deepEqual(
+        phases.map(({ phase }) => phase),
+        ['terminate', 'force', 'terminate', 'force'],
+      );
+      assert.notEqual(phases[0]?.signal, phases[2]?.signal);
+      assert.notEqual(phases[1]?.signal, phases[3]?.signal);
+      assert.deepEqual(h.processKills, [], 'Windows retries must not use POSIX process kill');
       assert.deepEqual(child.killCalls, []);
+      assert.equal(child.closed, true);
+      assert.equal(task.status, 'killed');
+      assert.equal(task.finalizationSettled, true);
+      assert.equal(terminals.length, 1);
+      assert.equal(task.killKind, 'user');
+      assert.match(task.error ?? '', /first Windows intent[\s\S]*force denied/);
+      assert.doesNotMatch(task.error ?? '', /retry must not overwrite intent|competing retry/);
     } finally {
+      mock.timers.reset();
       await cleanup(h.root);
     }
   });
@@ -880,11 +1461,14 @@ void describe('BackgroundTaskRegistry', () => {
     });
     try {
       const { task } = await startFakeTask(h, 'Escalate Kill');
-      const first = h.registry.stopTask(task, 'user');
-      const second = h.registry.stopTask(task, 'user');
+      const first = h.registry.stopTask(task, 'user', 'first user stop owns intent');
+      const second = h.registry.stopTask(task, 'shutdown', 'competing shutdown must lose');
+      assert.equal(second, first, 'concurrent stops must share the first task-owned promise');
       await Promise.all([first, second]);
       assert.deepEqual(killCalls, ['SIGTERM', 'SIGKILL']);
       assert.equal(task.status, 'killed');
+      assert.equal(task.killKind, 'user');
+      assert.equal(task.error, 'first user stop owns intent');
       assert.equal(task.killEscalationTimer, undefined, 'escalation timer must be cleared');
     } finally {
       await cleanup(h.root);
@@ -925,8 +1509,66 @@ void describe('BackgroundTaskRegistry', () => {
     }
   });
 
+  void it('retries a timed-out POSIX stop during shutdown and fully finalizes the child', async () => {
+    mock.timers.enable({ apis: ['setTimeout'] });
+    const killCalls: Array<NodeJS.Signals | number | undefined> = [];
+    const terminals: BgTaskSnapshot[] = [];
+    let childRef: FakeChild | undefined;
+    const h = await createHarness({
+      platform: 'linux',
+      killGraceMs: 10,
+      stopWaitMs: 30,
+      publishTerminal: (terminal) => terminals.push(terminal),
+      killProcess: (_pid, signal) => {
+        killCalls.push(signal);
+        if (killCalls.length === 4) queueMicrotask(() => childRef?.close(null, 'SIGKILL'));
+        return true;
+      },
+      childFactory: (pid) => {
+        childRef = new FakeChild(pid);
+        return childRef;
+      },
+    });
+    try {
+      const { task, child } = await startFakeTask(h, 'POSIX Stop Retry');
+      const first = h.registry.stopTask(task, 'user', 'first timeout intent');
+      const firstConcurrent = h.registry.stopTask(task, 'shutdown', 'competing first shutdown');
+      assert.equal(firstConcurrent, first, 'first POSIX attempt must have one shared owner');
+      mock.timers.tick(30);
+      await Promise.all([
+        assert.rejects(first, /did not exit within 30ms after cancellation/),
+        assert.rejects(firstConcurrent, /did not exit within 30ms after cancellation/),
+      ]);
+      assert.deepEqual(killCalls, ['SIGTERM', 'SIGKILL']);
+      assert.equal(task.status, 'running');
+      assert.equal(task.stopPromise, undefined);
+
+      const shutdown = h.registry.stopTask(task, 'shutdown', 'shutdown retry must lose intent');
+      const shutdownConcurrent = h.registry.stopTask(task, 'user', 'competing retry user');
+      assert.equal(shutdownConcurrent, shutdown, 'shutdown retry must have one fresh shared owner');
+      mock.timers.tick(10);
+      await Promise.all([shutdown, shutdownConcurrent]);
+      await h.registry.waitForFinalization(task);
+      await h.registry.waitForTerminalPublications();
+
+      assert.deepEqual(killCalls, ['SIGTERM', 'SIGKILL', 'SIGTERM', 'SIGKILL']);
+      assert.equal(child.closed, true);
+      assert.equal(h.children.filter(({ child: owned }) => !owned.closed).length, 0);
+      assert.equal(task.status, 'killed');
+      assert.equal(task.finalizationSettled, true);
+      assert.equal(task.terminalPublished, true);
+      assert.equal(terminals.length, 1);
+      assert.equal(task.killKind, 'user');
+      assert.equal(task.error, 'first timeout intent');
+    } finally {
+      mock.timers.reset();
+      await cleanup(h.root);
+    }
+  });
+
   void it('finalizes and notifies once under error/close and output-cap races', async () => {
     const h = await createHarness({
+      platform: 'linux',
       maxOutputBytes: 8,
       killProcess: () => true,
     });
@@ -972,6 +1614,7 @@ void describe('BackgroundTaskRegistry', () => {
     const metadataStatuses: unknown[] = [];
     let metadataPath = '';
     const h = await createHarness({
+      platform: 'linux',
       publishTerminal: (task) => {
         terminals.push(task);
         metadataStatuses.push(
@@ -998,24 +1641,102 @@ void describe('BackgroundTaskRegistry', () => {
     }
   });
 
-  void it('keeps failed terminal EventBus delivery loud and retriable', async () => {
+  void it('keeps finalization-settled tasks resolvable until gated terminal publication succeeds', async () => {
+    const publicationGate = deferred<void>();
     const terminals: BgTaskSnapshot[] = [];
+    const h = await createHarness({
+      platform: 'linux',
+      maxRecentTasks: 1,
+      publishTerminal: (task) => terminals.push(task),
+    });
+    try {
+      const old = await h.registry.startTask(h.ctx, 'printf old', {
+        name: 'Publication gated old task',
+        notifyOnCompletion: false,
+      });
+      old.terminalPublicationGate = publicationGate.promise;
+      lastSpawn(h).child.close(0, null);
+      await h.registry.waitForFinalization(old);
+      assert.equal(old.finalizationSettled, true);
+      assert.equal(old.terminalPublished, undefined);
+      assert.equal(h.registry.resolveTask(old.id), old);
+
+      const running = await h.registry.startTask(h.ctx, 'sleep forever', {
+        name: 'Running retention pressure',
+        notifyOnCompletion: false,
+      });
+      assert.equal(h.registry.resolveTask(old.id), old);
+      assert.deepEqual(terminals, []);
+
+      publicationGate.resolve(undefined);
+      await h.registry.waitForTerminalPublications();
+      assert.equal(old.terminalPublished, true);
+      assert.equal(terminals.length, 1);
+      assert.throws(() => h.registry.resolveTask(old.id), /Unknown background task ID/);
+      assert.equal(h.registry.resolveTask(running.id), running);
+
+      lastSpawn(h).child.close(0, null);
+      await h.registry.waitForFinalization(running);
+      await h.registry.waitForTerminalPublications();
+    } finally {
+      await cleanup(h.root);
+    }
+  });
+
+  void it('keeps rejected terminal publication diagnosable and ineligible for pruning', async () => {
+    const publicationGate = deferred<void>();
+    const h = await createHarness({ platform: 'linux', maxRecentTasks: 1 });
+    try {
+      const old = await h.registry.startTask(h.ctx, 'printf old', {
+        name: 'Rejected publication old task',
+        notifyOnCompletion: false,
+      });
+      old.terminalPublicationGate = publicationGate.promise;
+      lastSpawn(h).child.close(0, null);
+      await h.registry.waitForFinalization(old);
+      const running = await h.registry.startTask(h.ctx, 'sleep forever', {
+        name: 'Running pressure after rejection',
+        notifyOnCompletion: false,
+      });
+
+      publicationGate.reject(new Error('injected publication gate rejection'));
+      await assert.rejects(
+        h.registry.waitForTerminalPublications(),
+        /injected publication gate rejection/,
+      );
+      assert.equal(old.finalizationSettled, true);
+      assert.equal(old.terminalPublished, undefined);
+      assert.equal(h.registry.resolveTask(old.id), old);
+      assert.match(h.errors.flat().join(' '), /injected publication gate rejection/);
+
+      lastSpawn(h).child.close(0, null);
+      await h.registry.waitForFinalization(running);
+      assert.equal(h.registry.resolveTask(old.id), old);
+    } finally {
+      await cleanup(h.root);
+    }
+  });
+
+  void it('keeps failed terminal EventBus delivery loud without an orphaned retry timer', async () => {
     let attempts = 0;
     const h = await createHarness({
-      publishTerminal: (task) => {
+      platform: 'linux',
+      publishTerminal: () => {
         attempts += 1;
-        if (attempts === 1) throw new Error('terminal bus unavailable');
-        terminals.push(task);
+        throw new Error('terminal bus unavailable');
       },
     });
     try {
-      const { task, child } = await startFakeTask(h, 'Terminal Retry');
+      const { task, child } = await startFakeTask(h, 'Terminal Failure');
       child.close(0, null);
-      await waitFor(() => task.status === 'completed', 'terminal retry completion');
-      await waitFor(() => terminals.length === 1, 'terminal retry publication');
-      assert.equal(attempts, 2);
-      assert.equal(task.terminalPublished, true);
-      assert.equal(terminals[0]?.id, task.id);
+      await h.registry.waitForFinalization(task);
+      await assert.rejects(
+        h.registry.waitForTerminalPublications(),
+        /terminal bus unavailable/,
+      );
+      assert.equal(attempts, 1);
+      assert.equal(task.terminalPublished, undefined);
+      assert.ok(task.terminalPublicationPromise);
       assert.match(
         h.errors.flat().join(' '),
         /terminal publication failed|terminal bus unavailable/,
@@ -1027,6 +1748,7 @@ void describe('BackgroundTaskRegistry', () => {
 
   void it('resets notified when completion notification delivery fails and records loud metadata errors', async () => {
     const failingNotify = await createHarness({
+      platform: 'linux',
       sendCompletionNotification: () => {
         throw new Error('send failed');
       },
@@ -1047,7 +1769,7 @@ void describe('BackgroundTaskRegistry', () => {
       await cleanup(failingNotify.root);
     }
 
-    const metadataFailure = await createHarness();
+    const metadataFailure = await createHarness({ platform: 'linux' });
     try {
       const { task, child } = await startFakeTask(metadataFailure, 'Metadata Failure');
       await rm(join(metadataFailure.cwd, '.pi'), { recursive: true, force: true });
@@ -1070,7 +1792,7 @@ void describe('BackgroundTaskRegistry', () => {
   });
 
   void it('ingests split, malformed, and large telemetry records without losing task state', async () => {
-    const h = await createHarness();
+    const h = await createHarness({ platform: 'linux' });
     try {
       const { task, child } = await startFakeTask(h, 'Telemetry Chunks');
       child.writeStdout('not-json-but-user-output\n');
@@ -1221,7 +1943,7 @@ void describe('BackgroundTaskRegistry', () => {
   });
 
   void it('preserves split multiline XML context telemetry across newline boundaries', async () => {
-    const h = await createHarness();
+    const h = await createHarness({ platform: 'linux' });
     try {
       const { task, child } = await startFakeTask(h, 'XML Telemetry');
       child.writeStdout('prefix\n<background-task-context-usage>\n  <tokens>321</tokens>\n');
@@ -1237,8 +1959,140 @@ void describe('BackgroundTaskRegistry', () => {
     }
   });
 
+  void it('finalizes registered attested tasks coherently when initial events, wrapper, or metadata durability fails', async (t) => {
+    const cases = [
+      { name: 'events', message: 'injected initial events failure' },
+      { name: 'wrapper', message: 'injected initial wrapper failure' },
+      { name: 'metadata', message: 'injected initial metadata failure' },
+    ] as const;
+
+    for (const testCase of cases) {
+      await t.test(testCase.name, async () => {
+        let metadataWrites = 0;
+        const h = await createHarness({
+          platform: 'linux',
+          modelRegistry: oauthRegistry(),
+          writeFileFsynced: async (path, data) => {
+            if (
+              (testCase.name === 'events' && path.endsWith('.pi-events.jsonl')) ||
+              (testCase.name === 'wrapper' && path.endsWith('.pi-telemetry-wrapper.cjs'))
+            ) {
+              throw new Error(testCase.message);
+            }
+            await writeFileFsynced(path, data);
+          },
+          writeJsonAtomic: async (path, value) => {
+            metadataWrites += 1;
+            if (testCase.name === 'metadata' && metadataWrites === 1) {
+              throw new Error(testCase.message);
+            }
+            await writeJsonAtomic(path, value);
+          },
+        });
+        try {
+          await initCleanGit(h.cwd);
+          const launch = h.registry.startAttestedPiTask(h.ctx, {
+            name: `Attested initial ${testCase.name} failure`,
+            provider: 'openai-codex',
+            model: 'gpt-5.5',
+            prompt: 'write report.md',
+            reportPath: 'report.md',
+          });
+          await assert.rejects(
+            launch,
+            new RegExp(`Failed to start attested Pi task: ${testCase.message}`),
+          );
+          await h.registry.waitForLaunchOperations();
+
+          assert.equal(h.children.length, 0, 'initial durable failure must happen before spawn');
+          const task = h.registry.allTasks()[0];
+          assert.ok(task, 'a registered attested failure must remain diagnosable');
+          assert.equal(task.status, 'failed');
+          assert.equal(task.error, testCase.message);
+          assert.equal(task.finalizationSettled, true);
+          const metadata = parseJsonObject(
+            await readFile(task.metadataAbsPath, 'utf8'),
+            'failed startup metadata must be durable',
+          );
+          assert.equal(metadata['status'], 'failed');
+          assert.equal(metadata['error'], testCase.message);
+          assert.equal(
+            h.registry.allTasks().some((owned) => owned.status === 'running'),
+            false,
+          );
+        } finally {
+          await cleanup(h.root);
+        }
+      });
+    }
+  });
+
+  void it('terminates an attested child and awaits attested phase B when post-spawn metadata fails', async () => {
+    const killRequested = deferred<void>();
+    const killCalls: Array<NodeJS.Signals | number | undefined> = [];
+    let childRef: FakeChild | undefined;
+    let metadataWrites = 0;
+    const h = await createHarness({
+      platform: 'linux',
+      modelRegistry: oauthRegistry(),
+      writeJsonAtomic: async (path, value) => {
+        metadataWrites += 1;
+        if (metadataWrites === 2) throw new Error('injected attested post-spawn metadata failure');
+        await writeJsonAtomic(path, value);
+      },
+      killProcess: (pid, signal) => {
+        assert.ok(childRef);
+        assert.equal(pid, -childRef.pid, 'attested startup failure must target its process tree');
+        killCalls.push(signal);
+        killRequested.resolve(undefined);
+        queueMicrotask(() => childRef?.close(null, 'SIGTERM'));
+        return true;
+      },
+      childFactory: (pid) => {
+        childRef = new FakeChild(pid);
+        return childRef;
+      },
+    });
+    try {
+      await initCleanGit(h.cwd);
+      const launch = h.registry.startAttestedPiTask(h.ctx, {
+        name: 'Attested post-spawn metadata failure',
+        provider: 'openai-codex',
+        model: 'gpt-5.5',
+        prompt: 'write report.md',
+        reportPath: 'report.md',
+      });
+      const rejectedLaunch = assert.rejects(
+        launch,
+        /Failed to start attested Pi task: injected attested post-spawn metadata failure/,
+      );
+      h.registry.setShuttingDown(true);
+      const drain = h.registry.waitForLaunchOperations();
+      await killRequested.promise;
+      await rejectedLaunch;
+      await drain;
+
+      const task = h.registry.allTasks()[0];
+      assert.ok(task);
+      assert.equal(task.status, 'failed');
+      assert.equal(task.error, 'injected attested post-spawn metadata failure');
+      assert.equal(task.finalizationSettled, true);
+      assert.deepEqual(killCalls, ['SIGTERM']);
+      assert.equal(childRef?.closed, true);
+      assert.equal(h.children.filter(({ child }) => !child.closed).length, 0);
+      const metadata = parseJsonObject(
+        await readFile(task.metadataAbsPath, 'utf8'),
+        'post-spawn failed attested metadata must be durable',
+      );
+      assert.equal(metadata['status'], 'failed');
+      assert.equal(metadata['error'], 'injected attested post-spawn metadata failure');
+    } finally {
+      await cleanup(h.root);
+    }
+  });
+
   void it('produces a direct-spawn attested Pi sidecar with raw events, stderr, hashes, and exact argv', async () => {
-    const h = await createHarness({ modelRegistry: oauthRegistry() });
+    const h = await createHarness({ platform: 'linux', modelRegistry: oauthRegistry() });
     try {
       await initCleanGit(h.cwd);
       const task = await h.registry.startAttestedPiTask(h.ctx, {
@@ -1252,22 +2106,8 @@ void describe('BackgroundTaskRegistry', () => {
       await writeFile(join(h.cwd, 'report.md'), 'unit report\n', 'utf8');
       assert.match(task.id, /^b[0-9a-f]{32}$/);
       const spawn = lastSpawn(h);
-      // This harness inherits the host platform, so the launch shape is
-      // asserted per platform. On POSIX the resolved executable is the `pi`
-      // entry on PATH. On Windows npm installs `pi` as a `pi.cmd` shim that a
-      // shell-less spawn cannot resolve, so the Pi package bin is launched
-      // through the current Node executable instead. Both are correct
-      // production behaviour for their platform.
-      const piArgs = process.platform === 'win32' ? spawn.args.slice(1) : [...spawn.args];
-      if (process.platform === 'win32') {
-        assert.equal(spawn.shell, process.execPath);
-        assert.ok(
-          spawn.args[0]?.endsWith('cli.js'),
-          'Windows launches the resolved Pi bin as the first argument',
-        );
-      } else {
-        assert.equal(spawn.shell, 'pi');
-      }
+      assert.equal(spawn.shell, 'pi');
+      const piArgs = [...spawn.args];
       assert.equal(spawn.options.env?.['OPENAI_API_KEY'], undefined);
       assert.equal(spawn.options.env?.['OPENAI_BASE_URL'], undefined);
       assert.equal(spawn.options.env?.['ANTHROPIC_API_KEY'], undefined);
@@ -1285,7 +2125,16 @@ void describe('BackgroundTaskRegistry', () => {
       spawn.child.writeStdout(piJsonEvents());
       spawn.child.writeStderr('diagnostic\n');
       spawn.child.close(0, null);
-      await waitFor(() => task.status === 'completed', 'attested sidecar completion');
+      const attestedFinalization = task.finalizationPromise;
+      assert.ok(attestedFinalization, 'attested close must assign a finalization promise');
+      spawn.child.close(1, null);
+      assert.equal(
+        task.finalizationPromise,
+        attestedFinalization,
+        'duplicate attested close events must share one finalization settlement',
+      );
+      await h.registry.waitForFinalization(task);
+      assert.equal(task.status, 'completed');
       assert.ok(task.attestationAbsPath, 'attestation path should be recorded on task');
       assert.equal(
         existsSync(task.attestationAbsPath ?? ''),
@@ -1307,10 +2156,6 @@ void describe('BackgroundTaskRegistry', () => {
       assert.equal(invocation['model_id'], 'gpt-5.5');
       assert.equal(invocation['credential_kind'], 'oauth');
       assert.equal(invocation['direct_api_key'], false);
-      // The recorded evidence argv is the logical Pi invocation on every
-      // platform. It deliberately stays ['pi', ...] rather than echoing the
-      // Windows Node-plus-cli.js launch form, so attestation evidence keeps one
-      // stable meaning across platforms.
       assert.deepEqual(invocation['argv'], ['pi', ...piArgs]);
       const sourceHashes = requiredJsonObject(attestation['source_hashes'], 'source hashes');
       const artifacts = requiredJsonObject(attestation['artifacts'], 'artifacts');
@@ -1339,8 +2184,65 @@ void describe('BackgroundTaskRegistry', () => {
     }
   });
 
+  void it('fails attested durable-write finalization coherently without an unhandled rejection', async () => {
+    const unhandled: unknown[] = [];
+    const onUnhandled = (reason: unknown) => {
+      unhandled.push(reason);
+    };
+    process.on('unhandledRejection', onUnhandled);
+    const h = await createHarness({
+      platform: 'linux',
+      modelRegistry: oauthRegistry(),
+      killProcess: () => true,
+      writeFileFsynced: async (path, data) => {
+        if (path.endsWith('.pi-events.jsonl') && Buffer.byteLength(data) > 0) {
+          throw new Error('injected durable events write failure');
+        }
+        await writeFileFsynced(path, data);
+      },
+    });
+    try {
+      await initCleanGit(h.cwd);
+      const task = await h.registry.startAttestedPiTask(h.ctx, {
+        name: 'Attested Durable Failure',
+        provider: 'openai-codex',
+        model: 'gpt-5.5',
+        prompt: 'write report.md',
+        reportPath: 'report.md',
+      });
+      const child = lastSpawn(h).child;
+      child.writeStdout(piJsonEvents());
+      const stopping = h.registry.stopTask(task, 'user');
+      child.close(null, 'SIGTERM');
+
+      await assert.rejects(stopping, /injected durable events write failure/);
+      assert.equal(task.status, 'failed');
+      assert.equal(task.finalizationSettled, true);
+      assert.match(task.error ?? '', /injected durable events write failure/);
+      const metadata = parseJsonObject(
+        await readFile(task.metadataAbsPath, 'utf8'),
+        'failed attested metadata must remain coherent',
+      );
+      assert.equal(metadata['status'], 'failed');
+      await assert.rejects(
+        h.registry.waitForFinalization(task),
+        /injected durable events write failure/,
+      );
+      await h.registry.waitForTerminalPublications();
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      assert.deepEqual(unhandled, []);
+      assert.match(
+        h.errors.flat().join(' '),
+        /callback-owned finalization failed|injected durable events write failure/,
+      );
+    } finally {
+      process.off('unhandledRejection', onUnhandled);
+      await cleanup(h.root);
+    }
+  });
+
   void it('rejects duplicate thinking in attested Pi extra args before spawn', async () => {
-    const h = await createHarness({ modelRegistry: oauthRegistry() });
+    const h = await createHarness({ platform: 'linux', modelRegistry: oauthRegistry() });
     try {
       await initCleanGit(h.cwd);
       await assert.rejects(
@@ -1362,7 +2264,11 @@ void describe('BackgroundTaskRegistry', () => {
   });
 
   void it('launches attested Pi on Windows through Node while preserving logical argv', async () => {
-    const h = await createHarness({ platform: 'win32', modelRegistry: oauthRegistry() });
+    const h = await createHarness({
+      platform: 'win32',
+      killTree: unexpectedKillTree,
+      modelRegistry: oauthRegistry(),
+    });
     try {
       await initCleanGit(h.cwd);
       const prompt = 'write report.md & echo pwned "%VAR%" C:\\tmp\\space path\\';
@@ -1420,6 +2326,7 @@ void describe('BackgroundTaskRegistry', () => {
 
   void it('strips metered API environment from attested Pi child process', async () => {
     const h = await createHarness({
+      platform: 'linux',
       modelRegistry: oauthRegistry(),
       env: {
         ...process.env,
@@ -1465,7 +2372,7 @@ void describe('BackgroundTaskRegistry', () => {
   });
 
   void it('rejects malformed attested Pi events and does not emit a sidecar', async () => {
-    const h = await createHarness({ modelRegistry: oauthRegistry() });
+    const h = await createHarness({ platform: 'linux', modelRegistry: oauthRegistry() });
     try {
       await initCleanGit(h.cwd);
       const task = await h.registry.startAttestedPiTask(h.ctx, {
@@ -1487,7 +2394,7 @@ void describe('BackgroundTaskRegistry', () => {
   });
 
   void it('keeps ordinary bg_run tasks free of attestation sidecars', async () => {
-    const h = await createHarness();
+    const h = await createHarness({ platform: 'linux' });
     try {
       const { task, child } = await startFakeTask(h, 'Ordinary No Sidecar');
       child.writeStdout('ordinary\n');
@@ -1501,7 +2408,7 @@ void describe('BackgroundTaskRegistry', () => {
   });
 
   void it('tracks managed Fusion completion, durable progress, once-only usage, and cancellation', async () => {
-    const h = await createHarness({ stopWaitMs: 100 });
+    const h = await createHarness({ platform: 'linux', stopWaitMs: 100 });
     try {
       let complete: (() => void) | undefined;
       const completion = new Promise<void>((resolve) => {
@@ -1558,6 +2465,7 @@ void describe('BackgroundTaskRegistry', () => {
         runId: 'reason-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
         usageDelivered: false,
       };
+      const cancellationFinalizationGate = deferred<void>();
       const cancelledTask = await h.registry.startManagedTask(h.ctx, {
         id: cancelledFacts.runId,
         name: 'fusion reason',
@@ -1565,14 +2473,86 @@ void describe('BackgroundTaskRegistry', () => {
         isAgent: true,
         completion: cancelled,
         cancel: () => rejectCancelled?.(new Error('fusion cancelled')),
-        notifyOnCompletion: false,
+        notifyOnCompletion: true,
         triggerOnCompletion: false,
         fusion: cancelledFacts,
         stopWaitMs: 100,
+        terminalPublicationGate: cancellationFinalizationGate.promise,
       });
-      await h.registry.stopTask(cancelledTask, 'user');
+      let managedStopResolved = false;
+      const managedStop = h.registry.stopTask(cancelledTask, 'user').then(() => {
+        managedStopResolved = true;
+      });
+      await waitFor(
+        () => cancelledTask.status === 'killed',
+        'managed cancellation durable terminal transition',
+      );
+      await new Promise((resolve) => setTimeout(resolve, 150));
+      assert.equal(
+        managedStopResolved,
+        false,
+        'managed stop must await gated notification persistence without timing out phase A',
+      );
+      cancellationFinalizationGate.resolve(undefined);
+      await assert.doesNotReject(managedStop);
       assert.equal(cancelledTask.status, 'killed');
       assert.equal(cancelledTask.managedCancelRequested, true);
+      assert.equal(cancelledTask.notified, true);
+    } finally {
+      await cleanup(h.root);
+    }
+  });
+
+  void it('keeps phase-B tasks resolvable until settlement and prunes them only afterward', async () => {
+    let clock = 1_000;
+    let blockedRef: BgTask | undefined;
+    const phaseAReached = deferred<void>();
+    const phaseBGate = deferred<void>();
+    const h = await createHarness({
+      platform: 'linux',
+      maxRecentTasks: 1,
+      now: () => clock++,
+      onChange: () => {
+        if (blockedRef?.status === 'completed') phaseAReached.resolve(undefined);
+      },
+    });
+    try {
+      const blocked = await h.registry.startTask(h.ctx, 'printf blocked', {
+        name: 'Blocked Phase B',
+        notifyOnCompletion: true,
+        triggerOnCompletion: false,
+        terminalPublicationGate: phaseBGate.promise,
+      });
+      blockedRef = blocked;
+      lastSpawn(h).child.close(0, null);
+      await phaseAReached.promise;
+      assert.equal(blocked.finalizationSettled, false);
+
+      const newer = await h.registry.startTask(h.ctx, 'printf newer', {
+        name: 'Newer Settled',
+        notifyOnCompletion: false,
+      });
+      lastSpawn(h).child.close(0, null);
+      await h.registry.waitForFinalization(newer);
+      assert.equal(h.registry.resolveTask(blocked.id), blocked);
+      assert.equal(
+        h.registry.allTasks().includes(newer),
+        false,
+        'the settled newer task is removable while the older phase-B task is not',
+      );
+
+      phaseBGate.resolve(undefined);
+      await h.registry.waitForFinalization(blocked);
+      assert.equal(blocked.finalizationSettled, true);
+
+      const newest = await h.registry.startTask(h.ctx, 'printf newest', {
+        name: 'Newest Settled',
+        notifyOnCompletion: false,
+      });
+      lastSpawn(h).child.close(0, null);
+      await h.registry.waitForFinalization(newest);
+      assert.throws(() => h.registry.resolveTask(blocked.id), /Unknown background task ID/);
+      assert.equal(h.registry.resolveTask(newest.id), newest);
     } finally {
       await cleanup(h.root);
     }
@@ -1581,6 +2561,7 @@ void describe('BackgroundTaskRegistry', () => {
   void it('prunes oldest finished tasks while preserving running tasks', async () => {
     let clock = 1_000;
     const h = await createHarness({
+      platform: 'linux',
       maxRecentTasks: 3,
       now: () => clock++,
     });

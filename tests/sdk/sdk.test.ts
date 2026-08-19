@@ -382,17 +382,7 @@ async function waitForTerminalSnapshot(
 }
 
 async function cleanupRoot(root: string): Promise<void> {
-  await new Promise((resolve) => setTimeout(resolve, 50));
-  for (let attempt = 0; attempt < 5; attempt++) {
-    try {
-      await rm(root, { recursive: true, force: true });
-      return;
-    } catch (error) {
-      if (!(error instanceof Error) || !/ENOTEMPTY/.test(error.message) || attempt === 4)
-        throw error;
-      await new Promise((resolve) => setTimeout(resolve, 25));
-    }
-  }
+  await rm(root, { recursive: true, force: true });
 }
 
 afterEach(async () => {
@@ -803,6 +793,62 @@ void describe('sdk', () => {
       unsubscribeTerminal();
       unsubscribeResponseOrder();
       await session.extensionRunner.emit({ type: 'session_shutdown', reason: 'quit' });
+      session.dispose();
+    }
+  });
+
+  void it('rebinds exactly one EventBus service across two complete session lifecycles', async () => {
+    const eventBus = createEventBus();
+    const responseCounts = new Map<string, number>();
+    const terminalCounts = new Map<string, number>();
+    const unsubscribeResponse = eventBus.on(BG_RESPONSE_CHANNEL, (data) => {
+      const response = requireEventResponse(data);
+      responseCounts.set(response.request_id, (responseCounts.get(response.request_id) ?? 0) + 1);
+    });
+    const unsubscribeTerminal = eventBus.on(BG_TERMINAL_CHANNEL, (data) => {
+      const task = requireTerminal(data).task;
+      terminalCounts.set(task.id, (terminalCounts.get(task.id) ?? 0) + 1);
+    });
+    const { session } = await harness({ eventBus });
+    let openSession = false;
+    try {
+      for (const cycle of [1, 2]) {
+        await session.extensionRunner.emit({ type: 'session_start', reason: 'startup' });
+        openSession = true;
+        const terminalReceived = new Promise<BgTaskSnapshot>((resolveTerminal) => {
+          const unsubscribe = eventBus.on(BG_TERMINAL_CHANNEL, (data) => {
+            const task = requireTerminal(data).task;
+            if (task.name !== `Reload cycle ${String(cycle)}`) return;
+            unsubscribe();
+            resolveTerminal(task);
+          });
+        });
+        const requestId = `reload-cycle-${String(cycle)}`;
+        const response = await emitEventRequest(eventBus, requestId, 'run', {
+          name: `Reload cycle ${String(cycle)}`,
+          command: `node -e ${JSON.stringify(`process.stdout.write('cycle-${String(cycle)}')`)}`,
+          isAgent: false,
+          notifyOnCompletion: false,
+          triggerOnCompletion: false,
+        });
+        const launched = requiredTask(requireOkResult(response), 'reload run task');
+        const terminal = await terminalReceived;
+        assert.equal(terminal.id, launched.id);
+        assert.equal(terminal.status, 'completed');
+        assert.equal(responseCounts.get(requestId), 1);
+        assert.equal(terminalCounts.get(launched.id), 1);
+
+        await session.extensionRunner.emit({ type: 'session_shutdown', reason: 'reload' });
+        openSession = false;
+      }
+      assert.deepEqual([...responseCounts.values()], [1, 1]);
+      assert.deepEqual([...terminalCounts.values()], [1, 1]);
+    } finally {
+      unsubscribeTerminal();
+      unsubscribeResponse();
+      if (openSession) {
+        await session.extensionRunner.emit({ type: 'session_shutdown', reason: 'quit' });
+      }
       session.dispose();
     }
   });
@@ -1511,6 +1557,24 @@ console.log(JSON.stringify({ type: "message_end", message: secondMessage }));
       await session.extensionRunner.emit({ type: 'session_shutdown', reason: 'quit' });
       session.dispose();
     }
+  });
+
+  void it('awaits terminal task finalization before shutdown returns', async () => {
+    const { session, cwd } = await harness();
+    const launched = await exec(session, 'bg_run', {
+      isAgent: false,
+      name: 'SDK Terminal Shutdown',
+      command: 'node -e ""',
+      notifyOnCompletion: true,
+      triggerOnCompletion: false,
+    });
+    const terminal = await wait(session, taskFromResult(launched).id);
+    assert.equal(terminal.status, 'completed');
+    await session.extensionRunner.emit({ type: 'session_shutdown', reason: 'quit' });
+    const taskDir = dirname(join(cwd, terminal.outputPath));
+    await rm(taskDir, { recursive: true });
+    assert.equal(existsSync(taskDir), false);
+    session.dispose();
   });
 
   void it('cleans up multiple running tasks on shutdown', async () => {

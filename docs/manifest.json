@@ -1,15 +1,15 @@
 {
   "attestation_state": [
     {
-      "authored_body_sha256": "sha256:8b8a883eb261dd221d348724fb43ae13fac19eb52a30f688d55ff80b2039be98",
+      "authored_body_sha256": "sha256:fb8cb88c364a862f26e13bdfbd8a54490fc6ee993b7f4498c49203115b39368f",
       "covers_sources": [
         "src/core/extension-api.ts"
       ],
       "doc_id": "api/eventbus-v1",
-      "notes": "Reviewed EventBus channels, closed schemas, operations, request correlation and rejection, close unsubscribe behavior, terminal ordering, latched publication, retry semantics, and at-least-once deduplication guidance.",
+      "notes": "Reviewed closed EventBus schemas, request ownership, response/terminal ordering, shutdown drain, post-spawn startup cleanup barrier, and fresh single-subscription service recreation across session reloads.",
       "rel": "docs/api/eventbus-v1.md",
       "required": true,
-      "reviewer": "gpt-5.5-final-eventbus-reviewer",
+      "reviewer": "gpt-5.6-sol-final-lifecycle-reviewer",
       "state": "pass"
     },
     {
@@ -20,10 +20,11 @@
         "src/core/context/visible-conversation-v2.ts"
       ],
       "doc_id": "concepts/context-projection-and-budgeting",
+      "notes": "Reviewed shared visible-conversation projection, branch exclusion, clean/reason inputs, byte-class estimator provenance, budget invariants, and fail-loud no-truncation policy.",
       "rel": "docs/concepts/context-projection-and-budgeting.md",
       "required": true,
-      "reviewer": "gpt-5.5-final-context-projection-reviewer",
-      "state": "stale-authored-prose"
+      "reviewer": "gpt-5.6-sol-final-lifecycle-reviewer",
+      "state": "pass"
     },
     {
       "authored_body_sha256": "sha256:dde72171e9b2fe2c42de121eb6c0b99667d929f33b844d967089a15a37204664",
@@ -33,9 +34,11 @@
         "src/core/anthropic-attribution.ts"
       ],
       "doc_id": "subsystems/anthropic-attribution",
+      "notes": "Reviewed global provider attribution, OAuth/account boundary, exact-line sanitization, duplicate-owner EventBus claim, explicit isolated-child extension routing, and cache-retention policy.",
       "rel": "docs/subsystems/anthropic-attribution.md",
       "required": true,
-      "state": "missing"
+      "reviewer": "gpt-5.6-sol-final-lifecycle-reviewer",
+      "state": "pass"
     },
     {
       "authored_body_sha256": "sha256:0840d793b8c18869f9a3bb8a72beeb602824ed1a580161f3456126af8af9b459",
@@ -43,13 +46,14 @@
         "src/core/attested-pi-run.ts"
       ],
       "doc_id": "subsystems/attested-pi-runs",
+      "notes": "Reviewed structured argv, OAuth/environment boundary, event parsing, git authority, evidence files/hashes, pre-spawn durability, terminal visibility, and no-partial-sidecar failures.",
       "rel": "docs/subsystems/attested-pi-runs.md",
       "required": true,
-      "reviewer": "gpt-5.5-final-attested-safety-reviewer",
-      "state": "stale-authored-prose"
+      "reviewer": "gpt-5.6-sol-final-lifecycle-reviewer",
+      "state": "pass"
     },
     {
-      "authored_body_sha256": "sha256:e79371d1044a2625d203482b5fc024eec533908a2ac08c014e23fc993bdcd42e",
+      "authored_body_sha256": "sha256:4070d36fd70a24492e0734d8919fe7e71b088d32b95d99883a090c31efaca109",
       "covers_sources": [
         "src/core/common.ts",
         "src/core/foreground-bash.ts",
@@ -57,10 +61,11 @@
         "src/core/windows-taskkill.ts"
       ],
       "doc_id": "subsystems/background-task-runtime",
+      "notes": "Reviewed per-attempt stop ownership, immutable first logical intent, POSIX retry signaling, fresh abortable Windows terminate/force state, fail-loud force history, finalization exclusion and error contract, and retriable post-spawn startup cleanup.",
       "rel": "docs/subsystems/background-task-runtime.md",
       "required": true,
-      "reviewer": "gpt-5.5-final-background-runtime-review-panel",
-      "state": "stale-authored-prose"
+      "reviewer": "gpt-5.6-sol-final-stop-retry-reviewer",
+      "state": "pass"
     },
     {
       "authored_body_sha256": "sha256:40ee5dac92b9e873d6a9f71a59c03ff1ccd44d6717a13d3be18f74b19e68326e",
@@ -69,10 +74,11 @@
         "src/core/pi-launch.ts"
       ],
       "doc_id": "subsystems/child-launch-durability-and-safety",
+      "notes": "Reviewed platform Pi launch resolution, Windows argv limits, durable single-handle write/atomic replace semantics, process trust boundaries, and terminal integrity.",
       "rel": "docs/subsystems/child-launch-durability-and-safety.md",
       "required": true,
-      "reviewer": "gpt-5.5-final-attested-safety-reviewer",
-      "state": "stale-authored-prose"
+      "reviewer": "gpt-5.6-sol-final-lifecycle-reviewer",
+      "state": "pass"
     },
     {
       "authored_body_sha256": "sha256:67fbb232e66bf0b9f4c1a81b54ec5476c0aae929ed0f0777d57601afcac8e08b",
@@ -91,10 +97,11 @@
         "src/delegate-extension.ts"
       ],
       "doc_id": "subsystems/delegation",
+      "notes": "Reviewed seed projection, no-side-effect admission, direct child isolation, route/budget pinning, runtime spill/finalization guards, durable result commit, retrieval verification, and fail-closed hook evidence.",
       "rel": "docs/subsystems/delegation.md",
       "required": true,
-      "reviewer": "gpt-5.5-final-delegation-review-panel-plus-timeout-delta",
-      "state": "stale-authored-prose"
+      "reviewer": "gpt-5.6-sol-final-lifecycle-reviewer",
+      "state": "pass"
     },
     {
       "authored_body_sha256": "sha256:cd882ae075d47e97e2fb45709d7ac044811eedb68e2377b1742ac44147297aa4",
@@ -122,13 +129,14 @@
         "src/ui/fusion-model-selector.ts"
       ],
       "doc_id": "subsystems/fusion",
+      "notes": "Reviewed fixed public workflows, context/tool policies, validation/research boundaries, child isolation/governance, cache and output contracts, budgets, durable artifacts, lifecycle, usage, cancellation, and typed failures.",
       "rel": "docs/subsystems/fusion.md",
       "required": true,
-      "reviewer": "fusion-investigate-agent-settled-panel-plus-regression-evidence",
-      "state": "stale-authored-prose"
+      "reviewer": "gpt-5.6-sol-final-lifecycle-reviewer",
+      "state": "pass"
     },
     {
-      "authored_body_sha256": "sha256:caa46c3699124e0860a6f53f1bf6d31506e7eb8ad89c1871a5efeecc21a1d413",
+      "authored_body_sha256": "sha256:d1fde1b760964fc2cf7efcb8a5843f2b32100cd1eef5903298256b4548a69492",
       "covers_sources": [
         "extensions/background-tasks.ts",
         "src/core/update-check.ts",
@@ -136,10 +144,11 @@
         "src/ui/background-tasks-manager.ts"
       ],
       "doc_id": "subsystems/host-ui-and-telemetry",
+      "notes": "Reviewed extension registration, footer/UI behavior, completion rendering, update checks, shutdown launch/task/request/publication drains, and fresh EventBus service rebinding on session reload.",
       "rel": "docs/subsystems/host-ui-and-telemetry.md",
       "required": true,
-      "reviewer": "existing-gpt-5.5-host-panel-plus-operator-update-delta",
-      "state": "stale-authored-prose"
+      "reviewer": "gpt-5.6-sol-final-lifecycle-reviewer",
+      "state": "pass"
     }
   ],
   "docs": {
@@ -881,28 +890,28 @@
         "id": "command:bg",
         "kind": "command",
         "name": "bg",
-        "source": "src/extension.ts:561"
+        "source": "src/extension.ts:592"
       },
       {
         "description": "Clear finished background task footer notices",
         "id": "command:bg-clear",
         "kind": "command",
         "name": "bg-clear",
-        "source": "src/extension.ts:603"
+        "source": "src/extension.ts:634"
       },
       {
         "description": "Open the background task manager UI",
         "id": "command:bg-tasks",
         "kind": "command",
         "name": "bg-tasks",
-        "source": "src/extension.ts:595"
+        "source": "src/extension.ts:626"
       },
       {
         "description": "Show how to update @sakiko233/pi-background-tasks to the latest published version",
         "id": "command:bg-update",
         "kind": "command",
         "name": "bg-update",
-        "source": "src/extension.ts:611"
+        "source": "src/extension.ts:642"
       },
       {
         "description": "Show or set Claude cache retention for this session (short, long, default)",
@@ -930,28 +939,28 @@
         "id": "command:jobs",
         "kind": "command",
         "name": "jobs",
-        "source": "src/extension.ts:649"
+        "source": "src/extension.ts:680"
       },
       {
         "description": "Stop a running background task: /kill <id>",
         "id": "command:kill",
         "kind": "command",
         "name": "kill",
-        "source": "src/extension.ts:693"
+        "source": "src/extension.ts:724"
       },
       {
         "description": "Show bounded output from a background task: /logs <id> [maxBytes]",
         "id": "command:logs",
         "kind": "command",
         "name": "logs",
-        "source": "src/extension.ts:662"
+        "source": "src/extension.ts:693"
       },
       {
         "description": "Open the Claude-like background task manager UI",
         "id": "command:tasks",
         "kind": "command",
         "name": "tasks",
-        "source": "src/extension.ts:587"
+        "source": "src/extension.ts:618"
       }
     ],
     "eventbus": [
@@ -979,7 +988,7 @@
         "id": "renderer:background-task-notification",
         "kind": "renderer",
         "name": "background-task-notification",
-        "source": "src/extension.ts:470"
+        "source": "src/extension.ts:474"
       },
       {
         "id": "renderer:fusion-result",
@@ -994,7 +1003,7 @@
         "id": "shortcut:ctrl+alt+c",
         "kind": "shortcut",
         "name": "ctrl+alt+c",
-        "source": "src/extension.ts:641"
+        "source": "src/extension.ts:672"
       },
       {
         "description": "Move the most recent active foreground bash command to the background",
@@ -1008,7 +1017,7 @@
         "id": "shortcut:shift+down",
         "kind": "shortcut",
         "name": "shift+down",
-        "source": "src/extension.ts:634"
+        "source": "src/extension.ts:665"
       }
     ],
     "tool": [
@@ -1149,7 +1158,7 @@
           ],
           "type": "object"
         },
-        "source": "src/extension.ts:952"
+        "source": "src/extension.ts:983"
       },
       {
         "description": "Read bounded output from a background task for deliberate inspection; this is not a waiting primitive. Output is capped at 50.0KB for model safety and points to the full output file when truncated.",
@@ -1183,7 +1192,7 @@
           ],
           "type": "object"
         },
-        "source": "src/extension.ts:907"
+        "source": "src/extension.ts:938"
       },
       {
         "description": "Retrieve a hash-verified result from a bg_delegate or background Fusion task. Never blocks: a running task returns a typed not-ready result. Oversized answers are never truncated.",
@@ -1270,7 +1279,7 @@
           ],
           "type": "object"
         },
-        "source": "src/extension.ts:726"
+        "source": "src/extension.ts:757"
       },
       {
         "description": "Opt-in evidence-oriented direct Pi spawn. Launches exactly one `pi --mode json` child, records raw Pi events/stderr, hashes prompt/report/output, observes OAuth through ModelRegistry, and emits a strict attestation sidecar only after successful completion.",
@@ -1331,7 +1340,7 @@
           ],
           "type": "object"
         },
-        "source": "src/extension.ts:811"
+        "source": "src/extension.ts:842"
       },
       {
         "description": "Inspect one background task or list all running/recent background tasks. This is a point-in-time inspection tool, not a waiting primitive.",
@@ -1355,7 +1364,7 @@
           "required": [],
           "type": "object"
         },
-        "source": "src/extension.ts:876"
+        "source": "src/extension.ts:907"
       },
       {
         "description": "Start a five-model Fusion investigation as a tracked background task and return immediately after durable preflight. Retrieve the verified result with bg_result after notification. Candidate children run in clean bounded read-only contexts.",

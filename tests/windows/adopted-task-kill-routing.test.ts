@@ -217,7 +217,8 @@ void describe('adopted task Windows kill routing', () => {
         ],
       );
       assert.equal(calls[0]?.signal?.aborted, true);
-      assert.equal(calls[1]?.signal, undefined);
+      assert.ok(calls[1]?.signal instanceof AbortSignal);
+      assert.equal(calls[1]?.signal?.aborted, false);
       assert.deepEqual(h.processKills, []);
       assert.deepEqual(child.killCalls, []);
       assert.equal(task.status, 'killed');

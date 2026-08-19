@@ -76,7 +76,7 @@ interface Harness {
   registry: BackgroundTaskRegistry;
   setCtx(value: BackgroundTaskContext | undefined): void;
   setShutdown(value: boolean): void;
-  close(): void;
+  close(): Promise<void>;
   spawnCount(): number;
 }
 
@@ -89,6 +89,7 @@ async function createHarness(): Promise<Harness> {
   let shuttingDown = false;
   let spawns = 0;
   const registry = new BackgroundTaskRegistry({
+    platform: 'linux',
     sendCompletionNotification: () => {},
     spawn: () => {
       spawns += 1;
@@ -119,7 +120,9 @@ async function createHarness(): Promise<Harness> {
     setShutdown(value) {
       shuttingDown = value;
     },
-    close() {
+    async close() {
+      service.beginShutdown();
+      await service.drainRequests();
       service.close();
     },
     spawnCount() {
@@ -132,8 +135,10 @@ interface ProtocolHarness {
   root: string;
   ctx: BackgroundTaskContext;
   bus: MemoryEventBus;
+  registry: BackgroundTaskRegistry;
   children: FakeChild[];
-  close(): void;
+  service: BackgroundTaskExtensionService;
+  close(): Promise<void>;
 }
 
 async function createProtocolHarness(
@@ -148,7 +153,7 @@ async function createProtocolHarness(
   const children: FakeChild[] = [];
   let pid = 5100;
   let idSeq = 0;
-  let service: BackgroundTaskExtensionService | undefined;
+  let service: BackgroundTaskExtensionService;
   const spawn: BackgroundTaskSpawn = () => {
     const child = new FakeChild(++pid);
     children.push(child);
@@ -195,7 +200,6 @@ async function createProtocolHarness(
     killTree,
     spawn,
     publishTerminal: (task) => {
-      if (!service) throw new Error('test EventBus service is not installed');
       service.publishTerminal(task);
     },
   });
@@ -215,9 +219,13 @@ async function createProtocolHarness(
     root,
     ctx,
     bus,
+    registry,
     children,
-    close() {
-      service?.close();
+    service,
+    async close() {
+      service.beginShutdown();
+      await service.drainRequests();
+      service.close();
     },
   };
 }
@@ -434,7 +442,7 @@ void describe('background EventBus protocol', () => {
       assert.equal(shutdown.ok, false);
       assert.match(shutdown.ok ? '' : shutdown.error, /shutting down/u);
     } finally {
-      h.close();
+      await h.close();
       await rm(h.root, { recursive: true, force: true });
     }
   });
@@ -510,11 +518,11 @@ void describe('background EventBus protocol', () => {
           assert.ok(killResponseIndex >= 0, 'killed case missing kill response marker');
           assert.ok(terminalIndex > killResponseIndex, 'killed terminal must follow kill response');
         }
+        await h.registry.waitForFinalization(h.registry.resolveTask(task.id));
       } finally {
         unsubscribeTerminal();
         unsubscribeResponse();
-        h.close();
-        await new Promise((resolve) => setTimeout(resolve, 25));
+        await h.close();
         await rm(h.root, { recursive: true, force: true });
       }
     }
@@ -559,10 +567,78 @@ void describe('background EventBus protocol', () => {
     });
   });
 
+  void it('drains a shutdown-concurrent gated kill in response-then-terminal order exactly once', async () => {
+    const h = await createProtocolHarness();
+    const order: string[] = [];
+    const terminals: BackgroundTaskExtensionTerminal[] = [];
+    const unsubscribeResponse = h.bus.on(BG_RESPONSE_CHANNEL, (data) => {
+      const response = requireResponse(data);
+      if (response.request_id === 'shutdown-kill') order.push('kill-response');
+    });
+    const unsubscribeTerminal = h.bus.on(BG_TERMINAL_CHANNEL, (data) => {
+      const terminal = requireTerminal(data);
+      terminals.push(terminal);
+      order.push('terminal');
+    });
+    try {
+      const run = await emitRequest(h.bus, {
+        schema_version: BG_REQUEST_SCHEMA,
+        request_id: 'shutdown-run',
+        operation: 'run',
+        payload: {
+          name: 'Shutdown Gated Kill',
+          command: 'sleep forever',
+          isAgent: false,
+          notifyOnCompletion: false,
+          triggerOnCompletion: false,
+        },
+      });
+      assert.equal(run.ok, true, run.ok ? 'ok' : run.error);
+      const task = requireTask(run.ok ? run.result : undefined, 'shutdown.run.result');
+
+      const killResponse = emitRequest(h.bus, {
+        schema_version: BG_REQUEST_SCHEMA,
+        request_id: 'shutdown-kill',
+        operation: 'kill',
+        payload: { taskId: task.id },
+      });
+      h.service.beginShutdown();
+
+      await Promise.all(
+        h.registry.allTasks().map(async (owned) => {
+          if (owned.status === 'running' && owned.finalizationPromise === undefined) {
+            await h.registry.stopTask(owned, 'shutdown');
+          } else {
+            await h.registry.waitForFinalization(owned);
+          }
+        }),
+      );
+      await h.service.drainRequests();
+      await h.registry.waitForTerminalPublications();
+      h.service.close();
+      order.push('service-close');
+
+      const response = await killResponse;
+      assert.equal(response.ok, true, response.ok ? 'ok' : response.error);
+      assert.deepEqual(order, ['kill-response', 'terminal', 'service-close']);
+      assert.equal(terminals.length, 1);
+      assert.equal(terminals[0]?.task.id, task.id);
+      assert.equal(terminals[0]?.task.status, 'killed');
+
+      h.children[0]?.close(null, 'SIGTERM');
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      assert.deepEqual(order, ['kill-response', 'terminal', 'service-close']);
+    } finally {
+      unsubscribeTerminal();
+      unsubscribeResponse();
+      await rm(h.root, { recursive: true, force: true });
+    }
+  });
+
   void it('unsubscribes cleanly when the service closes', async () => {
     const h = await createHarness();
     try {
-      h.close();
+      await h.close();
       const pending = waitForResponse(h.bus, 'after-close');
       h.bus.emit(BG_REQUEST_CHANNEL, {
         schema_version: BG_REQUEST_SCHEMA,

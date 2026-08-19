@@ -12,9 +12,9 @@ covers_sources: []
 <!-- pi-docs:begin name="shortcut-contracts" generator="scripts/docs/generate.mjs" -->
 | Shortcut | Description | Provenance |
 | --- | --- | --- |
-| `ctrl+alt+c` | Clear finished background task footer notices (terminal-dependent fallback for /bg-clear) | `src/extension.ts:641` |
+| `ctrl+alt+c` | Clear finished background task footer notices (terminal-dependent fallback for /bg-clear) | `src/extension.ts:672` |
 | `ctrl+b` | Move the most recent active foreground bash command to the background | `src/core/foreground-bash.ts:641` |
-| `shift+down` | Open focused background task footer dock | `src/extension.ts:634` |
+| `shift+down` | Open focused background task footer dock | `src/extension.ts:665` |
 <!-- pi-docs:end name="shortcut-contracts" -->
 
 ## Registered shortcuts

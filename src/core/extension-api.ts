@@ -110,6 +110,8 @@ export interface BackgroundTaskExtensionTerminal {
 
 export interface BackgroundTaskExtensionService {
   publishTerminal(task: BgTaskSnapshot): void;
+  beginShutdown(): void;
+  drainRequests(): Promise<void>;
   close(): void;
 }
 
@@ -316,7 +318,6 @@ function parseRequest(data: unknown): ParsedRequest {
 }
 
 function createTerminalPublicationGate(): TerminalPublicationGate {
-  let released = false;
   let resolveGate: () => void = () => {};
   const promise = new Promise<void>((resolve) => {
     resolveGate = resolve;
@@ -324,8 +325,6 @@ function createTerminalPublicationGate(): TerminalPublicationGate {
   return {
     promise,
     async releaseAfterResponse() {
-      if (released) return;
-      released = true;
       // Give response listeners one microtask turn to resolve their request promises
       // and bind the returned task id before an early terminal event is emitted.
       await Promise.resolve();
@@ -405,7 +404,9 @@ class InstalledBackgroundTaskExtensionService implements BackgroundTaskExtension
   private readonly isShuttingDown: () => boolean;
   private readonly logger: Pick<Console, 'error'>;
   private readonly seenRequestIds = new Set<string>();
+  private readonly requestPromises = new Set<Promise<void>>();
   private readonly unsubscribe: () => void;
+  private acceptingRequests = true;
   private closed = false;
 
   constructor(options: BackgroundTaskExtensionServiceOptions) {
@@ -415,7 +416,17 @@ class InstalledBackgroundTaskExtensionService implements BackgroundTaskExtension
     this.isShuttingDown = options.isShuttingDown;
     this.logger = options.logger ?? console;
     this.unsubscribe = this.events.on(BG_REQUEST_CHANNEL, (data) => {
-      void this.handle(data);
+      const request = this.handle(data);
+      this.requestPromises.add(request);
+      void request.then(
+        () => {
+          this.requestPromises.delete(request);
+        },
+        (error: unknown) => {
+          this.requestPromises.delete(request);
+          this.logger.error('[background-tasks] EventBus request handling failed:', error);
+        },
+      );
     });
   }
 
@@ -428,10 +439,29 @@ class InstalledBackgroundTaskExtensionService implements BackgroundTaskExtension
     this.events.emit(BG_TERMINAL_CHANNEL, terminal);
   }
 
-  close(): void {
-    if (this.closed) return;
-    this.closed = true;
+  beginShutdown(): void {
+    if (!this.acceptingRequests) {
+      throw new Error('pi-background-tasks EventBus request intake is already closed');
+    }
+    this.acceptingRequests = false;
     this.unsubscribe();
+  }
+
+  async drainRequests(): Promise<void> {
+    if (this.acceptingRequests) {
+      throw new Error('cannot drain pi-background-tasks EventBus requests while intake is open');
+    }
+    await Promise.all([...this.requestPromises]);
+  }
+
+  close(): void {
+    if (this.acceptingRequests) {
+      throw new Error('cannot close pi-background-tasks EventBus service while request intake is open');
+    }
+    if (this.requestPromises.size !== 0) {
+      throw new Error('cannot close pi-background-tasks EventBus service with requests in flight');
+    }
+    this.closed = true;
   }
 
   private async handle(data: unknown): Promise<void> {

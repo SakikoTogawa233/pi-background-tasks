@@ -89,8 +89,9 @@ void describe('docs package integration contract', () => {
     assert.doesNotMatch(contracts, /<stage>\[\.<slot>\]/);
 
     assert.match(text('docs/commands/task-manager.md'), /exact task id opens detail view/);
-    assert.match(text('docs/api/eventbus-v1.md'), /at least once under emission failure/);
+    assert.match(text('docs/api/eventbus-v1.md'), /does not schedule timer-based redelivery/);
     assert.match(text('docs/api/eventbus-v1.md'), /later requests are not handled/);
+    assert.match(text('docs/api/eventbus-v1.md'), /drains the exact promises for requests already in flight/);
     assert.match(text('docs/subsystems/background-task-runtime.md'), /rather than issuing `fsync`/);
     assert.match(
       text('docs/subsystems/background-task-runtime.md'),

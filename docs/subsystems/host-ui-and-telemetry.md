@@ -67,7 +67,7 @@ The host UI displays telemetry only from task snapshots: context, model, token t
 
 ## Shutdown
 
-On session shutdown, the extension marks the registry as shutting down, clears the status interval, kills running tasks with reason `Killed during Pi session shutdown/reload`, reports cleanup failures through the UI when possible, and closes the event service.
+On session shutdown, the extension synchronously closes registry launch admission, marks EventBus intake as shutting down, and clears the status interval. It first drains every task, managed, delegate, and attested launch admitted before that boundary, so a successfully registered child appears in the following shutdown snapshot while a failed launch releases ownership only after its startup cleanup. It then kills running tasks that have not begun finalization with reason `Killed during Pi session shutdown/reload`, awaits every in-flight or newly started full finalization (including tasks already terminal), reports cleanup failures through the UI when possible, and only then closes the event service and returns. Launches beginning after admission closes are rejected. A later `session_start` on the same extension instance installs one fresh EventBus service/subscription before reopening registry admission; the permanently closed service is not reused.
 
 ## Related docs
 

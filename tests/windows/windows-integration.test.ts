@@ -292,6 +292,9 @@ void describe('windows integration', { concurrency: false }, () => {
       const registry = new BackgroundTaskRegistry({
         sendCompletionNotification: () => {},
         logger: { error: () => {} },
+        // Keep this real integration focused on taskkill /T then /T /F tree
+        // routing instead of spending most of stopWaitMs in intentional grace.
+        killGraceMs: 250,
       });
       const ctx: BackgroundTaskContext = {
         cwd: dir,

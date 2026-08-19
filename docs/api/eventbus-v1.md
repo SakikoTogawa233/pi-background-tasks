@@ -90,7 +90,7 @@ Closed by construction through the exported union:
 }
 ```
 
-Duplicate `request_id` values are rejected. The service rejects requests before `session_start` and while shutting down. Calling `close()` unsubscribes the request listener, so later requests are not handled and receive no service response.
+Duplicate `request_id` values are rejected within one service lifecycle. The service rejects requests before `session_start` and while shutting down. Calling `beginShutdown()` unsubscribes the request listener, so later requests are not handled and receive no service response; `close()` is valid only after the owned request promises drain. After a later `session_start` on the same extension instance, the extension installs one fresh service and one fresh subscription; the permanently closed prior service is never reused.
 
 ## Capabilities
 
@@ -126,7 +126,9 @@ The terminal event carries no request id; consumers correlate by `task.id` retur
 
 For `run` and `kill` requests, the service installs a terminal-publication gate. After the response is emitted, the gate waits one microtask before releasing terminal publication, so immediate-exit tasks cannot publish terminal before the caller has observed the task id.
 
-The registry publishes terminal snapshots only after the output stream has finished/closed and durable terminal metadata has been written. Successful publication is latched and not emitted again. If `EventBus.emit` throws, the failure is loud and the registry retries; because one listener may have received a frame before another listener threw, delivery is **at least once under emission failure**. Consumers must deduplicate by `task.id`.
+The registry publishes terminal snapshots only after the output stream has finished/closed and durable terminal metadata has been written. Each task owns one publication promise, and successful publication is latched and not emitted again. If `EventBus.emit` throws, that promise rejects loudly; the registry does not schedule timer-based redelivery, because an earlier listener may already have observed the frame.
+
+Session shutdown closes registry launch admission and request intake synchronously, then drains all registry launches admitted before that boundary before taking the existing-task snapshot. Post-spawn startup failures remain launch-owned while the registry terminates the child and awaits its shared phase-A/phase-B finalization. Shutdown settles the task snapshot, drains the exact promises for requests already in flight, settles a second snapshot, and then drains all owned terminal-publication promises before closing the service. The first task pass prevents a kill deadlock: `stopTask` can finish phase B, the kill handler can emit its response and release its publication gate, and only then does publication drain complete. A subsequent session recreates the service rather than publishing through the closed instance.
 
 ## Operations
 

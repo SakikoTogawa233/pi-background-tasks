@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
+import { existsSync } from 'node:fs';
 import { mkdir, mkdtemp, readFile, rm } from 'node:fs/promises';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { describe, it } from 'node:test';
 import type { BgTask, BgTaskSnapshot } from '../../src/core/common.js';
@@ -306,7 +307,8 @@ void describe('adopted task registry/UI integration', () => {
       }
 
       child.close(0, null);
-      await waitFor(() => task.status === 'completed', 'adopted completion');
+      await h.registry.waitForFinalization(task);
+      assert.equal(task.status, 'completed');
       assert.equal(h.changes.at(-1)?.[0]?.status, 'completed');
       assert.equal(terminalCount(h, task.id), 1);
       assert.equal(notificationCount(h, task.id), 1);
@@ -327,6 +329,7 @@ void describe('adopted task registry/UI integration', () => {
       try {
         ui.manager.handleInput('k');
         await waitFor(() => task.status === 'killed', 'manager stop of adopted task');
+        await h.registry.waitForFinalization(task);
         assert.deepEqual(h.processKills, [{ pid: -8102, signal: 'SIGTERM' }]);
         assert.deepEqual(child.killCalls, []);
         assert.match(stripAnsi(ui.manager.render(100).join('\n')), /Adopted Watcher/);
@@ -352,6 +355,7 @@ void describe('adopted task registry/UI integration', () => {
       try {
         ui.manager.handleInput('k');
         await waitFor(() => task.status === 'killed', 'manager Windows stop of adopted task');
+        await h.registry.waitForFinalization(task);
 
         assert.deepEqual(
           h.killTreeCalls.map(({ pid, phase }) => ({ pid, phase })),
@@ -388,6 +392,25 @@ void describe('adopted task registry/UI integration', () => {
     }
   });
 
+  void it('awaits direct-close finalization before immediate recursive task-directory teardown', async () => {
+    const h = await createHarness('linux');
+    try {
+      const child = fakeChild(h, 8103);
+      const task = adoptRunningChild(h.registry, h.ctx, child, {
+        command: 'npm run component',
+        name: 'Direct Close',
+      });
+      child.close(0, null);
+      await h.registry.waitForFinalization(task);
+      await rm(dirname(task.metadataAbsPath), { recursive: true });
+      assert.equal(task.status, 'completed');
+      assert.equal(task.notified, true);
+      assert.equal(existsSync(dirname(task.metadataAbsPath)), false);
+    } finally {
+      await rm(h.root, { recursive: true, force: true });
+    }
+  });
+
   void it('publishes completed and failed adopted terminals exactly once under duplicate events', async () => {
     const h = await createHarness('linux');
     try {
@@ -398,7 +421,8 @@ void describe('adopted task registry/UI integration', () => {
       });
       completedChild.close(0, null);
       completedChild.close(0, null);
-      await waitFor(() => completed.status === 'completed', 'single completed finalization');
+      await h.registry.waitForFinalization(completed);
+      assert.equal(completed.status, 'completed');
 
       const failedChild = fakeChild(h, 8104);
       const failed = adoptRunningChild(h.registry, h.ctx, failedChild, {
@@ -408,7 +432,8 @@ void describe('adopted task registry/UI integration', () => {
       failedChild.fail(new Error('foreground pipe failed'));
       failedChild.close(9, null);
       failedChild.close(0, null);
-      await waitFor(() => failed.status === 'failed', 'single failed finalization');
+      await h.registry.waitForFinalization(failed);
+      assert.equal(failed.status, 'failed');
 
       assert.equal(terminalCount(h, completed.id), 1);
       assert.equal(notificationCount(h, completed.id), 1);

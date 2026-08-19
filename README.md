@@ -318,7 +318,7 @@ Other Pi extensions can control the same `BackgroundTaskRegistry` through Pi's `
 | Response | `pi-background-tasks:response:v1` |
 | Terminal task event | `pi-background-tasks:terminal:v1` |
 
-Operations are `capabilities`, `run`, `status`, `logs`, and `kill`. This is the integration point for orchestrators such as Autopilot that need non-blocking package-managed work with bounded logs and correlated terminal events. Consumers must deduplicate terminal frames by `task.id`: an EventBus listener failure can cause a retried publication.
+Operations are `capabilities`, `run`, `status`, `logs`, and `kill`. This is the integration point for orchestrators such as Autopilot that need non-blocking package-managed work with bounded logs and correlated terminal events. Run/kill response gates preserve response-before-terminal ordering, and session shutdown drains owned requests plus actual gated publications before closing the EventBus service. A publication failure is loud and is not timer-retried.
 
 ## Documentation map
 

@@ -135,11 +135,22 @@ export interface BgTask extends Omit<BgTaskSnapshot, 'name'> {
   killKind?: KillKind | undefined;
   killSignalSent?: boolean | undefined;
   killEscalationTimer?: NodeJS.Timeout | undefined;
+  /** Original launch error when a child was terminated during post-spawn startup cleanup. */
+  startupError?: string | undefined;
+  /** Physical stop attempt shared only while that attempt is in flight. */
+  stopPromise?: Promise<BgTask> | undefined;
+  /** True once the first logical stop intent has permanently claimed killKind and reason. */
+  stopIntentOwned?: boolean | undefined;
   capExceeded?: boolean | undefined;
+  /** True once a terminal event has claimed this task's once-only finalizer. */
   finalized?: boolean | undefined;
+  /** Shared settlement for phase-B lifecycle work after durable terminal status. */
+  finalizationPromise?: Promise<void> | undefined;
+  /** True only after the shared phase-B promise has fulfilled or rejected. */
+  finalizationSettled?: boolean | undefined;
   terminalPublished?: boolean | undefined;
-  terminalPublishInFlight?: boolean | undefined;
-  terminalPublishRetryHandle?: NodeJS.Timeout | undefined;
+  /** Actual gated EventBus publication settlement, distinct from phase B. */
+  terminalPublicationPromise?: Promise<void> | undefined;
   /** Optional protocol barrier used by EventBus requests so terminal events cannot publish before their response is observable. */
   terminalPublicationGate?: Promise<void> | undefined;
   /** Completion-notification barrier captured at launch; unlike terminal publication, a later kill response must not extend it. */
@@ -159,6 +170,7 @@ export interface BgTask extends Omit<BgTaskSnapshot, 'name'> {
   managedCancelRequested?: boolean | undefined;
   managedStopWaitMs?: number | undefined;
   metadataWriteChain?: Promise<void> | undefined;
+  /** Waiters bounded by cancellation timeout; released at durable terminal status (phase A). */
   waiters: Array<() => void>;
 }
 
