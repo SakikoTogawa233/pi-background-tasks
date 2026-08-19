@@ -970,6 +970,7 @@ export class BackgroundTaskRegistry {
       triggerOnCompletion: options.triggerOnCompletion ?? false,
       timeoutSeconds,
       terminalPublicationGate: options.terminalPublicationGate,
+      completionDeliveryGate: options.terminalPublicationGate,
       waiters: [],
     };
     this.tasks.set(id, task);
@@ -1135,6 +1136,7 @@ export class BackgroundTaskRegistry {
       managedCancel: request.cancel,
       managedStopWaitMs: request.stopWaitMs,
       terminalPublicationGate: request.terminalPublicationGate,
+      completionDeliveryGate: request.terminalPublicationGate,
       waiters: [],
     };
     this.tasks.set(task.id, task);
@@ -1646,10 +1648,10 @@ export class BackgroundTaskRegistry {
     }
 
     task.status = finalStatus;
-    for (const waiter of task.waiters.splice(0)) waiter();
     this.onChange();
     this.publishTerminal(task);
     this.pruneOldTasks();
+    for (const waiter of task.waiters.splice(0)) waiter();
   }
 
   resolveTask(idOrPrefix: string): BgTask {
@@ -2528,13 +2530,12 @@ export class BackgroundTaskRegistry {
       });
     }
 
-    for (const waiter of task.waiters.splice(0)) waiter();
     this.onChange();
     this.publishTerminal(task);
     let deliveryGateReady = true;
-    if (task.terminalPublicationGate !== undefined) {
+    if (task.completionDeliveryGate !== undefined) {
       try {
-        await task.terminalPublicationGate;
+        await task.completionDeliveryGate;
       } catch (error) {
         deliveryGateReady = false;
         this.logger.error(
@@ -2562,6 +2563,7 @@ export class BackgroundTaskRegistry {
       );
     }
     this.pruneOldTasks();
+    for (const waiter of task.waiters.splice(0)) waiter();
   }
 
   private pruneOldTasks(): void {

@@ -518,6 +518,44 @@ void describe('BackgroundTaskRegistry', () => {
     }
   });
 
+  void it('waits for notification metadata persistence before stopTask resolves', async () => {
+    const gate = deferred<void>();
+    const h = await createHarness({ platform: 'darwin' });
+    try {
+      const task = await h.registry.startTask(h.ctx, 'node fake.js', {
+        name: 'Complete Finalization',
+        isAgent: false,
+        notifyOnCompletion: true,
+        triggerOnCompletion: true,
+        terminalPublicationGate: gate.promise,
+      });
+      const child = lastSpawn(h).child;
+      let stopResolved = false;
+      const stopping = h.registry.stopTask(task, 'user').then((stopped) => {
+        stopResolved = true;
+        return stopped;
+      });
+      child.close(null, 'SIGTERM');
+      await waitFor(() => task.status === 'killed', 'terminal task status');
+      await new Promise((resolve) => setImmediate(resolve));
+
+      assert.equal(stopResolved, false, 'terminal status alone must not resolve stopTask');
+      gate.resolve(undefined);
+      await stopping;
+
+      const metadata = parseJsonObject(
+        await readFile(task.metadataAbsPath, 'utf8'),
+        'final notification metadata must be an object',
+      );
+      assert.equal(metadata['status'], 'killed');
+      assert.equal(metadata['notified'], true);
+      assert.equal(task.notified, true);
+      assert.equal(h.notifications.length, 1);
+    } finally {
+      await cleanup(h.root);
+    }
+  });
+
   void it('falls back to child.kill when process-group kill fails and reports when both fail', async () => {
     const h = await createHarness({
       platform: 'linux',

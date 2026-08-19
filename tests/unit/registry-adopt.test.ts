@@ -25,7 +25,7 @@ import { EventEmitter } from 'node:events';
 import { existsSync, readFileSync } from 'node:fs';
 import { mkdir, mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { describe, it } from 'node:test';
 import type { BgTask, BgTaskSnapshot } from '../../src/core/common.js';
 import {
@@ -427,12 +427,17 @@ void describe('BackgroundTaskRegistry.adoptRunningChild', () => {
       const stopTask = h.registry.stopTask(task, 'user');
       child.close(null, 'SIGTERM');
       await stopTask;
-      await waitFor(() => task.status !== 'running', 'adopted kill finalization');
+      await rm(dirname(task.metadataAbsPath), { recursive: true });
 
       assert.equal(task.status, 'killed');
       assert.ok(
         child.killCalls.length > 0 || task.killSignalSent,
         'stopTask must signal the adopted child',
+      );
+      assert.equal(
+        existsSync(dirname(task.metadataAbsPath)),
+        false,
+        'stopTask completion must permit immediate recursive task-directory teardown',
       );
     } finally {
       await cleanup(h.root);

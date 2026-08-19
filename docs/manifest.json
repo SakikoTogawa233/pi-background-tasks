@@ -49,7 +49,7 @@
       "state": "stale-authored-prose"
     },
     {
-      "authored_body_sha256": "sha256:ab020dc1057fa567d246a25fb9dd8435a2facca2c57c5597e7356b5500127702",
+      "authored_body_sha256": "sha256:e79371d1044a2625d203482b5fc024eec533908a2ac08c014e23fc993bdcd42e",
       "covers_sources": [
         "src/core/common.ts",
         "src/core/foreground-bash.ts",

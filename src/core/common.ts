@@ -140,8 +140,10 @@ export interface BgTask extends Omit<BgTaskSnapshot, 'name'> {
   terminalPublished?: boolean | undefined;
   terminalPublishInFlight?: boolean | undefined;
   terminalPublishRetryHandle?: NodeJS.Timeout | undefined;
-  /** Optional protocol barrier used by EventBus run requests so early child exits cannot publish before the run response is observable. */
+  /** Optional protocol barrier used by EventBus requests so terminal events cannot publish before their response is observable. */
   terminalPublicationGate?: Promise<void> | undefined;
+  /** Completion-notification barrier captured at launch; unlike terminal publication, a later kill response must not extend it. */
+  completionDeliveryGate?: Promise<void> | undefined;
   contextUsageBuffer?: string | undefined;
   /** True when this task launched a telemetry-wrapped Pi agent; its stdout carries control lines, not raw output. */
   telemetryWrapped?: boolean | undefined;

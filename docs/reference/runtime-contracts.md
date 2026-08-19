@@ -26,14 +26,14 @@ This generated registry lists production environment-variable references, runtim
 | `AZURE_OPENAI_DEPLOYMENT_NAME_MAP` | remove | `src/core/fusion/pi-child.ts:100` |
 | `AZURE_OPENAI_ENDPOINT` | remove | `src/core/fusion/pi-child.ts:100` |
 | `AZURE_OPENAI_RESOURCE_NAME` | remove | `src/core/fusion/pi-child.ts:100` |
-| `ComSpec` | read | `src/core/common.ts:726`<br>`src/core/common.ts:737` |
+| `ComSpec` | read | `src/core/common.ts:728`<br>`src/core/common.ts:739` |
 | `OPENAI_API_KEY` | remove | `src/core/attested-pi-run.ts:135`<br>`src/core/fusion/pi-child.ts:100` |
 | `OPENAI_BASE_URL` | remove | `src/core/attested-pi-run.ts:135`<br>`src/core/fusion/pi-child.ts:100` |
 | `OPENROUTER_API_KEY` | remove | `src/core/attested-pi-run.ts:135`<br>`src/core/fusion/pi-child.ts:100` |
 | `OPENROUTER_BASE_URL` | remove | `src/core/attested-pi-run.ts:135`<br>`src/core/fusion/pi-child.ts:100` |
-| `path` | read | `src/core/common.ts:681` |
-| `Path` | read | `src/core/common.ts:681` |
-| `PATH` | read | `src/core/common.ts:681` |
+| `path` | read | `src/core/common.ts:683` |
+| `Path` | read | `src/core/common.ts:683` |
+| `PATH` | read | `src/core/common.ts:683` |
 | `PI_API_BASE_URL` | remove | `src/core/attested-pi-run.ts:135`<br>`src/core/fusion/pi-child.ts:100` |
 | `PI_API_KEY` | remove | `src/core/attested-pi-run.ts:135`<br>`src/core/fusion/pi-child.ts:100` |
 | `PI_AUTH_FILE` | remove | `src/core/attested-pi-run.ts:135`<br>`src/core/fusion/pi-child.ts:100` |
@@ -46,8 +46,8 @@ This generated registry lists production environment-variable references, runtim
 | `PI_BG_DISABLE_UPDATE_CHECK` | read | `src/extension.ts:499` |
 | `PI_BG_MAX_OUTPUT_BYTES` | read | `src/core/registry.ts:69` |
 | `PI_BG_REGISTRY_URL` | read | `src/extension.ts:508` |
-| `PI_BG_SHELL` | read | `src/core/common.ts:722` |
-| `PI_BG_SHELL_PATH` | read | `src/core/common.ts:723` |
+| `PI_BG_SHELL` | read | `src/core/common.ts:724` |
+| `PI_BG_SHELL_PATH` | read | `src/core/common.ts:725` |
 | `PI_CACHE_RETENTION` | read, write | `src/core/anthropic-attribution.ts:587`<br>`src/core/fusion/claude-cache.ts:57`<br>`src/core/fusion/pi-child.ts:273`<br>`src/core/fusion/pi-child.ts:274` |
 | `PI_FUSION_CANDIDATE_OUTPUT_RECOVERY_PATH` | read, remove, write | `src/core/fusion/pi-child.ts:100`<br>`src/core/fusion/pi-child.ts:1879`<br>`src/fusion-child-extension.ts:599` |
 | `PI_FUSION_RESEARCH_ENABLED` | read, remove, write | `src/core/fusion/pi-child.ts:100`<br>`src/core/fusion/pi-child.ts:1902`<br>`src/fusion-child-extension.ts:608` |
@@ -62,7 +62,7 @@ This generated registry lists production environment-variable references, runtim
 | `PI_SESSION_ID` | read, remove, write | `src/core/delegate/launch.ts:330`<br>`src/core/foreground-bash.ts:586`<br>`src/core/foreground-bash.ts:591`<br>`src/core/fusion/pi-child.ts:100` |
 | `PI_SKIP_VERSION_CHECK` | write | `src/core/delegate/launch.ts:352`<br>`src/core/fusion/pi-child.ts:272` |
 | `PIPELINE_ANTHROPIC_ATTRIBUTION_AUDIT_PATH` | read | `src/core/anthropic-attribution.ts:1013` |
-| `SHELL` | read | `src/core/common.ts:718` |
+| `SHELL` | read | `src/core/common.ts:720` |
 | `SystemRoot` | read | `src/core/windows-taskkill.ts:96` |
 | `WINDIR` | read | `src/core/windows-taskkill.ts:101` |
 
