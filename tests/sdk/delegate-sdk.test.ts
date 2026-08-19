@@ -2,8 +2,10 @@ import { describe, it, afterEach, type TestContext } from 'node:test';
 import assert from 'node:assert/strict';
 import { existsSync } from 'node:fs';
 import { chmod, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
-import { delimiter, join, resolve } from 'node:path';
+import { delimiter, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import {
   ModelRuntime,
   createAgentSession,
@@ -13,6 +15,7 @@ import {
   type AgentSession,
 } from '@earendil-works/pi-coding-agent';
 import { isolatedTestEnv } from '../helpers/normalize.js';
+import { isolatedNpmEnvironment } from '../helpers/isolated-npm-env.js';
 import { verifyDelegateResultPackage } from '../../src/core/delegate/result-package.js';
 import type { DelegateErrorCode } from '../../src/core/delegate/types.js';
 import { DELEGATE_INLINE_ANSWER_BYTES } from '../../src/core/delegate/budget.js';
@@ -24,7 +27,8 @@ import { DELEGATE_INLINE_ANSWER_BYTES } from '../../src/core/delegate/budget.js'
  * registered tools directly, with a fake `pi` executable standing in for the
  * child so the whole launch and retrieval loop runs without a model call.
  */
-const extensionPath = resolve('extensions/background-tasks.ts');
+const repositoryRoot = fileURLToPath(new URL('../../', import.meta.url));
+const extensionPath = join(repositoryRoot, 'extensions', 'background-tasks.ts');
 const roots: string[] = [];
 
 interface Harness {
@@ -152,7 +156,76 @@ fs.renameSync(tmp, path.join(dir, 'result.json'));
 process.exit(0);
 `;
 
-async function harness(scenario = 'commit'): Promise<Harness> {
+interface PackedInstall {
+  packageRoot: string;
+  extensionPath: string;
+}
+
+async function installPackedPackage(): Promise<PackedInstall> {
+  const root = await mkdtemp(join(tmpdir(), 'pi-bg-delegate-packed-install-'));
+  roots.push(root);
+  const consumerRoot = join(root, 'consumer');
+  const npmEnvRoot = join(root, 'npm-env');
+  await mkdir(consumerRoot, { recursive: true });
+  await mkdir(join(npmEnvRoot, 'home'), { recursive: true });
+  await mkdir(join(npmEnvRoot, 'cache'), { recursive: true });
+  await mkdir(join(npmEnvRoot, 'config'), { recursive: true });
+  await writeFile(join(npmEnvRoot, 'npmrc'), '', 'utf8');
+  await writeFile(
+    join(consumerRoot, 'package.json'),
+    `${JSON.stringify({ name: 'pi-bg-delegate-packed-install', private: true }, null, 2)}\n`,
+    'utf8',
+  );
+
+  const npmCli = process.env['npm_execpath'];
+  assert.ok(npmCli, 'npm_execpath is required; run this gate through npm');
+  const packEnv = isolatedNpmEnvironment(npmEnvRoot, process.env, process.platform);
+  const pack = spawnSync(
+    process.execPath,
+    [npmCli, 'pack', '--json', '--ignore-scripts', '--pack-destination', root],
+    { cwd: repositoryRoot, encoding: 'utf8', env: packEnv },
+  );
+  assert.equal(pack.status, 0, pack.stderr);
+  const packed = JSON.parse(pack.stdout) as Array<{ filename: string }>;
+  assert.equal(packed.length, 1);
+  const tarball = join(root, packed[0]!.filename);
+
+  const hostHome = process.env['HOME'] ?? process.env['USERPROFILE'];
+  assert.ok(hostHome, 'HOME or USERPROFILE is required for the primed npm cache');
+  const cache = process.env['NPM_CONFIG_CACHE'] ?? join(hostHome, '.npm');
+  const installEnv = isolatedNpmEnvironment(npmEnvRoot, process.env, process.platform);
+  installEnv['NPM_CONFIG_CACHE'] = cache;
+  installEnv['npm_config_cache'] = cache;
+  installEnv['NPM_CONFIG_REGISTRY'] = 'https://registry.npmjs.org/';
+  const install = spawnSync(
+    process.execPath,
+    [
+      npmCli,
+      'install',
+      '--legacy-peer-deps',
+      '--offline',
+      '--ignore-scripts',
+      '--no-audit',
+      '--no-fund',
+      tarball,
+    ],
+    { cwd: consumerRoot, encoding: 'utf8', env: installEnv },
+  );
+  assert.equal(install.status, 0, install.stderr);
+
+  const packageRoot = join(
+    consumerRoot,
+    'node_modules',
+    '@sakiko233',
+    'pi-background-tasks',
+  );
+  return {
+    packageRoot,
+    extensionPath: join(packageRoot, 'extensions', 'background-tasks.ts'),
+  };
+}
+
+async function harness(scenario = 'commit', loadedExtensionPath = extensionPath): Promise<Harness> {
   const root = await mkdtemp(join(tmpdir(), 'pi-bg-delegate-sdk-'));
   roots.push(root);
   const cwd = join(root, 'project');
@@ -179,7 +252,7 @@ async function harness(scenario = 'commit'): Promise<Harness> {
     cwd,
     agentDir,
     settingsManager,
-    additionalExtensionPaths: [extensionPath],
+    additionalExtensionPaths: [loadedExtensionPath],
     noExtensions: true,
     noSkills: true,
     noPromptTemplates: true,
@@ -422,6 +495,64 @@ void describe('bg_delegate and bg_result public surface', { concurrency: false }
         assert.deepEqual(detail(result.details, 'usage'), { status: 'unavailable' });
         assert.match(result.text, /usage: unavailable/);
         assert.equal(typeof detail(result.details, 'answer_sha256'), 'string');
+      } finally {
+        await dispose(h);
+      }
+    },
+  );
+
+  void it(
+    'loads hook evidence and launches the child from a locally packed consumer install',
+    { timeout: 60_000 },
+    async (t) => {
+      if (skipWin32DelegateChildPathFixture(t)) return;
+      const installed = await installPackedPackage();
+      const installedEvidence = join(
+        installed.packageRoot,
+        'src',
+        'core',
+        'delegate',
+        'hook-contract-evidence.json',
+      );
+      assert.equal(
+        await readFile(installedEvidence, 'utf8'),
+        await readFile(
+          join(repositoryRoot, 'src', 'core', 'delegate', 'hook-contract-evidence.json'),
+          'utf8',
+        ),
+        'the installed runtime evidence must be byte-identical to the packed source',
+      );
+
+      const h = await harness('commit', installed.extensionPath);
+      try {
+        const loadedPaths = h.session.resourceLoader
+          .getExtensions()
+          .extensions.map((extension) => extension.resolvedPath);
+        assert.ok(
+          loadedPaths.includes(installed.extensionPath),
+          `installed extension entrypoint was not loaded: ${loadedPaths.join(', ')}`,
+        );
+
+        const launch = await runTool(h, 'bg_delegate', {
+          name: 'Packed install',
+          prompt: 'prove installed evidence loading',
+        });
+        const taskId = String(detail(detail(launch.details, 'task'), 'id'));
+        assert.match(launch.text, /Started delegate Packed install/);
+        await waitForTerminal(h, taskId);
+
+        const artifactDir = await artifactDirOf(h);
+        const argv = JSON.parse(
+          await readFile(join(artifactDir, 'child-argv.json'), 'utf8'),
+        ) as string[];
+        const childExtension = argv[argv.indexOf('--extension') + 1];
+        assert.equal(
+          childExtension,
+          join(installed.packageRoot, 'extensions', 'delegate-child.ts'),
+          'import.meta.url must keep package-relative child resources inside the installed package',
+        );
+        const result = await runTool(h, 'bg_result', { taskId });
+        assert.match(result.text, /DELEGATE ANSWER: prove installed evidence loading/);
       } finally {
         await dispose(h);
       }
