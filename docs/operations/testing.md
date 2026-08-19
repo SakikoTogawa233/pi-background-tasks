@@ -54,7 +54,7 @@ From current `package.json`:
 | Docs attestation | `npm run docs:attest/record -- <doc_id> --reviewer <identity-after-semantic-review> --verdict PASS --notes <review-notes>` | Computes hashes and records an explicit semantic PASS receipt after review; `npm run docs:attest` is an alias and still needs args. |
 | Docs unit/package gate | `npm run test:docs` | Docs-gate unit/package tests. |
 | Payload check | `npm run payload:check` | Package payload policy check. |
-| Release version check | `npm run release:check-version` | Tag-only version sanity; requires explicit `GITHUB_REF_TYPE=tag`/`GITHUB_REF_NAME=v$VERSION` and never publishes. |
+| Release version check | `npm run release:check-version -- --ref-type tag --ref-name "v$VERSION"` | Tag version sanity; automation passes a strict explicit ref, while no-argument invocation reads the real GitHub tag-ref environment. Never publishes. |
 
 Do not run full/default/root suites for documentation-only edits unless the operator explicitly asks. If the operator restricts verification to focused checks, report that `docs:verify`/attestation were not run.
 

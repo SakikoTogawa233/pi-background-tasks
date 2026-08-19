@@ -39,7 +39,8 @@ npm run pack:dry-run
 npm run test:pnpm-pack
 npm run docs:verify
 npm run payload:check
-# On a tag ref only: GITHUB_REF_TYPE=tag GITHUB_REF_NAME=v$VERSION npm run release:check-version
+# Explicit ref for release automation, including branch-push workflows:
+npm run release:check-version -- --ref-type tag --ref-name "v$VERSION"
 npm run test:compat
 npm view @sakiko233/pi-background-tasks name version --json
 ```
@@ -65,7 +66,7 @@ Use `npm pack --dry-run --json` output as the payload source of truth. Verify at
 Separate these activities:
 
 1. **npm release candidate:** version comes from `package.json`; run ordinary release checks and inspect the pack payload. The one-time new-package bootstrap for `2.5.0` is documented in `PUBLISHING.md`.
-2. **git tag certification:** verify the Sakiko repo is at the exact release commit and clean. `npm run release:check-version` requires an explicit tag ref (`GITHUB_REF_TYPE=tag`, `GITHUB_REF_NAME=v$VERSION`) and never publishes.
+2. **git tag certification:** verify the Sakiko repo is at the exact release commit and clean. Release automation uses `npm run release:check-version -- --ref-type tag --ref-name "v$VERSION"`; with no arguments, the check reads the GitHub tag-ref environment. It never publishes.
 3. **post-publish install smoke:** install by `npm:@sakiko233/pi-background-tasks@$VERSION` in an isolated Pi agent dir. Use git install smoke only after the corresponding Sakiko tag exists.
 
 After the initial npm bootstrap and package-specific Trusted Publisher setup, `.github/workflows/release.yml` publishes unpublished versions through npm OIDC and creates the matching GitHub Release. It stores no npm token.

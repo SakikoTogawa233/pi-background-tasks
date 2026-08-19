@@ -97,10 +97,7 @@ jobs:
 
       - name: Check release version
         if: steps.check.outputs.publish == 'true' || steps.github_release.outputs.create == 'true'
-        run: npm run release:check-version
-        env:
-          GITHUB_REF_TYPE: tag
-          GITHUB_REF_NAME: v${{ steps.meta.outputs.version }}
+        run: npm run release:check-version -- --ref-type tag --ref-name "v${{ steps.meta.outputs.version }}"
 
       - name: Publish to npm (trusted publisher / OIDC)
         if: steps.check.outputs.publish == 'true'

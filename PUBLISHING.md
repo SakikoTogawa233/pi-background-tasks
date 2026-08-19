@@ -42,7 +42,8 @@ npm run smoke
 npm run smoke:large-context
 npm run docs:verify
 npm run payload:check
-# On a tag ref only: GITHUB_REF_TYPE=tag GITHUB_REF_NAME=v$VERSION npm run release:check-version
+# Explicit ref for release automation, including branch-push workflows:
+npm run release:check-version -- --ref-type tag --ref-name "v$VERSION"
 npm run pack:dry-run
 # With pnpm 11.18.0 on PATH:
 npm run test:pnpm-pack
@@ -80,7 +81,7 @@ pi install npm:@sakiko233/pi-background-tasks@$VERSION
 
 Pi git package installs treat the repository root as the package root. Do not point Pi at the `ai-pipeline` monorepo root for this package.
 
-Before any git install instructions are published, verify in the standalone repo that tag `v$VERSION` exists and points at the release commit. `npm run release:check-version` requires an explicit tag ref (`GITHUB_REF_TYPE=tag`, `GITHUB_REF_NAME=v$VERSION`) and never publishes. If the tag does not exist, the git channel is not certified for this release.
+Before any git install instructions are published, verify in the standalone repo that tag `v$VERSION` exists and points at the release commit. Release automation passes the ref explicitly with `npm run release:check-version -- --ref-type tag --ref-name "v$VERSION"`. With no CLI arguments, the check reads `GITHUB_REF_TYPE` and `GITHUB_REF_NAME`, as it does on a real GitHub tag ref. The check never publishes. If the tag does not exist, the git channel is not certified for this release.
 
 Git install smoke only after the tag exists:
 
