@@ -212,7 +212,7 @@ function responseFor(
       const marker = manual ? 'FG_MANUAL_RUNNING_SENTINEL' : 'FG_AUTO_RUNNING_SENTINEL';
       const completed = manual ? 'FG_MANUAL_COMPLETED' : 'FG_AUTO_COMPLETED';
       const command = shellNode(
-        `console.log(${JSON.stringify(marker)}); setTimeout(() => console.log(${JSON.stringify(completed)}), ${manual ? '2400' : '2200'});`,
+        `console.log(${JSON.stringify(marker)}); setTimeout(() => console.log(${JSON.stringify(completed)}), ${manual ? '5000' : '2200'});`,
       );
       return assistant(
         [
@@ -441,9 +441,15 @@ export default function scriptedProviderExtension(pi: ExtensionAPI): void {
         summaries: context.messages.map(summarizeMessage),
       });
       const stream = createAssistantMessageEventStream();
-      queueMicrotask(() => {
+      const responseDelayMs =
+        (scenario === 'foreground-bash-follow-up' ||
+          scenario === 'foreground-bash-manual-pty') &&
+        callCount === 2
+          ? 500
+          : 0;
+      setTimeout(() => {
         pushMessage(stream, responseFor(scenario, callCount, eventDrivenContract, context));
-      });
+      }, responseDelayMs);
       return stream;
     },
   });

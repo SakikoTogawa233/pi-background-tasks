@@ -388,6 +388,8 @@ void describe('package', () => {
       'https://raw.githubusercontent.com/ismailsaleekh/pi-background-tasks/main/logo.png',
     );
     assert.match(p.scripts['test:agent-loop'] ?? '', /scripted-provider/);
+    assert.match(p.scripts['test:tmux'] ?? '', /tests\/tmux/);
+    assert.match(p.scripts['test:full'] ?? '', /test:tmux/);
     assert.match(p.scripts['test:full'] ?? '', /test:agent-loop/);
     assert.match(p.scripts['test:compat'] ?? '', /test-compat/);
     assert.match(p.scripts['test:pnpm-pack'] ?? '', /test-pnpm-pack-install/);

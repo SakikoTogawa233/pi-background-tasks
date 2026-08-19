@@ -43,7 +43,7 @@ npm run test:compat
 npm view pi-background-tasks name version --json
 ```
 
-`npm run test:full` additionally runs PTY and scripted-provider agent-loop gates. Treat it as a full interactive gate; do not run it for routine docs edits.
+`npm run test:full` additionally runs the preserved Expect PTY lane, the non-skipping `/usr/bin/tmux` real-Pi TUI lane, and scripted-provider agent-loop gates. Treat it as a full interactive gate; do not run it for routine docs edits.
 
 Live evidence (`npx tsx scripts/delegate-live-run.ts`) is release-time and performs real subscription-OAuth inference. It must never use API-key/metered frontier channels.
 
