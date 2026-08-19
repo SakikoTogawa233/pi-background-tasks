@@ -224,13 +224,14 @@ void describe('scripted provider fusion_reason integration', { concurrency: fals
       // This case intercepts the Pi child by placing a fake `pi` on PATH. That
       // cannot work on win32, where production deliberately resolves the Pi
       // package and launches it through Node rather than consulting PATH, and
-      // the extension layer exposes no launch seam to redirect it. The same
-      // constraint host-gates the equivalent cases in tests/sdk/fusion-sdk.test.ts.
-      // Fusion orchestration itself stays covered on Windows by the injected
-      // childRunner cases in tests/unit/fusion-orchestrator.test.ts.
+      // the extension layer exposes no launch seam to redirect it. Windows package-
+      // backed Pi execution is covered explicitly by tests/windows/windows-integration.test.ts
+      // and tests/unit/pi-launch.test.ts; Fusion argv/spawn behavior is covered by
+      // tests/unit/fusion-pi-child.test.ts, while injected childRunner cases in
+      // tests/unit/fusion-orchestrator.test.ts cover the orchestration contract.
       if (process.platform === 'win32') {
         t.skip(
-          'fake Pi PATH interception is not applicable on win32 because production resolves the Pi package instead of PATH by design',
+          'POSIX fake-Pi PATH interception is inapplicable on win32; package-backed Windows launch and equivalent Fusion child/orchestration contracts have dedicated coverage',
         );
         return;
       }

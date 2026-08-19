@@ -5,6 +5,7 @@ import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { isJsonObject, parseJsonText } from '../../src/core/common.js';
+import { piLaunchArgv, resolvePiLaunch } from '../../src/core/pi-launch.js';
 import { FUSION_CANDIDATE_MAX_OUTPUT_BYTES } from '../../src/core/fusion/output-contract.js';
 import {
   OUTPUT_RECOVERY_MODEL,
@@ -14,6 +15,7 @@ import {
 } from './output-recovery-provider.js';
 
 const roots: string[] = [];
+const piLaunch = resolvePiLaunch();
 
 interface ProcessResult {
   code: number | null;
@@ -24,7 +26,7 @@ interface ProcessResult {
 
 async function runPi(args: readonly string[], env: NodeJS.ProcessEnv): Promise<ProcessResult> {
   return new Promise((resolveRun, reject) => {
-    const child = spawn(resolve('node_modules/.bin/pi'), args, {
+    const child = spawn(piLaunch.executable, piLaunchArgv(piLaunch, args), {
       cwd: process.cwd(),
       env,
       shell: false,

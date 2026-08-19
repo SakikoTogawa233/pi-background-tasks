@@ -7,6 +7,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { prepareDelegateLaunch } from '../../src/core/delegate/runner.js';
 import { loadDelegateHookContractEvidence } from '../../src/core/delegate/launch.js';
+import { piLaunchArgv, resolvePiLaunch } from '../../src/core/pi-launch.js';
 import type { DelegateExtensionMode } from '../../src/core/delegate/types.js';
 import { sessionWith, userMessage } from '../helpers/fusion-canonical.js';
 import { isolatedTestEnv } from '../helpers/normalize.js';
@@ -22,7 +23,7 @@ import { isolatedTestEnv } from '../helpers/normalize.js';
  */
 const roots: string[] = [];
 const providerExtension = resolve('tests/scripted-provider/delegate-guard-provider.ts');
-const piExecutable = resolve('node_modules/.bin/pi');
+const piLaunch = resolvePiLaunch();
 
 async function runChild(
   mode: DelegateExtensionMode,
@@ -75,7 +76,7 @@ async function runChild(
   });
 
   const result = await new Promise<{ code: number | null; stderr: string }>((resolveResult, reject) => {
-    const child = spawn(piExecutable, [...prepared.argv], {
+    const child = spawn(piLaunch.executable, piLaunchArgv(piLaunch, prepared.argv), {
       cwd,
       env: prepared.env,
       stdio: ['pipe', 'ignore', 'pipe'],

@@ -37,11 +37,11 @@ This generated registry lists production environment-variable references, runtim
 | `PI_API_BASE_URL` | remove | `src/core/attested-pi-run.ts:135`<br>`src/core/fusion/pi-child.ts:100` |
 | `PI_API_KEY` | remove | `src/core/attested-pi-run.ts:135`<br>`src/core/fusion/pi-child.ts:100` |
 | `PI_AUTH_FILE` | remove | `src/core/attested-pi-run.ts:135`<br>`src/core/fusion/pi-child.ts:100` |
-| `PI_BG_DELEGATE_ARTIFACT_DIR` | read, write | `src/core/delegate/launch.ts:353`<br>`src/delegate-child-extension.ts:384` |
-| `PI_BG_DELEGATE_LAUNCH_NONCE` | read, write | `src/core/delegate/launch.ts:357`<br>`src/delegate-child-extension.ts:388` |
-| `PI_BG_DELEGATE_SEED_PATH` | read, write | `src/core/delegate/launch.ts:354`<br>`src/delegate-child-extension.ts:385` |
-| `PI_BG_DELEGATE_SEED_SHA256` | read, write | `src/core/delegate/launch.ts:355`<br>`src/delegate-child-extension.ts:386` |
-| `PI_BG_DELEGATE_TASK_ID` | read, write | `src/core/delegate/launch.ts:356`<br>`src/delegate-child-extension.ts:387` |
+| `PI_BG_DELEGATE_ARTIFACT_DIR` | read, write | `src/core/delegate/launch.ts:353`<br>`src/delegate-child-extension.ts:383` |
+| `PI_BG_DELEGATE_LAUNCH_NONCE` | read, write | `src/core/delegate/launch.ts:357`<br>`src/delegate-child-extension.ts:387` |
+| `PI_BG_DELEGATE_SEED_PATH` | read, write | `src/core/delegate/launch.ts:354`<br>`src/delegate-child-extension.ts:384` |
+| `PI_BG_DELEGATE_SEED_SHA256` | read, write | `src/core/delegate/launch.ts:355`<br>`src/delegate-child-extension.ts:385` |
+| `PI_BG_DELEGATE_TASK_ID` | read, write | `src/core/delegate/launch.ts:356`<br>`src/delegate-child-extension.ts:386` |
 | `PI_BG_DISABLE_PI_TELEMETRY` | read | `src/core/registry.ts:205` |
 | `PI_BG_DISABLE_UPDATE_CHECK` | read | `src/extension.ts:499` |
 | `PI_BG_MAX_OUTPUT_BYTES` | read | `src/core/registry.ts:69` |
@@ -80,7 +80,7 @@ This generated registry lists production environment-variable references, runtim
 | delegate-artifact | `result.json` | `src/core/delegate/result-package.ts:28` |
 | delegate-artifact | `seed.json` | `src/core/delegate/artifacts.ts:42` |
 | delegate-artifact | `spill/<receipt-named-file>` | `src/core/delegate/artifacts.ts:54` |
-| directory | `.pi/delegate/<session-id>-<pid>/<task-id>/` | `src/core/delegate/artifacts.ts:160` |
+| directory | `.pi/delegate/<session-id>-<pid>/<task-id>/` | `src/core/delegate/artifacts.ts:165` |
 | directory | `.pi/fusion/<session-id>-<pid>/<run-id>/` | `src/core/fusion/artifacts.ts:563` |
 | directory | `.pi/tasks/<session-id>-<pid>/` | `src/core/registry.ts:794` |
 | fusion-artifact | `<attempt-prefix> = candidate-<slot>.attempt-<n> \| evaluation.attempt-<n> \| merge.attempt-<n>` | `src/core/fusion/artifacts.ts:248` |
@@ -115,7 +115,7 @@ This generated registry lists production environment-variable references, runtim
 | --- | --- |
 | `phase2.pi_task_attestation.v1` | `src/core/attested-pi-run.ts:20` |
 | `pi-background-tasks.delegate-budget-plan.v3` | `src/core/delegate/types.ts:21` |
-| `pi-background-tasks.delegate-child-terminal.v1` | `src/delegate-child-extension.ts:584` |
+| `pi-background-tasks.delegate-child-terminal.v1` | `src/delegate-child-extension.ts:583` |
 | `pi-background-tasks.delegate-hook-contract.v1` | `src/core/delegate/hook-contract.ts:15` |
 | `pi-background-tasks.delegate-launch.v1` | `src/delegate-extension.ts:458` |
 | `pi-background-tasks.delegate-ledger.v1` | `src/core/delegate/types.ts:16` |
@@ -124,9 +124,9 @@ This generated registry lists production environment-variable references, runtim
 | `pi-background-tasks.delegate-receipt.v1` | `src/core/delegate/types.ts:19` |
 | `pi-background-tasks.delegate-result-view.v1` | `src/delegate-extension.ts:734` |
 | `pi-background-tasks.delegate-result.v1` | `src/core/delegate/types.ts:18` |
-| `pi-background-tasks.delegate-runtime-budget.v1` | `src/delegate-child-extension.ts:489` |
+| `pi-background-tasks.delegate-runtime-budget.v1` | `src/delegate-child-extension.ts:488` |
 | `pi-background-tasks.delegate-seed.v2` | `src/core/delegate/types.ts:15` |
-| `pi-background-tasks.delegate-tool-result-content.v1` | `src/delegate-child-extension.ts:190` |
+| `pi-background-tasks.delegate-tool-result-content.v1` | `src/delegate-child-extension.ts:189` |
 | `pi-background-tasks.extension-request.v1` | `src/core/extension-api.ts:15` |
 | `pi-background-tasks.extension-response.v1` | `src/core/extension-api.ts:16` |
 | `pi-background-tasks.extension-terminal.v1` | `src/core/extension-api.ts:17` |

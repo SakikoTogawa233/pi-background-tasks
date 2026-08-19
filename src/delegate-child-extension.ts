@@ -20,6 +20,7 @@ import {
   evaluateDelegateRuntimeBudget,
 } from './core/delegate/budget.js';
 import { utf8ByteClassBreakdown } from './core/context/token-budget.js';
+import { delegateSpillArtifactPath } from './core/delegate/artifacts.js';
 import {
   assertWellFormedUtf8,
   buildDelegateResultPackage,
@@ -56,8 +57,6 @@ import {
  *   Even a non-conforming provider could not transmit the content because the
  *   content is no longer there.
  */
-
-const SPILL_DIRNAME = 'spill';
 
 interface GuardState {
   seed: DelegateSeedV1;
@@ -826,7 +825,7 @@ export default function delegateChildExtension(pi: ExtensionAPI): void {
     const sourceCallIndex = state.spilled.length;
     const safeCallId = event.toolCallId.replace(/[^a-zA-Z0-9_.-]+/g, '-').slice(0, 64);
     const name = `t${String(turnSequence).padStart(4, '0')}-c${String(sourceCallIndex).padStart(4, '0')}-${safeCallId}.bin`;
-    const relPath = join(SPILL_DIRNAME, name);
+    const relPath = delegateSpillArtifactPath(name);
     const absPath = join(artifactDirAbs, relPath);
     if (!pathInside(artifactDirAbs, absPath)) {
       latch('artifact_spill_failed', `delegate spill path escapes the artifact directory: ${name}`);

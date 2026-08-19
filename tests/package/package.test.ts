@@ -7,6 +7,7 @@ import { dirname, join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { parseJsonText } from '../../src/core/common.js';
+import { isolatedNpmEnvironment } from '../helpers/isolated-npm-env.js';
 import {
   FusionInvestigateParams,
   FusionReasonParams,
@@ -334,21 +335,7 @@ function removeIsolatedEnvRoot(rootDir: string): void {
 }
 
 function isolatedNpmEnv(rootDir: string): NodeJS.ProcessEnv {
-  return {
-    PATH: process.env['PATH'] ?? '',
-    HOME: join(rootDir, 'home'),
-    USERPROFILE: join(rootDir, 'home'),
-    XDG_CONFIG_HOME: join(rootDir, 'config'),
-    NPM_CONFIG_CACHE: join(rootDir, 'cache'),
-    NPM_CONFIG_USERCONFIG: join(rootDir, 'npmrc'),
-    NPM_CONFIG_REGISTRY: 'http://127.0.0.1.invalid/',
-    npm_config_cache: join(rootDir, 'cache'),
-    npm_config_userconfig: join(rootDir, 'npmrc'),
-    PI_OFFLINE: '1',
-    PI_SKIP_VERSION_CHECK: '1',
-    PI_TELEMETRY: '0',
-    CI: '1',
-  };
+  return isolatedNpmEnvironment(rootDir, process.env, process.platform);
 }
 
 function offlineNpmEnv(rootDir: string): NodeJS.ProcessEnv {

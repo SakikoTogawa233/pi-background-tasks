@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { existsSync } from 'node:fs';
 import { mkdir, mkdtemp, readFile, rm } from 'node:fs/promises';
-import { join, resolve } from 'node:path';
+import { isAbsolute, join, normalize, resolve, sep } from 'node:path';
 import { tmpdir } from 'node:os';
 import {
   ModelRuntime,
@@ -238,7 +238,10 @@ void describe('foreground bash scripted-provider follow-up', { concurrency: fals
         assert.match(receiptContext, /bash/);
         assert.match(receiptContext, /backgrounded/i);
         assert.match(receiptContext, /b[0-9a-f]{8,32}/);
-        assert.match(receiptContext, /\.pi\/tasks\//);
+        assert.ok(
+          receiptContext.includes(`${join('.pi', 'tasks')}${sep}`),
+          'the receipt must contain the native relative task root',
+        );
         assert.match(receiptContext, /FG_AUTO_RUNNING_SENTINEL/);
 
         await prompt;
@@ -268,6 +271,12 @@ void describe('foreground bash scripted-provider follow-up', { concurrency: fals
           note.details['outputPath'],
           'notification details must contain output path',
         );
+        assert.equal(isAbsolute(outputPath), false, 'task output must remain project-relative');
+        const outputSegments = normalize(outputPath).split(sep);
+        assert.equal(outputSegments.length, 4);
+        assert.deepEqual(outputSegments.slice(0, 2), ['.pi', 'tasks']);
+        assert.match(outputSegments[2] ?? '', /^[^/\\]+$/);
+        assert.equal(outputSegments[3], 'foreground-1-call-foreground-bash-auto.output');
         assert.equal(note.details['status'], 'completed');
         assert.equal(note.details['triggerOnCompletion'], true);
         assert.equal(note.details['notified'], true);

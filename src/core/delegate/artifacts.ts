@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import { chmod, mkdir, open, readFile, rename, rm } from 'node:fs/promises';
-import { basename, isAbsolute, join, relative, sep } from 'node:path';
+import { basename, isAbsolute, join, posix, relative, sep } from 'node:path';
 import { canonicalJson } from '../attested-pi-run.js';
 import { sanitizePathSegment } from '../common.js';
 import { replaceFileDurable, writeFileDurable } from '../durable-fs.js';
@@ -52,6 +52,11 @@ export const DELEGATE_ARTIFACT_NAMES = {
 
 /** Spilled tool payloads live in their own subdirectory so they cannot collide with control artifacts. */
 export const DELEGATE_SPILL_DIRNAME = 'spill';
+
+/** Serialized artifact references always use URL-style separators on every host. */
+export function delegateSpillArtifactPath(name: string): string {
+  return posix.join(DELEGATE_SPILL_DIRNAME, name);
+}
 
 export interface DelegateArtifactRef {
   path: string;
@@ -347,7 +352,7 @@ export class DelegateArtifactStore {
     this.totalSpilledBytes = nextTotal;
     return {
       schema_version: DELEGATE_RECEIPT_SCHEMA_VERSION,
-      artifact: join(DELEGATE_SPILL_DIRNAME, name),
+      artifact: delegateSpillArtifactPath(name),
       tool_name: input.toolName,
       tool_call_id: input.toolCallId,
       turn_sequence: input.turnSequence,

@@ -152,6 +152,11 @@ void describe('delegate artifact store', () => {
     assert.equal(receipt.sha256, createHash('sha256').update(payload).digest('hex'));
     assert.equal(receipt.turn_sequence, 3);
     assert.equal(receipt.source_call_index, 1);
+    assert.equal(
+      receipt.artifact,
+      'spill/t0003-c0001-call-abc.bin',
+      'serialized artifact references must use platform-independent separators',
+    );
     const onDisk = await readFile(join(store.artifactDirAbs, receipt.artifact));
     assert.equal(onDisk.length, payload.length, 'the complete payload must be preserved');
     assert.ok(onDisk.equals(payload), 'nothing may be truncated on the way to disk');
