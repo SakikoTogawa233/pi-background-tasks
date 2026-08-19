@@ -12,6 +12,7 @@ import {
   type CompletionNotificationMessage,
   type CompletionNotificationOptions,
 } from '../../src/core/registry.js';
+import type { TaskkillOutcome, WindowsKillPhase } from '../../src/core/windows-taskkill.js';
 import {
   BackgroundTasksManager,
   type TaskManagerTheme,
@@ -63,6 +64,12 @@ class FakeChild extends EventEmitter implements BackgroundTaskChildProcess {
   }
 }
 
+interface KillTreeCall {
+  pid: number;
+  phase: WindowsKillPhase;
+  signal: AbortSignal | undefined;
+}
+
 interface Harness {
   root: string;
   ctx: BackgroundTaskContext;
@@ -75,6 +82,7 @@ interface Harness {
   }>;
   terminals: BgTaskSnapshot[];
   processKills: Array<{ pid: number; signal: NodeJS.Signals | number | undefined }>;
+  killTreeCalls: KillTreeCall[];
 }
 
 const theme: TaskManagerTheme = {
@@ -93,7 +101,18 @@ function adoptRunningChild(
   return method.call(registry, ctx, child, options);
 }
 
-async function createHarness(): Promise<Harness> {
+function taskkillOutcome(): TaskkillOutcome {
+  return {
+    exitCode: 0,
+    signal: null,
+    stdout: '',
+    stderr: '',
+    stdoutTruncated: false,
+    stderrTruncated: false,
+  };
+}
+
+async function createHarness(platform: 'linux' | 'win32'): Promise<Harness> {
   const root = await mkdtemp(join(tmpdir(), 'pi-bg-adopted-component-'));
   const cwd = join(root, 'project');
   await mkdir(cwd, { recursive: true });
@@ -102,9 +121,11 @@ async function createHarness(): Promise<Harness> {
   const notifications: Harness['notifications'] = [];
   const terminals: BgTaskSnapshot[] = [];
   const processKills: Harness['processKills'] = [];
+  const killTreeCalls: KillTreeCall[] = [];
   let id = 0;
   let registry!: BackgroundTaskRegistry;
   registry = new BackgroundTaskRegistry({
+    platform,
     makeTaskId: () => `badopt${String(++id).padStart(2, '0')}`,
     onChange: () => {
       changes.push(registry.allTasks().map((task) => registry.snapshot(task)));
@@ -123,6 +144,15 @@ async function createHarness(): Promise<Harness> {
         child.close(null, signal === 'SIGKILL' ? 'SIGKILL' : 'SIGTERM');
       });
       return true;
+    },
+    killTree: (pid, phase, signal) => {
+      killTreeCalls.push({ pid, phase, signal });
+      const child = children.get(pid);
+      assert.ok(child, `missing fake child for pid ${String(pid)}`);
+      queueMicrotask(() => {
+        child.close(null, phase === 'force' ? 'SIGKILL' : 'SIGTERM');
+      });
+      return Promise.resolve(taskkillOutcome());
     },
     killGraceMs: 20,
     stopWaitMs: 500,
@@ -144,6 +174,7 @@ async function createHarness(): Promise<Harness> {
     notifications,
     terminals,
     processKills,
+    killTreeCalls,
   };
 }
 
@@ -219,7 +250,7 @@ function notificationCount(h: Harness, taskId: string): number {
 
 void describe('adopted task registry/UI integration', () => {
   void it('registers an adopted child, exposes ordinary snapshots, and keeps its detail log continuous', async () => {
-    const h = await createHarness();
+    const h = await createHarness('linux');
     try {
       const child = fakeChild(h, 8101);
       const task = adoptRunningChild(h.registry, h.ctx, child, {
@@ -285,7 +316,7 @@ void describe('adopted task registry/UI integration', () => {
   });
 
   void it('routes the manager k action through registry.stopTask for an adopted child', async () => {
-    const h = await createHarness();
+    const h = await createHarness('linux');
     try {
       const child = fakeChild(h, 8102);
       const task = adoptRunningChild(h.registry, h.ctx, child, {
@@ -309,8 +340,56 @@ void describe('adopted task registry/UI integration', () => {
     }
   });
 
+  void it('routes the manager k action through injected Windows tree termination', async () => {
+    const h = await createHarness('win32');
+    try {
+      const child = fakeChild(h, 8112);
+      const task = adoptRunningChild(h.registry, h.ctx, child, {
+        command: 'npm test -- --watch',
+        name: 'Adopted Windows Watcher',
+      });
+      const ui = createManager(h);
+      try {
+        ui.manager.handleInput('k');
+        await waitFor(() => task.status === 'killed', 'manager Windows stop of adopted task');
+
+        assert.deepEqual(
+          h.killTreeCalls.map(({ pid, phase }) => ({ pid, phase })),
+          [{ pid: 8112, phase: 'terminate' }],
+        );
+        assert.ok(h.killTreeCalls[0]?.signal instanceof AbortSignal);
+        assert.equal(h.killTreeCalls[0].signal.aborted, false);
+        assert.deepEqual(h.processKills, []);
+        assert.deepEqual(child.killCalls, []);
+        assert.deepEqual(
+          h.terminals.map(({ id, status, pid, exitCode, signal }) => ({
+            id,
+            status,
+            pid,
+            exitCode,
+            signal,
+          })),
+          [
+            {
+              id: task.id,
+              status: 'killed',
+              pid: 8112,
+              exitCode: null,
+              signal: 'SIGTERM',
+            },
+          ],
+        );
+        assert.equal(notificationCount(h, task.id), 1);
+      } finally {
+        ui.manager.dispose();
+      }
+    } finally {
+      await rm(h.root, { recursive: true, force: true });
+    }
+  });
+
   void it('publishes completed and failed adopted terminals exactly once under duplicate events', async () => {
-    const h = await createHarness();
+    const h = await createHarness('linux');
     try {
       const completedChild = fakeChild(h, 8103);
       const completed = adoptRunningChild(h.registry, h.ctx, completedChild, {
