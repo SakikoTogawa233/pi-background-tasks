@@ -13,7 +13,7 @@ The table below remains the exhaustive acceptance source. Do not replace it with
 | Field | Value |
 |---|---|
 | Package | `@sakiko233/pi-background-tasks` |
-| Version | `2.5.0` |
+| Version | `2.5.1` |
 | Extension entrypoints | `extensions/anthropic-attribution.ts`, `extensions/background-tasks.ts` |
 | Public commands | `/bg`, `/jobs`, `/logs`, `/kill`, `/tasks`, `/bg-tasks`, `/bg-clear`, `/bg-update`, `/claude-cache`, `/fusion`, `/fusion-models` |
 | Public tools | foreground `bash` override; `bg_run`, `bg_delegate`, `bg_result`, `bg_run_pi_attested`, `bg_status`, `bg_logs`, `bg_kill`, `fusion_reason`, `fusion_investigate`, `fusion_research`, `fusion_validate` |

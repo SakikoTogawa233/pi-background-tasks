@@ -380,7 +380,7 @@ void describe('package', () => {
   void it('manifest/docs cover public extension surfaces', async () => {
     const p = await pkg();
     assert.equal(p.name, '@sakiko233/pi-background-tasks');
-    assert.equal(p.version, '2.5.0');
+    assert.equal(p.version, '2.5.1');
     assert.equal(p.homepage, 'https://github.com/SakikoTogawa233/pi-background-tasks#readme');
     assert.deepEqual(p.repository, {
       type: 'git',
@@ -1375,7 +1375,7 @@ void describe('package', () => {
     assert.equal(r.status, 0, r.stderr);
     const firstEntry = parsePackEntries(r.stdout)[0];
     assert.ok(firstEntry, 'npm pack must return one entry');
-    assert.equal(firstEntry.filename, 'sakiko233-pi-background-tasks-2.5.0.tgz');
+    assert.equal(firstEntry.filename, 'sakiko233-pi-background-tasks-2.5.1.tgz');
     const files = firstEntry.files.map((file) => file.path).sort();
     for (const f of [
       'extensions/anthropic-attribution.ts',
