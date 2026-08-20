@@ -1,7 +1,8 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { readFile, readdir } from 'node:fs/promises';
+import { mkdtemp, readFile, readdir, rm } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
+import { tmpdir } from 'node:os';
 import {
   ModelRuntime,
   createAgentSession,
@@ -27,10 +28,12 @@ async function walk(dir: string): Promise<string[]> {
 
 void describe('extracted background-task lifecycle surface', () => {
   void it('loads exactly five package tools and no Agent/Fusion/attribution command surface', async () => {
+    const temp = await mkdtemp(join(tmpdir(), 'pi-bg-extracted-surface-'));
+    const agentDir = join(temp, 'agent');
     const settingsManager = SettingsManager.inMemory();
     const loader = new DefaultResourceLoader({
       cwd: root,
-      agentDir: resolve('.tmp-extracted-surface-agent'),
+      agentDir,
       settingsManager,
       additionalExtensionPaths: [extensionPath],
       noExtensions: true,
@@ -41,12 +44,12 @@ void describe('extracted background-task lifecycle surface', () => {
     });
     await loader.reload();
     const modelRuntime = await ModelRuntime.create({
-      authPath: resolve('.tmp-extracted-surface-auth.json'),
+      authPath: join(temp, 'auth.json'),
       modelsPath: null,
     });
     const { session } = await createAgentSession({
       cwd: root,
-      agentDir: resolve('.tmp-extracted-surface-agent'),
+      agentDir,
       resourceLoader: loader,
       sessionManager: SessionManager.inMemory(root),
       settingsManager,
@@ -77,6 +80,7 @@ void describe('extracted background-task lifecycle surface', () => {
       ]);
     } finally {
       session.dispose();
+      await rm(temp, { recursive: true, force: true });
     }
   });
 

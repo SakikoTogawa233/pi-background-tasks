@@ -1,64 +1,30 @@
 import { spawn as nodeSpawn, type SpawnOptions } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import { createWriteStream, existsSync, mkdirSync, statSync, writeFileSync } from 'node:fs';
-import { mkdir, realpath, writeFile } from 'node:fs/promises';
+import { mkdir } from 'node:fs/promises';
 import { isAbsolute, join } from 'node:path';
-import type { Api, Model } from '@earendil-works/pi-ai';
 import type { ExtensionContext } from '@earendil-works/pi-coding-agent';
 import { formatSize } from '@earendil-works/pi-coding-agent';
 import {
   boundedRead,
   deriveTaskNameFromCommand,
   escapeXml,
-  formatAgentActivityLine,
   formatDuration,
-  isJsonObject,
   normalizeTaskName,
-  parseAgentActivity,
-  parseJsonText,
   sanitizePathSegment,
   shellInvocation,
-  shellQuote,
   snapshot,
   taskDisplayName,
   type BgLogsDetails,
   type BgTask,
   type BgTaskSnapshot,
-  type JsonObject,
   type KillKind,
-  type StartAttestedPiTaskOptions,
-  type StartDelegateTaskOptions,
-  type StartManagedTaskOptions,
+  type RegisterExternalTaskOptions,
   type StartTaskOptions,
-  type TaskContextUsage,
   type TaskStatus,
-  type TaskTokenUsage,
-  type TaskToolUsage,
+  type UpdateExternalTaskOptions,
 } from './common.js';
-import {
-  ATTESTED_TASK_ID_PATTERN,
-  attestedPiChildEnv,
-  buildAttestedPiArgv,
-  buildPiTaskAttestation,
-  closeAndFsyncOutputStream,
-  gitAuthoritySnapshot,
-  gitRepoRoot,
-  makeAttestedTaskId,
-  makeAttestedTaskPaths,
-  observePiOAuth,
-  parsePiJsonEvents,
-  resolveReportPath,
-  spawnAndCapturePi,
-  writeFileFsynced,
-  writeJsonAtomic,
-} from './attested-pi-run.js';
-import {
-  assertWindowsCommandLineWithinLimit,
-  piLaunchArgv,
-  resolvePiLaunch,
-  type PiLaunchSpec,
-} from './pi-launch.js';
-import { resolveAnthropicAttributionExtensionPath } from './anthropic-attribution-path.js';
+import { replaceFileDurable } from './durable-fs.js';
 import {
   runWindowsTaskkill,
   type TaskkillOutcome,
@@ -70,20 +36,10 @@ export const MAX_OUTPUT_BYTES = Number(process.env['PI_BG_MAX_OUTPUT_BYTES'] ?? 
 export const KILL_GRACE_MS = 3000;
 export const STOP_WAIT_MS = KILL_GRACE_MS + 1500;
 export const MAX_RECENT_TASKS = 100;
-const TELEMETRY_BUFFER_CHARS = 512 * 1024;
-export const WIN32_CMD_PI_TELEMETRY_UNAVAILABLE_REASON =
-  'win32-cmd-cannot-safely-intercept-pi-argv';
-
-export interface BackgroundTaskModelRegistry
-  extends Pick<ExtensionContext['modelRegistry'], 'getAll'> {
-  find?: (provider: string, modelId: string) => Model<Api> | undefined;
-  isUsingOAuth?: (model: Model<Api>) => boolean;
-}
-
 export interface BackgroundTaskContext {
   cwd: string;
   sessionId?: string;
-  modelRegistry: BackgroundTaskModelRegistry;
+  modelRegistry: Pick<ExtensionContext['modelRegistry'], 'getAll'>;
   model?: ExtensionContext['model'] | undefined;
 }
 
@@ -160,7 +116,7 @@ export interface AdoptRunningChildOptions {
   outputPath?: string | undefined;
 }
 
-export type BackgroundTaskLaunchKind = 'task' | 'managed' | 'delegate' | 'attested';
+export type BackgroundTaskLaunchKind = 'task' | 'external';
 
 export interface BackgroundTaskRegistryOptions {
   onChange?: () => void;
@@ -168,7 +124,6 @@ export interface BackgroundTaskRegistryOptions {
   /** Test/dependency seam entered after launch ownership is acquired and before launch work begins. */
   beforeLaunch?: (kind: BackgroundTaskLaunchKind) => Promise<void>;
   publishTerminal?: (task: BgTaskSnapshot) => void;
-  writeFileFsynced?: (path: string, data: Buffer | string) => Promise<void>;
   writeJsonAtomic?: (path: string, value: unknown) => Promise<void>;
   spawn?: BackgroundTaskSpawn;
   killProcess?: KillProcessFn;
@@ -189,518 +144,8 @@ interface RuntimeDir {
   display: string;
 }
 
-interface ModelWindowIndex {
-  byQualifiedId: Record<string, number>;
-  byId: Record<string, number>;
-  defaultModel?: string | undefined;
-  defaultProvider?: string | undefined;
-  defaultContextWindow?: number | undefined;
-}
-
 function defaultTaskId(): string {
   return `b${randomBytes(4).toString('hex')}`;
-}
-
-function dirNameFromDisplay(path: string): string {
-  const parts = path.split(/[\\/]/);
-  return parts.length >= 2 ? (parts.at(-2) ?? '') : '';
-}
-
-export function commandMayLaunchPiAgent(
-  command: string,
-  env: NodeJS.ProcessEnv = process.env,
-): boolean {
-  if (env['PI_BG_DISABLE_PI_TELEMETRY'] === '1') return false;
-  return /(^|[\s;&|()])pi(?=\s)(?=[^\n;&|]*(?:\s-p(?:\s|$)|\s--print(?:\s|$)|\s--mode(?:=|\s+)json\b))/m.test(
-    command,
-  );
-}
-
-export function buildModelWindowIndex(
-  ctx: Pick<BackgroundTaskContext, 'modelRegistry' | 'model'>,
-): ModelWindowIndex {
-  const byQualifiedId: Record<string, number> = {};
-  const candidatesById = new Map<string, Set<number>>();
-  for (const model of ctx.modelRegistry.getAll()) {
-    const contextWindow =
-      typeof model.contextWindow === 'number' &&
-      Number.isFinite(model.contextWindow) &&
-      model.contextWindow > 0
-        ? Math.floor(model.contextWindow)
-        : undefined;
-    if (!contextWindow) continue;
-    byQualifiedId[`${model.provider}/${model.id}`] = contextWindow;
-    let candidates = candidatesById.get(model.id);
-    if (!candidates) {
-      candidates = new Set<number>();
-      candidatesById.set(model.id, candidates);
-    }
-    candidates.add(contextWindow);
-  }
-  const byId: Record<string, number> = {};
-  for (const [id, windows] of candidatesById) {
-    const onlyWindow = windows.values().next();
-    if (windows.size === 1 && !onlyWindow.done) byId[id] = onlyWindow.value;
-  }
-  const current = ctx.model;
-  return {
-    byQualifiedId,
-    byId,
-    defaultModel: current?.id,
-    defaultProvider: current?.provider,
-    defaultContextWindow: current?.contextWindow,
-  };
-}
-
-export function createPiTelemetryWrapperSource(
-  index: ModelWindowIndex,
-  launch: PiLaunchSpec = resolvePiLaunch(),
-): string {
-  return `#!/usr/bin/env node
-const { spawn } = require("node:child_process");
-const index = ${JSON.stringify(index)};
-const launch = ${JSON.stringify(launch)};
-const WINDOWS_COMMAND_LINE_LIMIT = 32767;
-
-const tokenUsage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0 };
-let costTotal = 0;
-let hasCostTotal = false;
-let agentModel;
-const toolUsage = { total: 0, failed: 0, byName: {} };
-const seenToolCallIds = new Set();
-const failedToolCallIds = new Set();
-
-function nonNegativeInteger(value) {
-  return typeof value === "number" && Number.isFinite(value) && value >= 0 ? Math.floor(value) : 0;
-}
-
-function normalizeUsage(usage) {
-  if (!usage) return { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0 };
-  const input = nonNegativeInteger(usage.input);
-  const output = nonNegativeInteger(usage.output);
-  const cacheRead = nonNegativeInteger(usage.cacheRead);
-  const cacheWrite = nonNegativeInteger(usage.cacheWrite);
-  const explicitTotal = nonNegativeInteger(usage.totalTokens);
-  const totalTokens = explicitTotal || (input + output + cacheRead + cacheWrite);
-  const cost = usage.cost && typeof usage.cost.total === "number" && Number.isFinite(usage.cost.total) && usage.cost.total >= 0
-    ? usage.cost.total
-    : undefined;
-  return { input, output, cacheRead, cacheWrite, totalTokens, cost };
-}
-
-function addTokenUsage(usage) {
-  const normalized = normalizeUsage(usage);
-  if (!normalized.totalTokens) return normalized;
-  tokenUsage.input += normalized.input;
-  tokenUsage.output += normalized.output;
-  tokenUsage.cacheRead += normalized.cacheRead;
-  tokenUsage.cacheWrite += normalized.cacheWrite;
-  tokenUsage.totalTokens += normalized.totalTokens;
-  if (normalized.cost !== undefined) {
-    costTotal += normalized.cost;
-    hasCostTotal = true;
-  }
-  return normalized;
-}
-
-function currentTokenUsage() {
-  if (!tokenUsage.totalTokens) return undefined;
-  const out = { ...tokenUsage };
-  if (hasCostTotal) out.costTotal = costTotal;
-  return out;
-}
-
-function markToolStarted(id, name) {
-  const key = id ? String(id) : undefined;
-  if (key && seenToolCallIds.has(key)) return;
-  if (key) seenToolCallIds.add(key);
-  const toolName = name ? String(name) : "unknown";
-  toolUsage.total += 1;
-  toolUsage.byName[toolName] = (toolUsage.byName[toolName] || 0) + 1;
-}
-
-function markToolFailed(id) {
-  const key = id ? String(id) : undefined;
-  if (key && failedToolCallIds.has(key)) return;
-  if (key) failedToolCallIds.add(key);
-  toolUsage.failed += 1;
-}
-
-function currentToolUsage() {
-  if (!toolUsage.total && !toolUsage.failed) return undefined;
-  return { total: toolUsage.total, failed: toolUsage.failed, byName: { ...toolUsage.byName } };
-}
-
-function renderWindowsArgument(value) {
-  if (value.length > 0 && !/[ \\t\"]/.test(value)) return value;
-  let rendered = "\\\"";
-  let backslashes = 0;
-  for (const char of value) {
-    if (char === "\\\\") {
-      backslashes += 1;
-      continue;
-    }
-    if (char === "\\\"") {
-      rendered += "\\\\".repeat(backslashes * 2 + 1);
-      rendered += "\\\"";
-      backslashes = 0;
-      continue;
-    }
-    if (backslashes > 0) {
-      rendered += "\\\\".repeat(backslashes);
-      backslashes = 0;
-    }
-    rendered += char;
-  }
-  if (backslashes > 0) rendered += "\\\\".repeat(backslashes * 2);
-  rendered += "\\\"";
-  return rendered;
-}
-
-function assertWindowsLimit(stage, args) {
-  if (process.platform !== "win32") return;
-  const measured = [launch.executable, ...launch.argvPrefix, ...args].map(renderWindowsArgument).join(" ").length + 1;
-  if (measured > WINDOWS_COMMAND_LINE_LIMIT) {
-    const error = new Error("pi_command_line_too_long: " + stage + " measured UTF-16 command line length " + String(measured) + " exceeds limit " + String(WINDOWS_COMMAND_LINE_LIMIT));
-    error.code = "pi_command_line_too_long";
-    throw error;
-  }
-}
-
-function emitUnifiedTelemetry(payload) {
-  const out = { type: "background-task-telemetry", ...payload };
-  const tokens = currentTokenUsage();
-  const tools = currentToolUsage();
-  if (tokens && !out.tokenUsage) out.tokenUsage = tokens;
-  if (tools && !out.toolUsage) out.toolUsage = tools;
-  if (agentModel && !out.model) out.model = agentModel;
-  process.stdout.write(JSON.stringify(out) + "\\n");
-}
-
-function emitActivity(activity) {
-  process.stdout.write(JSON.stringify({ type: "background-task-activity", ...activity }) + "\\n");
-}
-
-function summarizeArgs(args) {
-  if (!args || typeof args !== "object") return "";
-  const pick = (value) => {
-    if (typeof value === "string" && value.trim()) return value.trim().slice(0, 200);
-    if (typeof value === "number" && Number.isFinite(value)) return String(value);
-    return undefined;
-  };
-  const preferred = ["path", "file_path", "file", "filename", "command", "cmd", "pattern", "query", "url", "name", "value", "text", "message"];
-  for (const key of preferred) { const summary = pick(args[key]); if (summary) return summary; }
-  for (const key of Object.keys(args)) { const summary = pick(args[key]); if (summary) return summary; }
-  return "";
-}
-
-function emitAssistantActivity(message) {
-  const content = message && Array.isArray(message.content) ? message.content : [];
-  for (const part of content) {
-    if (!part || typeof part !== "object") continue;
-    if (part.type === "text" && typeof part.text === "string" && part.text.trim()) {
-      emitActivity({ kind: "assistant_text", text: part.text });
-    } else if (part.type === "thinking" || part.type === "reasoning") {
-      const text = typeof part.text === "string" ? part.text : (typeof part.thinking === "string" ? part.thinking : "");
-      if (text.trim()) emitActivity({ kind: "reasoning", text: text });
-    }
-  }
-}
-
-function resolveModelName(fromMessage, fromArgs, providerFromArgs) {
-  const message = fromMessage ? String(fromMessage) : "";
-  const args = fromArgs ? String(fromArgs) : "";
-  const bareOf = (value) => value.includes("/") ? value.split("/").pop() : value;
-  if (message && message.includes("/")) return message;
-  if (args && args.includes("/") && (!message || bareOf(args) === message)) return args;
-  const primary = message || args;
-  if (!primary) return undefined;
-  if (primary.includes("/")) return primary;
-  if (providerFromArgs) return providerFromArgs + "/" + primary;
-  if (index.defaultProvider) return index.defaultProvider + "/" + primary;
-  return primary;
-}
-
-function parseInvocation(argv) {
-  const out = [];
-  let model;
-  let provider;
-  let hasMode = false;
-  let modeValue;
-  for (let i = 0; i < argv.length; i++) {
-    const arg = argv[i];
-    if (arg === "-p" || arg === "--print") continue;
-    if (arg === "--mode") {
-      hasMode = true;
-      modeValue = argv[i + 1];
-      out.push(arg);
-      if (i + 1 < argv.length) out.push(argv[++i]);
-      continue;
-    }
-    if (arg.startsWith("--mode=")) {
-      hasMode = true;
-      modeValue = arg.slice("--mode=".length);
-      out.push(arg);
-      continue;
-    }
-    if (arg === "--model" && i + 1 < argv.length) {
-      model = argv[i + 1];
-      out.push(arg, argv[++i]);
-      continue;
-    }
-    if (arg.startsWith("--model=")) model = arg.slice("--model=".length);
-    if (arg === "--provider" && i + 1 < argv.length) {
-      provider = argv[i + 1];
-      out.push(arg, argv[++i]);
-      continue;
-    }
-    if (arg.startsWith("--provider=")) provider = arg.slice("--provider=".length);
-    out.push(arg);
-  }
-  if (hasMode && modeValue !== "json") return { args: argv, parseJson: false, model, provider };
-  if (!hasMode) out.unshift("--mode", "json");
-  return { args: out, parseJson: true, model, provider };
-}
-
-function resolveWindow(modelFromArgs, providerFromArgs, modelFromMessage) {
-  const candidates = [];
-  if (modelFromMessage) candidates.push(modelFromMessage);
-  if (modelFromArgs) candidates.push(modelFromArgs);
-  if (modelFromArgs && providerFromArgs && !modelFromArgs.includes("/")) candidates.push(providerFromArgs + "/" + modelFromArgs);
-  if (modelFromArgs && index.defaultProvider && !modelFromArgs.includes("/")) candidates.push(index.defaultProvider + "/" + modelFromArgs);
-  if (index.defaultModel && index.defaultProvider) candidates.push(index.defaultProvider + "/" + index.defaultModel);
-  for (const candidate of candidates) {
-    if (!candidate) continue;
-    if (index.byQualifiedId[candidate]) return index.byQualifiedId[candidate];
-    const bare = String(candidate).includes("/") ? String(candidate).split("/").pop() : String(candidate);
-    if (bare && index.byId[bare]) return index.byId[bare];
-  }
-  return index.defaultContextWindow || 0;
-}
-
-function countToolCallsFromMessage(message) {
-  const content = message && Array.isArray(message.content) ? message.content : [];
-  for (const part of content) {
-    if (part && part.type === "toolCall") markToolStarted(part.id, part.name);
-  }
-}
-
-function emitMessageTelemetry(message, modelFromArgs, providerFromArgs) {
-  const usage = addTokenUsage(message && message.usage);
-  const resolvedModel = resolveModelName(message && message.model, modelFromArgs, providerFromArgs);
-  if (resolvedModel) agentModel = resolvedModel;
-  const contextWindow = resolveWindow(modelFromArgs, providerFromArgs, message && message.model);
-  const contextUsage = usage.totalTokens && contextWindow
-    ? { tokens: usage.totalTokens, contextWindow, percent: (usage.totalTokens / contextWindow) * 100 }
-    : undefined;
-  if (contextUsage) process.stdout.write(JSON.stringify({ type: "background-task-context-usage", ...contextUsage }) + "\\n");
-  const payload = {};
-  if (contextUsage) payload.contextUsage = contextUsage;
-  emitUnifiedTelemetry(payload);
-}
-
-function emitToolTelemetry() {
-  emitUnifiedTelemetry({});
-}
-
-const parsed = parseInvocation(process.argv.slice(2));
-let child;
-let buffer = "";
-try {
-  const childArgs = [...launch.argvPrefix, ...parsed.args];
-  assertWindowsLimit("telemetry-wrapper-pi", parsed.args);
-  child = spawn(launch.executable, childArgs, { stdio: ["ignore", "pipe", "pipe"], env: process.env, shell: false, windowsHide: true });
-} catch (error) {
-  const message = error && typeof error.message === "string" ? error.message : String(error);
-  process.stderr.write("[pi-bg telemetry wrapper error: " + message + "]\\n");
-  process.exitCode = 1;
-}
-
-if (child) {
-  if (!parsed.parseJson) {
-    child.stdout.pipe(process.stdout);
-  } else {
-    child.stdout.on("data", (chunk) => {
-      buffer += chunk.toString();
-      const lines = buffer.split("\\n");
-      buffer = lines.pop() || "";
-      for (const line of lines) processLine(line);
-    });
-  }
-  child.stderr.on("data", (chunk) => process.stderr.write(chunk));
-  child.on("error", (error) => {
-    process.stderr.write("[pi-bg telemetry wrapper error: " + error.message + "]\\n");
-  });
-  child.on("close", (code, signal) => {
-    if (parsed.parseJson && buffer.trim()) processLine(buffer);
-    // Never call process.exit() here: the final message telemetry may still be
-    // buffered on wrapper stdout, and forced exit can publish a stale context
-    // snapshot from the preceding assistant turn. exitCode lets Node drain the
-    // pipe; signal termination is deferred through the same stdout barrier.
-    process.stdout.write("", () => {
-      if (signal) process.kill(process.pid, signal);
-      else process.exitCode = code ?? 0;
-    });
-  });
-}
-
-function processLine(line) {
-  if (!line.trim()) return;
-  let event;
-  try {
-    event = JSON.parse(line);
-  } catch {
-    process.stdout.write(line + "\\n");
-    return;
-  }
-  if (event.type === "tool_execution_start") {
-    const toolName = event.toolName || event.tool_name || "tool";
-    markToolStarted(event.toolCallId || event.tool_call_id, toolName);
-    emitActivity({ kind: "tool_start", tool: String(toolName), argsSummary: summarizeArgs(event.args || event.arguments || event.input || event.parameters) });
-    emitToolTelemetry();
-    return;
-  }
-  if (event.type === "tool_execution_end") {
-    const toolName = event.toolName || event.tool_name || "tool";
-    if (event.isError) markToolFailed(event.toolCallId || event.tool_call_id);
-    emitActivity({ kind: "tool_end", tool: String(toolName), isError: !!event.isError, error: typeof event.error === "string" ? event.error : undefined });
-    emitToolTelemetry();
-    return;
-  }
-  if (event.type === "message_end" && event.message && event.message.role === "assistant") {
-    emitAssistantActivity(event.message);
-    countToolCallsFromMessage(event.message);
-    emitMessageTelemetry(event.message, parsed.model, parsed.provider);
-  }
-}
-`;
-}
-
-interface ContextUsagePayload extends JsonObject {
-  readonly contextWindow?: unknown;
-  readonly tokens?: unknown;
-  readonly percent?: unknown;
-}
-
-interface TokenUsagePayload extends JsonObject {
-  readonly input?: unknown;
-  readonly output?: unknown;
-  readonly cacheRead?: unknown;
-  readonly cacheWrite?: unknown;
-  readonly totalTokens?: unknown;
-  readonly costTotal?: unknown;
-}
-
-interface ToolUsagePayload extends JsonObject {
-  readonly byName?: unknown;
-  readonly failed?: unknown;
-  readonly total?: unknown;
-}
-
-function normalizeContextUsage(value: unknown): TaskContextUsage | undefined {
-  if (!isJsonObject(value)) return undefined;
-  const input: ContextUsagePayload = value;
-  const rawContextWindow = input.contextWindow;
-  const contextWindow =
-    typeof rawContextWindow === 'number' &&
-    Number.isFinite(rawContextWindow) &&
-    rawContextWindow > 0
-      ? Math.floor(rawContextWindow)
-      : undefined;
-  if (!contextWindow) return undefined;
-  const rawTokens = input.tokens;
-  const tokens =
-    rawTokens === null
-      ? null
-      : typeof rawTokens === 'number' && Number.isFinite(rawTokens) && rawTokens >= 0
-        ? Math.floor(rawTokens)
-        : null;
-  const rawPercent = input.percent;
-  const percent =
-    rawPercent === null
-      ? null
-      : typeof rawPercent === 'number' && Number.isFinite(rawPercent) && rawPercent >= 0
-        ? rawPercent
-        : tokens === null
-          ? null
-          : (tokens / contextWindow) * 100;
-  return { tokens, contextWindow, percent };
-}
-
-function parseContextUsageXml(xml: string): TaskContextUsage | undefined {
-  const readNumber = (tag: string): number | null | undefined => {
-    const match = new RegExp(`<${tag}>(.*?)</${tag}>`, 'i').exec(xml);
-    if (!match) return undefined;
-    const raw = match[1]?.trim();
-    if (raw === 'null' || raw === '?') return null;
-    const parsed = Number(raw);
-    return Number.isFinite(parsed) ? parsed : undefined;
-  };
-  const tokens = readNumber('tokens');
-  const contextWindow = readNumber('context-window') ?? readNumber('contextWindow');
-  const percent = readNumber('percent');
-  return normalizeContextUsage({ tokens, contextWindow, percent });
-}
-
-function nonNegativeInteger(value: unknown): number {
-  return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? Math.floor(value) : 0;
-}
-
-function normalizeModel(value: unknown): string | undefined {
-  if (typeof value !== 'string') return undefined;
-  const trimmed = value.trim();
-  if (!trimmed) return undefined;
-  return trimmed.length > 120 ? trimmed.slice(0, 120) : trimmed;
-}
-
-function normalizeTokenUsage(value: unknown): TaskTokenUsage | undefined {
-  if (!isJsonObject(value)) return undefined;
-  const input: TokenUsagePayload = value;
-  const usage: TaskTokenUsage = {
-    input: nonNegativeInteger(input.input),
-    output: nonNegativeInteger(input.output),
-    cacheRead: nonNegativeInteger(input.cacheRead),
-    cacheWrite: nonNegativeInteger(input.cacheWrite),
-    totalTokens: nonNegativeInteger(input.totalTokens),
-  };
-  if (usage.totalTokens <= 0)
-    usage.totalTokens = usage.input + usage.output + usage.cacheRead + usage.cacheWrite;
-  const rawCostTotal = input.costTotal;
-  if (typeof rawCostTotal === 'number' && Number.isFinite(rawCostTotal) && rawCostTotal >= 0)
-    usage.costTotal = rawCostTotal;
-  return usage.totalTokens > 0 ? usage : undefined;
-}
-
-function normalizeToolUsage(value: unknown): TaskToolUsage | undefined {
-  if (!isJsonObject(value)) return undefined;
-  const input: ToolUsagePayload = value;
-  const byName: Record<string, number> = {};
-  const rawByName = input.byName;
-  if (isJsonObject(rawByName)) {
-    for (const [name, count] of Object.entries(rawByName)) {
-      const normalized = nonNegativeInteger(count);
-      if (normalized > 0) byName[name] = normalized;
-    }
-  }
-  const byNameTotal = Object.values(byName).reduce((sum, count) => sum + count, 0);
-  const failed = nonNegativeInteger(input.failed);
-  const total = Math.max(nonNegativeInteger(input.total), byNameTotal, failed);
-  return total > 0 || failed > 0 ? { total, failed, byName } : undefined;
-}
-
-interface TelemetryControlPayload extends JsonObject {
-  readonly type?: unknown;
-  readonly contextUsage?: unknown;
-  readonly tokenUsage?: unknown;
-  readonly toolUsage?: unknown;
-  readonly model?: unknown;
-}
-
-interface TelemetryDelta {
-  context?: TaskContextUsage | undefined;
-  tokens?: TaskTokenUsage | undefined;
-  tools?: TaskToolUsage | undefined;
-  model?: string | undefined;
 }
 
 function noopOnChange(): void {
@@ -711,30 +156,38 @@ function noopBeforeLaunch(_kind: BackgroundTaskLaunchKind): Promise<void> {
   return Promise.resolve();
 }
 
-/**
- * Deliver the delegate prompt bytes over stdin.
- *
- * A failure to deliver the seed is loud: the caller terminates the task rather
- * than letting a child run without the context it was supposed to receive.
- */
-function writeDelegateStdin(
-  child: BackgroundTaskChildProcess,
-  bytes: Buffer,
-  onError: (error: Error) => void,
-): void {
-  const stdin = child.stdin;
-  if (stdin === undefined || stdin === null) {
-    onError(new Error('delegate child stdin pipe is unavailable'));
-    return;
-  }
-  stdin.once('error', onError);
-  stdin.write(bytes, (error?: Error | null) => {
-    if (error !== undefined && error !== null) {
-      onError(error);
-      return;
-    }
-    stdin.end();
+async function writeJsonAtomic(path: string, value: unknown): Promise<void> {
+  await replaceFileDurable(path, `${JSON.stringify(value, null, 2)}\n`);
+}
+
+async function closeOutputStream(stream: NodeJS.WritableStream | undefined): Promise<void> {
+  if (stream === undefined) return;
+  await new Promise<void>((resolve, reject) => {
+    const finish = () => {
+      stream.off('error', fail);
+      stream.off('close', finish);
+      stream.off('finish', finish);
+      resolve();
+    };
+    const fail = (error: Error) => {
+      stream.off('close', finish);
+      stream.off('finish', finish);
+      reject(error);
+    };
+    stream.once('close', finish);
+    stream.once('finish', finish);
+    stream.once('error', fail);
+    stream.end();
   });
+}
+
+function combinePublicationGates(
+  existing: Promise<void> | undefined,
+  next: Promise<void> | undefined,
+): Promise<void> | undefined {
+  if (existing === undefined) return next;
+  if (next === undefined) return existing;
+  return Promise.all([existing, next]).then(() => undefined);
 }
 
 export class BackgroundTaskRegistry {
@@ -757,7 +210,6 @@ export class BackgroundTaskRegistry {
   private readonly sendCompletionNotification: CompletionNotificationSender;
   private readonly beforeLaunch: (kind: BackgroundTaskLaunchKind) => Promise<void>;
   private readonly publishTerminalSnapshot: (task: BgTaskSnapshot) => void;
-  private readonly writeFileFsynced: (path: string, data: Buffer | string) => Promise<void>;
   private readonly writeJsonAtomic: (path: string, value: unknown) => Promise<void>;
   private readonly launchOperations = new Set<Promise<void>>();
   private readonly terminalPublications = new Set<Promise<void>>();
@@ -787,7 +239,6 @@ export class BackgroundTaskRegistry {
     this.sendCompletionNotification = options.sendCompletionNotification;
     this.beforeLaunch = options.beforeLaunch ?? noopBeforeLaunch;
     this.publishTerminalSnapshot = options.publishTerminal ?? noopOnChange;
-    this.writeFileFsynced = options.writeFileFsynced ?? writeFileFsynced;
     this.writeJsonAtomic = options.writeJsonAtomic ?? writeJsonAtomic;
   }
 
@@ -992,12 +443,7 @@ export class BackgroundTaskRegistry {
     if (!normalizedCommand) throw new Error('Background command is empty');
 
     const isAgent = options.isAgent ?? false;
-    const baseInvocation = shellInvocation(normalizedCommand, this.platform, this.env);
-    const piTelemetryRequested = isAgent && commandMayLaunchPiAgent(normalizedCommand, this.env);
-    const piTelemetryLaunch =
-      piTelemetryRequested && baseInvocation.dialect === 'posix'
-        ? resolvePiLaunch({ platform: this.platform })
-        : undefined;
+    const invocation = shellInvocation(normalizedCommand, this.platform, this.env);
 
     const dir = await this.ensureRuntimeDir(ctx);
     const id = this.makeTaskIdFn();
@@ -1065,27 +511,6 @@ export class BackgroundTaskRegistry {
     });
 
     try {
-      let commandToSpawn = normalizedCommand;
-      if (piTelemetryRequested) {
-        if (baseInvocation.dialect === 'posix') {
-          if (piTelemetryLaunch === undefined)
-            throw new Error('Pi telemetry launch spec was not resolved');
-          const wrapperAbsPath = join(dir.abs, `${id}.pi-telemetry-wrapper.cjs`);
-          await writeFile(
-            wrapperAbsPath,
-            createPiTelemetryWrapperSource(buildModelWindowIndex(ctx), piTelemetryLaunch),
-            'utf8',
-          );
-          commandToSpawn = `pi() { ${shellQuote(process.execPath)} ${shellQuote(wrapperAbsPath)} "$@"; }\n${normalizedCommand}`;
-          task.telemetryWrapped = true;
-        } else {
-          task.telemetryUnavailableReason = WIN32_CMD_PI_TELEMETRY_UNAVAILABLE_REASON;
-        }
-      }
-      const invocation =
-        commandToSpawn === normalizedCommand
-          ? baseInvocation
-          : shellInvocation(commandToSpawn, this.platform, this.env);
       const child = this.spawn(invocation.shell, invocation.args, {
         cwd: ctx.cwd,
         detached: this.platform !== 'win32',
@@ -1211,40 +636,36 @@ export class BackgroundTaskRegistry {
     throw new Error(launchMessage, { cause: error });
   }
 
-  /**
-   * Track an in-process asynchronous workflow through the same durable task,
-   * notification, status, log, and cancellation surfaces as child processes.
-   * The supplied completion promise must own all workflow cleanup before it
-   * settles; terminal publication happens only after that settlement.
-   */
-  async startManagedTask(
+  async registerExternalTask(
     ctx: BackgroundTaskContext,
-    request: StartManagedTaskOptions,
+    request: RegisterExternalTaskOptions,
   ): Promise<BgTask> {
     return this.ownLaunchOperation(
-      'managed',
-      'Cannot start a managed background task while Pi is shutting down',
-      () => this.performStartManagedTask(ctx, request),
+      'external',
+      'Cannot register an external background task while Pi is shutting down',
+      () => this.performRegisterExternalTask(ctx, request),
     );
   }
 
-  private async performStartManagedTask(
+  private async performRegisterExternalTask(
     ctx: BackgroundTaskContext,
-    request: StartManagedTaskOptions,
+    request: RegisterExternalTaskOptions,
   ): Promise<BgTask> {
-    if (!/^[a-zA-Z0-9_.-]+$/u.test(request.id))
-      throw new Error(`Managed background task id is invalid: ${request.id}`);
-    if (this.tasks.has(request.id))
-      throw new Error(`Background task id already exists: ${request.id}`);
+    const id = this.makeTaskIdFn();
+    if (!/^[a-zA-Z0-9_.-]+$/u.test(id)) {
+      throw new Error(`Generated external background task id is invalid: ${id}`);
+    }
+    if (this.tasks.has(id)) throw new Error(`Background task id already exists: ${id}`);
 
     const dir = await this.ensureRuntimeDir(ctx);
-    const outputAbsPath = join(dir.abs, `${request.id}.output`);
-    const metadataAbsPath = join(dir.abs, `${request.id}.json`);
-    const outputPath = join(dir.display, `${request.id}.output`);
+    const outputAbsPath = join(dir.abs, `${id}.output`);
+    const metadataAbsPath = join(dir.abs, `${id}.json`);
+    const outputPath = join(dir.display, `${id}.output`);
+    const name = normalizeTaskName(request.name) ?? 'External background task';
     const task: BgTask = {
-      id: request.id,
-      name: normalizeTaskName(request.name) ?? 'Managed background task',
-      command: request.command,
+      id,
+      name,
+      command: request.description ?? name,
       description: request.description,
       status: 'running',
       outputPath,
@@ -1255,29 +676,33 @@ export class BackgroundTaskRegistry {
       exitCode: undefined,
       pid: undefined,
       bytesWritten: 0,
-      isAgent: request.isAgent,
+      isAgent: false,
       notified: false,
       notifyOnCompletion: request.notifyOnCompletion,
       triggerOnCompletion: request.triggerOnCompletion,
-      fusion: request.fusion,
-      managedCancel: request.cancel,
-      managedStopWaitMs: request.stopWaitMs,
+      owner: { ...request.owner },
+      capabilities: { ...request.capabilities },
+      externalCancel: request.cancel,
+      externalSequence: 1,
+      externalStopWaitMs: request.stopWaitMs,
       terminalPublicationGate: request.terminalPublicationGate,
       completionDeliveryGate: request.terminalPublicationGate,
       finalizationSettled: false,
       waiters: [],
     };
-    this.tasks.set(task.id, task);
+    this.tasks.set(id, task);
     const stream = createWriteStream(outputAbsPath, { flags: 'a', encoding: 'utf8' });
     task.stream = stream;
     stream.on('error', (error) => {
       task.error = `Output file write failed: ${error.message}`;
-      if (task.status === 'running' && !task.managedCancelRequested) {
-        task.managedCancelRequested = true;
+      if (task.status === 'running' && task.externalCancelRequested !== true) {
         try {
-          request.cancel();
+          this.requestKill(task, 'SIGTERM');
         } catch (cancelError) {
-          task.error = `${task.error}; cancellation failed: ${BackgroundTaskRegistry.errorMessage(cancelError)}`;
+          task.error = BackgroundTaskRegistry.appendTaskError(
+            task.error,
+            `cancellation failed: ${BackgroundTaskRegistry.errorMessage(cancelError)}`,
+          );
         }
       }
     });
@@ -1285,427 +710,79 @@ export class BackgroundTaskRegistry {
     try {
       await this.writeMetadata(task);
       this.onChange();
+      return task;
     } catch (error) {
-      this.tasks.delete(task.id);
+      this.tasks.delete(id);
       if (!stream.destroyed) stream.destroy();
-      try {
-        request.cancel();
-      } catch (cancelError) {
-        this.logger.error(
-          `[background-tasks] managed task cancellation after metadata failure also failed for ${task.id}:`,
-          cancelError,
-        );
-      }
       throw new Error(
-        `Failed to register managed background task: ${BackgroundTaskRegistry.errorMessage(error)}`,
+        `Failed to register external background task: ${BackgroundTaskRegistry.errorMessage(error)}`,
       );
     }
-
-    void request.completion
-      .then(
-        () => this.finalizeTask(task, 'completed', 0),
-        (error: unknown) => {
-          const message = BackgroundTaskRegistry.errorMessage(error);
-          const killed = task.killKind === 'user' || task.killKind === 'shutdown';
-          return this.finalizeTask(task, killed ? 'killed' : 'failed', null, undefined, message);
-        },
-      )
-      .catch((error: unknown) => {
-        this.logger.error(
-          `[background-tasks] managed task finalization failed for ${task.id}:`,
-          error,
-        );
-      });
-    return task;
   }
 
-  async updateManagedTask(task: BgTask, state: string, line?: string): Promise<void> {
-    if (task.status !== 'running' || task.fusion === undefined) return;
-    task.fusion.state = state;
-    if (line !== undefined && line.length > 0) this.writeNotice(task, `${line}\n`);
+  async appendExternalLog(task: BgTask, text: string): Promise<void> {
+    this.assertExternalRunning(task);
+    this.writeNotice(task, text);
     await this.writeMetadata(task);
     this.onChange();
   }
 
-  /** Claim deferred Fusion usage exactly once before returning it from bg_result. */
-  async claimFusionUsage(task: BgTask): Promise<boolean> {
-    if (task.fusion === undefined) throw new Error(`Task ${task.id} is not a Fusion task`);
-    let claimed = false;
-    const write = async () => {
-      if (!task.fusion || task.fusion.usageDelivered) return;
-      task.fusion.usageDelivered = true;
-      await this.writeJsonAtomic(task.metadataAbsPath, snapshot(task));
-      claimed = true;
-    };
-    const previous = task.metadataWriteChain ?? Promise.resolve();
-    const next = previous.then(write, write);
-    task.metadataWriteChain = next.catch(() => undefined);
-    await next;
-    return claimed;
-  }
-
-  /**
-   * Start a prepared delegate child.
-   *
-   * The caller has already completed preflight, so by the time this runs the
-   * seed, budget plan, and artifact directory exist and the argv is fixed. The
-   * child is launched directly, never through a shell, and its terminal state
-   * flows through the same durable notification path as `bg_run`.
-   */
-  async startDelegateTask(
-    ctx: BackgroundTaskContext,
-    request: StartDelegateTaskOptions,
-  ): Promise<BgTask> {
-    return this.ownLaunchOperation(
-      'delegate',
-      'Cannot start a delegate task while Pi is shutting down',
-      () => this.performStartDelegateTask(ctx, request),
-    );
-  }
-
-  private async performStartDelegateTask(
-    ctx: BackgroundTaskContext,
-    request: StartDelegateTaskOptions,
-  ): Promise<BgTask> {
-    const launch = resolvePiLaunch({ platform: this.platform });
-    assertWindowsCommandLineWithinLimit(launch, request.argv, this.platform, 'bg-delegate');
-
-    const dir = await this.ensureRuntimeDir(ctx);
-    const id = request.facts.taskId;
-    const outputAbsPath = join(dir.abs, `${id}.output`);
-    const metadataAbsPath = join(dir.abs, `${id}.json`);
-    const outputPath = join(dir.display, `${id}.output`);
-
-    const task: BgTask = {
-      id,
-      name: normalizeTaskName(request.name) ?? 'Delegate task',
-      command: ['pi', ...request.argv].map(shellQuote).join(' '),
-      status: 'running',
-      outputPath,
-      outputAbsPath,
-      metadataAbsPath,
-      cwd: ctx.cwd,
-      startTime: this.now(),
-      exitCode: undefined,
-      pid: undefined,
-      bytesWritten: 0,
-      isAgent: true,
-      notified: false,
-      notifyOnCompletion: request.notifyOnCompletion,
-      triggerOnCompletion: request.triggerOnCompletion,
-      timeoutSeconds: request.timeoutSeconds,
-      model: request.facts.route.qualifiedId,
-      delegate: request.facts,
-      finalizationSettled: false,
-      waiters: [],
-    };
-    this.tasks.set(id, task);
-
-    const stream = createWriteStream(outputAbsPath, { flags: 'a', encoding: 'utf8' });
-    task.stream = stream;
-    stream.on('error', (error) => {
-      task.error = `Output file write failed: ${error.message}`;
-    });
-
-    try {
-      const child = this.spawn(launch.executable, piLaunchArgv(launch, [...request.argv]), {
-        cwd: ctx.cwd,
-        detached: this.platform !== 'win32',
-        shell: false,
-        // The seed travels over stdin, never as a shell or positional argument,
-        // so the bytes the child reads are exactly the bytes that were persisted
-        // and hashed, with no quoting or command-line length limit in the path.
-        stdio: ['pipe', 'pipe', 'pipe'],
-        env: request.env,
-        windowsHide: true,
-      });
-      task.child = child;
-      task.pid = child.pid;
-
-      child.on('error', (error) => {
-        this.writeNotice(task, `\n[delegate spawn error: ${error.message}]\n`);
-        this.finalizeTaskFromCallback(
-          task,
-          'failed',
-          null,
-          undefined,
-          task.startupError ?? error.message,
-        );
-      });
-      child.on('close', (code, signalName) => {
-        let status: TaskStatus;
-        let error: string | undefined;
-        if (task.startupError !== undefined) {
-          status = 'failed';
-          error = task.startupError;
-        } else if (task.killKind === 'user' || task.killKind === 'shutdown') {
-          status = 'killed';
-        } else if (task.killKind === 'timeout') {
-          status = 'failed';
-          error = task.error ?? `Timed out after ${String(request.timeoutSeconds ?? 0)}s`;
-        } else if ((code ?? 0) === 0) {
-          status = 'completed';
-        } else {
-          status = 'failed';
-          error = `Exited with code ${code === null ? 'null' : String(code)}${signalName ? ` (${signalName})` : ''}`;
-        }
-        this.finalizeTaskFromCallback(task, status, code, signalName, error);
-      });
-
-      child.stdout?.on('data', (data) => {
-        this.appendChildOutput(task, data, 'stdout');
-      });
-      child.stderr?.on('data', (data) => {
-        this.appendChildOutput(task, data, 'stderr');
-      });
-      writeDelegateStdin(child, request.stdinBytes, (error) => {
-        this.writeNotice(task, `\n[delegate stdin write failed: ${error.message}]\n`);
-        if (task.status === 'running') {
-          task.killKind = 'user';
-          task.error = `Delegate seed could not be delivered: ${error.message}`;
-          try {
-            this.requestKill(task, 'SIGTERM');
-          } catch {
-            this.finalizeTaskFromCallback(task, 'failed', null, undefined, task.error);
-          }
-        }
-      });
-
-      if (request.timeoutSeconds !== undefined) {
-        task.timeoutHandle = setTimeout(() => {
-          if (task.status !== 'running') return;
-          task.killKind = 'timeout';
-          task.error = `Timed out after ${String(request.timeoutSeconds)}s`;
-          this.writeNotice(task, `\n[delegate timeout: ${task.error}]\n`);
-          try {
-            this.requestKill(task, 'SIGTERM');
-          } catch (error) {
-            this.finalizeTaskFromCallback(
-              task,
-              'failed',
-              null,
-              undefined,
-              `${task.error}; kill failed: ${error instanceof Error ? error.message : String(error)}`,
-            );
-          }
-        }, request.timeoutSeconds * 1000);
-      }
-
-      await this.writeMetadata(task);
-      this.onChange();
-      return task;
-    } catch (error) {
-      return this.rejectFailedLaunch(
-        task,
-        error,
-        'Failed to start delegate task',
-        'delegate spawn exception',
-      );
+  async updateExternalTask(task: BgTask, update: UpdateExternalTaskOptions): Promise<void> {
+    this.assertExternalRunning(task);
+    if (update.name !== undefined) task.name = normalizeTaskName(update.name) ?? task.name;
+    if (update.description !== undefined) {
+      task.description = update.description;
+      task.command = update.description;
     }
+    if (update.capabilities !== undefined) task.capabilities = { ...update.capabilities };
+    if (update.line !== undefined) this.writeNotice(task, update.line);
+    await this.writeMetadata(task);
+    this.onChange();
   }
 
-  async startAttestedPiTask(
-    ctx: BackgroundTaskContext,
-    request: StartAttestedPiTaskOptions,
-  ): Promise<BgTask> {
-    return this.ownLaunchOperation(
-      'attested',
-      'Cannot start an attested Pi task while Pi is shutting down',
-      () => this.performStartAttestedPiTask(ctx, request),
-    );
+  acknowledgeExternalCancellation(task: BgTask, cancelId: string): void {
+    this.assertExternalRunning(task);
+    if (task.externalCancelId === undefined) {
+      throw new Error(`Task ${task.id} has no cancellation request`);
+    }
+    if (task.externalCancelId !== cancelId) {
+      throw new Error(`Task ${task.id} cancellation id mismatch`);
+    }
+    if (task.externalCancelAcknowledged === true) {
+      throw new Error(`Task ${task.id} cancellation was already acknowledged`);
+    }
+    task.externalCancelAcknowledged = true;
   }
 
-  private async performStartAttestedPiTask(
-    ctx: BackgroundTaskContext,
-    request: StartAttestedPiTaskOptions,
-  ): Promise<BgTask> {
-    const attributionExtensionPath =
-      request.provider === 'anthropic' ? resolveAnthropicAttributionExtensionPath() : undefined;
-    const argv = buildAttestedPiArgv(request, attributionExtensionPath);
-    const attestedPiLaunch = resolvePiLaunch({ platform: this.platform });
-    assertWindowsCommandLineWithinLimit(
-      attestedPiLaunch,
-      argv.slice(1),
-      this.platform,
-      'attested-pi-run',
-    );
-
-    const dir = await this.ensureRuntimeDir(ctx);
-    const id = makeAttestedTaskId();
-    if (!ATTESTED_TASK_ID_PATTERN.test(id))
-      throw new Error('Generated attested task id is invalid');
-    const paths = makeAttestedTaskPaths(dir.abs, dir.display, id);
-    const promptBytes = Buffer.from(request.prompt, 'utf8');
-    const reportAbsPath = await resolveReportPath(ctx.cwd, request.reportPath);
-    const auth = observePiOAuth(ctx, request.provider, request.model);
-    const repoRootRealpath = await gitRepoRoot(ctx.cwd);
-    const cwdRealpath = await realpath(ctx.cwd);
-    const startAuthority = await gitAuthoritySnapshot(ctx.cwd);
-    if (!startAuthority.clean)
-      throw new Error('Attested Pi task requires a clean worktree at start');
-    const timeoutSeconds =
-      typeof request.timeoutSeconds === 'number' &&
-      Number.isFinite(request.timeoutSeconds) &&
-      request.timeoutSeconds > 0
-        ? Math.floor(request.timeoutSeconds)
-        : undefined;
-
-    const task: BgTask = {
-      id,
-      name: normalizeTaskName(request.name) ?? 'Attested Pi task',
-      command: argv.map(shellQuote).join(' '),
-      status: 'running',
-      outputPath: paths.outputPath,
-      outputAbsPath: paths.outputAbsPath,
-      metadataAbsPath: paths.metadataAbsPath,
-      eventsAbsPath: paths.eventsAbsPath,
-      stderrAbsPath: paths.stderrAbsPath,
-      wrapperAbsPath: paths.wrapperAbsPath,
-      attestationAbsPath: paths.attestationAbsPath,
-      cwd: ctx.cwd,
-      startTime: this.now(),
-      exitCode: undefined,
-      pid: undefined,
-      bytesWritten: 0,
-      isAgent: true,
-      notified: false,
-      notifyOnCompletion: false,
-      triggerOnCompletion: false,
-      timeoutSeconds,
-      attestationPath: paths.attestationPath,
-      attestedPi: {
-        eventsPath: paths.eventsPath,
-        stderrPath: paths.stderrPath,
-        wrapperPath: paths.wrapperPath,
-        attestationPath: paths.attestationPath,
-      },
-      finalizationSettled: false,
-      waiters: [],
-    };
-    this.tasks.set(id, task);
-
-    try {
-      await this.writeFileFsynced(paths.outputAbsPath, '');
-      await this.writeFileFsynced(paths.eventsAbsPath, '');
-      await this.writeFileFsynced(paths.stderrAbsPath, '');
-      await this.writeFileFsynced(
-        paths.wrapperAbsPath,
-        'direct-spawn attested Pi task; no shell telemetry wrapper is used\n',
-      );
-      await this.writeMetadata(task);
-
-      const captured = spawnAndCapturePi(
-        this.spawn,
-        argv,
-        {
-          cwd: ctx.cwd,
-          detached: this.platform !== 'win32',
-          shell: false,
-          stdio: ['ignore', 'pipe', 'pipe'],
-          env: attestedPiChildEnv(this.env),
-          windowsHide: true,
-        },
-        this.platform,
-        attestedPiLaunch,
-      );
-      task.child = captured.child;
-      task.pid = captured.child.pid;
-
-      captured.child.on('error', (error) => {
-        this.finalizeAttestedPiTaskFromCallback(
-          task,
-          paths,
-          argv,
-          cwdRealpath,
-          repoRootRealpath,
-          startAuthority,
-          auth,
-          promptBytes,
-          reportAbsPath,
-          captured.stdoutChunks,
-          captured.stderrChunks,
-          'failed',
-          null,
-          null,
-          task.startupError ?? error.message,
-        );
-      });
-
-      captured.child.on('close', (code, signalName) => {
-        let status: TaskStatus = (code ?? 0) === 0 && signalName === null ? 'completed' : 'failed';
-        let error: string | undefined;
-        if (task.startupError !== undefined) {
-          status = 'failed';
-          error = task.startupError;
-        } else if (task.killKind === 'timeout') {
-          status = 'failed';
-          error = task.error ?? `Timed out after ${String(timeoutSeconds)}s`;
-        } else if (task.killKind === 'user' || task.killKind === 'shutdown') {
-          status = 'killed';
-          error = task.error;
-        } else if (status === 'failed') {
-          const exitCode = code === null ? 'null' : String(code);
-          error = `Exited with code ${exitCode}${signalName ? ` (${signalName})` : ''}`;
-        }
-        this.finalizeAttestedPiTaskFromCallback(
-          task,
-          paths,
-          argv,
-          cwdRealpath,
-          repoRootRealpath,
-          startAuthority,
-          auth,
-          promptBytes,
-          reportAbsPath,
-          captured.stdoutChunks,
-          captured.stderrChunks,
-          status,
-          code,
-          signalName,
-          error,
-        );
-      });
-
-      await this.writeMetadata(task);
-      this.onChange();
-
-      if (timeoutSeconds !== undefined) {
-        task.timeoutHandle = setTimeout(() => {
-          if (task.status !== 'running') return;
-          task.killKind = 'timeout';
-          task.error = `Timed out after ${String(timeoutSeconds)}s`;
-          try {
-            this.requestKill(task, 'SIGTERM');
-          } catch (error) {
-            this.finalizeAttestedPiTaskFromCallback(
-              task,
-              paths,
-              argv,
-              cwdRealpath,
-              repoRootRealpath,
-              startAuthority,
-              auth,
-              promptBytes,
-              reportAbsPath,
-              captured.stdoutChunks,
-              captured.stderrChunks,
-              'failed',
-              null,
-              null,
-              error instanceof Error ? error.message : String(error),
-            );
-          }
-        }, timeoutSeconds * 1000);
+  settleExternalTask(
+    task: BgTask,
+    status: 'completed' | 'failed' | 'killed',
+    error: string | undefined,
+    terminalPublicationGate: Promise<void> | undefined,
+  ): Promise<void> {
+    this.assertExternalRunning(task);
+    if (task.externalCancelRequested === true) {
+      if (task.externalCancelAcknowledged !== true) {
+        throw new Error(`Task ${task.id} cancellation must be acknowledged before settlement`);
       }
+      if (status !== 'killed') {
+        throw new Error(`Task ${task.id} cancellation settlement status must be killed`);
+      }
+    }
+    task.terminalPublicationGate = combinePublicationGates(
+      task.terminalPublicationGate,
+      terminalPublicationGate,
+    );
+    const exitCode = status === 'completed' ? 0 : null;
+    return this.finalizeTask(task, status, exitCode, undefined, error);
+  }
 
-      return task;
-    } catch (error) {
-      return this.rejectFailedLaunch(
-        task,
-        error,
-        'Failed to start attested Pi task',
-        'attested Pi startup exception',
-      );
+  private assertExternalRunning(task: BgTask): void {
+    if (task.owner === undefined || task.externalCancel === undefined) {
+      throw new Error(`Task ${task.id} is not an external task`);
+    }
+    if (task.status !== 'running') {
+      throw new Error(`Task ${task.id} is ${task.status}, not running`);
     }
   }
 
@@ -1732,219 +809,6 @@ export class BackgroundTaskRegistry {
     );
     task.finalizationPromise = tracked;
     return tracked;
-  }
-
-  private finalizeAttestedPiTaskFromCallback(
-    task: BgTask,
-    paths: ReturnType<typeof makeAttestedTaskPaths>,
-    argv: string[],
-    cwdRealpath: string,
-    repoRootRealpath: string,
-    startAuthority: Awaited<ReturnType<typeof gitAuthoritySnapshot>>,
-    auth: ReturnType<typeof observePiOAuth>,
-    promptBytes: Buffer,
-    reportAbsPath: string,
-    stdoutChunks: Buffer[],
-    stderrChunks: Buffer[],
-    status: TaskStatus,
-    exitCode: number | null,
-    signal: NodeJS.Signals | null,
-    error?: string,
-  ): void {
-    this.observeCallbackFinalization(
-      task,
-      this.finalizeAttestedPiTask(
-        task,
-        paths,
-        argv,
-        cwdRealpath,
-        repoRootRealpath,
-        startAuthority,
-        auth,
-        promptBytes,
-        reportAbsPath,
-        stdoutChunks,
-        stderrChunks,
-        status,
-        exitCode,
-        signal,
-        error,
-      ),
-    );
-  }
-
-  private finalizeAttestedPiTask(
-    task: BgTask,
-    paths: ReturnType<typeof makeAttestedTaskPaths>,
-    argv: string[],
-    cwdRealpath: string,
-    repoRootRealpath: string,
-    startAuthority: Awaited<ReturnType<typeof gitAuthoritySnapshot>>,
-    auth: ReturnType<typeof observePiOAuth>,
-    promptBytes: Buffer,
-    reportAbsPath: string,
-    stdoutChunks: Buffer[],
-    stderrChunks: Buffer[],
-    status: TaskStatus,
-    exitCode: number | null,
-    signal: NodeJS.Signals | null,
-    error?: string,
-  ): Promise<void> {
-    if (task.finalizationPromise !== undefined) return task.finalizationPromise;
-    return this.trackFinalization(
-      task,
-      this.performAttestedPiTaskFinalization(
-        task,
-        paths,
-        argv,
-        cwdRealpath,
-        repoRootRealpath,
-        startAuthority,
-        auth,
-        promptBytes,
-        reportAbsPath,
-        stdoutChunks,
-        stderrChunks,
-        status,
-        exitCode,
-        signal,
-        error,
-      ),
-    );
-  }
-
-  private async performAttestedPiTaskFinalization(
-    task: BgTask,
-    paths: ReturnType<typeof makeAttestedTaskPaths>,
-    argv: string[],
-    cwdRealpath: string,
-    repoRootRealpath: string,
-    startAuthority: Awaited<ReturnType<typeof gitAuthoritySnapshot>>,
-    auth: ReturnType<typeof observePiOAuth>,
-    promptBytes: Buffer,
-    reportAbsPath: string,
-    stdoutChunks: Buffer[],
-    stderrChunks: Buffer[],
-    status: TaskStatus,
-    exitCode: number | null,
-    signal: NodeJS.Signals | null,
-    error?: string,
-  ): Promise<void> {
-    task.finalized = true;
-    if (task.timeoutHandle) clearTimeout(task.timeoutHandle);
-    if (task.killEscalationTimer !== undefined) {
-      clearTimeout(task.killEscalationTimer);
-      task.killEscalationTimer = undefined;
-    }
-    let finalStatus = status;
-    let finalError = error;
-    const forceFailure = await this.awaitWindowsForceBeforeTerminal(task);
-    if (forceFailure !== undefined) {
-      finalStatus = 'failed';
-      finalError = BackgroundTaskRegistry.appendTaskError(finalError, forceFailure.message);
-    }
-    if (task.startupError !== undefined) {
-      finalStatus = 'failed';
-      finalError = task.startupError;
-    }
-    task.exitCode = exitCode;
-    task.signal = signal;
-    task.endTime = this.now();
-    if (finalError) task.error = finalError;
-
-    const rawEvents = Buffer.concat(stdoutChunks);
-    const rawStderr = Buffer.concat(stderrChunks);
-    let finalizationFailure: Error | undefined;
-    try {
-      await this.writeFileFsynced(paths.eventsAbsPath, rawEvents);
-      await this.writeFileFsynced(paths.stderrAbsPath, rawStderr);
-      if (task.startupError !== undefined) {
-        finalStatus = 'failed';
-        finalError = task.startupError;
-        task.error = finalError;
-      }
-
-      let parsed: ReturnType<typeof parsePiJsonEvents> | undefined;
-      let outputBytes: Buffer;
-      if (finalStatus === 'completed') {
-        try {
-          parsed = parsePiJsonEvents(rawEvents);
-          task.model = parsed.providerScopedModelId;
-          task.tokenUsage = {
-            input: parsed.tokenUsage.input,
-            output: parsed.tokenUsage.output,
-            cacheRead: parsed.tokenUsage.cacheRead,
-            cacheWrite: parsed.tokenUsage.cacheWrite,
-            totalTokens: parsed.tokenUsage.totalTokens,
-          };
-          if (parsed.tokenUsage.costTotal !== undefined)
-            task.tokenUsage.costTotal = parsed.tokenUsage.costTotal;
-          task.toolUsage = parsed.toolUsage;
-          outputBytes = Buffer.from(parsed.humanTranscript, 'utf8');
-        } catch (parseError) {
-          finalStatus = 'failed';
-          task.error = BackgroundTaskRegistry.errorMessage(parseError);
-          outputBytes = Buffer.from(`[attested Pi task error: ${task.error}]\n`, 'utf8');
-        }
-      } else {
-        outputBytes = Buffer.from(rawStderr.toString('utf8'), 'utf8');
-      }
-      task.bytesWritten = outputBytes.length;
-      await this.writeFileFsynced(paths.outputAbsPath, outputBytes);
-
-      if (finalStatus === 'completed' && parsed !== undefined) {
-        const finishAuthority = await gitAuthoritySnapshot(task.cwd);
-        const completedSnapshot: BgTaskSnapshot = { ...snapshot(task), status: 'completed' };
-        await this.writeMetadataSnapshot(task, completedSnapshot);
-        const attestation = await buildPiTaskAttestation({
-          task: completedSnapshot,
-          paths,
-          sessionDir: dirNameFromDisplay(paths.outputPath),
-          argv,
-          cwdRealpath,
-          repoRootRealpath,
-          startAuthority,
-          finishAuthority,
-          parsedEvents: parsed,
-          auth,
-          prompt: promptBytes,
-          reportAbsPath,
-        });
-        await this.writeJsonAtomic(paths.attestationAbsPath, attestation);
-      } else {
-        await this.writeMetadataSnapshot(task, { ...snapshot(task), status: finalStatus });
-      }
-    } catch (errorDuringFinalization) {
-      finalStatus = 'failed';
-      finalizationFailure = new Error(
-        `Attested task ${task.id} finalization failed: ${BackgroundTaskRegistry.errorMessage(errorDuringFinalization)}`,
-        { cause: errorDuringFinalization },
-      );
-      task.error = BackgroundTaskRegistry.appendTaskError(
-        task.error,
-        finalizationFailure.message,
-      );
-      try {
-        await this.writeMetadataSnapshot(task, { ...snapshot(task), status: 'failed' });
-      } catch (metadataError) {
-        const metadataFailure = new Error(
-          `${finalizationFailure.message}; failed terminal metadata durability: ${BackgroundTaskRegistry.errorMessage(metadataError)}`,
-          { cause: metadataError },
-        );
-        finalizationFailure = metadataFailure;
-        task.error = BackgroundTaskRegistry.appendTaskError(task.error, metadataFailure.message);
-        this.logger.error(
-          `[background-tasks] failed to write failed attested metadata for ${task.id}:`,
-          metadataError,
-        );
-      }
-    }
-
-    task.status = finalStatus;
-    for (const waiter of task.waiters.splice(0)) waiter();
-    this.onChange();
-    this.publishTerminal(task);
-    if (finalizationFailure !== undefined) throw finalizationFailure;
   }
 
   resolveTask(idOrPrefix: string): BgTask {
@@ -2011,12 +875,10 @@ export class BackgroundTaskRegistry {
         this.clearKillEscalationTimer(task);
       }
       task.killSignalSent = false;
-      if (task.managedCancel !== undefined) task.managedCancelRequested = false;
-
       this.requestKill(task, 'SIGTERM');
-      const stopWaitMs = task.managedStopWaitMs ?? this.stopWaitMs;
+      const stopWaitMs = task.externalStopWaitMs ?? this.stopWaitMs;
       const stopped =
-        this.platform === 'win32' && task.managedCancel === undefined
+        this.platform === 'win32' && task.externalCancel === undefined
           ? await this.waitForEndOrWindowsForceFailure(task, stopWaitMs)
           : await this.waitForEnd(task, stopWaitMs);
       const forceFailure = this.windowsKillStates.get(task)?.forceFailure;
@@ -2034,7 +896,6 @@ export class BackgroundTaskRegistry {
         const windowsState = this.windowsKillStates.get(task);
         if (windowsState !== undefined) await this.retireWindowsKillState(task, windowsState);
         task.killSignalSent = false;
-        if (task.managedCancel !== undefined) task.managedCancelRequested = false;
       }
       throw error;
     }
@@ -2125,85 +986,6 @@ export class BackgroundTaskRegistry {
     await next;
   }
 
-  private ingestTelemetry(task: BgTask, text: string): void {
-    if (!text) return;
-    const telemetryText = `${task.contextUsageBuffer ?? ''}${text}`;
-    let latestContext = task.contextUsage;
-    let latestTokens = task.tokenUsage;
-    let latestTools = task.toolUsage;
-    let latestModel = task.model;
-    for (const line of telemetryText.split(/\r?\n/)) {
-      if (!line.includes('background-task-')) continue;
-      const trimmed = line.trim();
-      if (trimmed.startsWith('{') && trimmed.endsWith('}')) {
-        try {
-          const parsed = parseJsonText(trimmed);
-          if (!isJsonObject(parsed)) continue;
-          const payload: TelemetryControlPayload = parsed;
-          if (payload.type === 'background-task-context-usage') {
-            latestContext = normalizeContextUsage(payload) ?? latestContext;
-          } else if (payload.type === 'background-task-telemetry') {
-            latestContext = normalizeContextUsage(payload.contextUsage) ?? latestContext;
-            latestTokens = normalizeTokenUsage(payload.tokenUsage) ?? latestTokens;
-            latestTools = normalizeToolUsage(payload.toolUsage) ?? latestTools;
-            latestModel = normalizeModel(payload.model) ?? latestModel;
-          }
-        } catch {
-          // Ignore malformed optional telemetry; task output remains authoritative for debugging.
-        }
-      }
-    }
-    const xmlMatches = telemetryText.matchAll(
-      /<background-task-context-usage>[\s\S]*?<\/background-task-context-usage>/gi,
-    );
-    for (const match of xmlMatches) latestContext = parseContextUsageXml(match[0]) ?? latestContext;
-
-    const lastNewline = Math.max(telemetryText.lastIndexOf('\n'), telemetryText.lastIndexOf('\r'));
-    let retained = lastNewline >= 0 ? telemetryText.slice(lastNewline + 1) : telemetryText;
-    const lastXmlOpen = telemetryText.toLowerCase().lastIndexOf('<background-task-context-usage');
-    const lastXmlClose = telemetryText
-      .toLowerCase()
-      .lastIndexOf('</background-task-context-usage>');
-    if (lastXmlOpen > lastXmlClose) retained = telemetryText.slice(lastXmlOpen);
-    task.contextUsageBuffer = retained.slice(-TELEMETRY_BUFFER_CHARS);
-
-    this.commitTelemetry(task, {
-      context: latestContext,
-      tokens: latestTokens,
-      tools: latestTools,
-      model: latestModel,
-    });
-  }
-
-  /** Apply the latest parsed telemetry to a task, persisting metadata and notifying the UI only on change. */
-  private commitTelemetry(task: BgTask, next: TelemetryDelta): void {
-    const before = JSON.stringify({
-      contextUsage: task.contextUsage,
-      tokenUsage: task.tokenUsage,
-      toolUsage: task.toolUsage,
-      model: task.model,
-    });
-    if (next.context !== undefined) task.contextUsage = next.context;
-    if (next.tokens !== undefined) task.tokenUsage = next.tokens;
-    if (next.tools !== undefined) task.toolUsage = next.tools;
-    if (next.model !== undefined) task.model = next.model;
-    const after = JSON.stringify({
-      contextUsage: task.contextUsage,
-      tokenUsage: task.tokenUsage,
-      toolUsage: task.toolUsage,
-      model: task.model,
-    });
-    if (before !== after) {
-      this.onChange();
-      void this.writeMetadata(task).catch((error: unknown) => {
-        this.logger.error(
-          `[background-tasks] failed to write telemetry metadata for ${task.id}:`,
-          error,
-        );
-      });
-    }
-  }
-
   /** Cap-enforcing sink for all persisted task output; terminates the task once the byte cap is exceeded. */
   private writeToStream(task: BgTask, buffer: Buffer): void {
     if (!task.stream || task.stream.destroyed) return;
@@ -2247,89 +1029,11 @@ export class BackgroundTaskRegistry {
   private appendChildOutput(
     task: BgTask,
     data: Buffer | string,
-    source: 'stdout' | 'stderr',
+    _source: 'stdout' | 'stderr',
   ): void {
-    if (!task.stream || task.stream.destroyed) return;
+    if (task.stream === undefined || task.stream.destroyed) return;
     const buffer = Buffer.isBuffer(data) ? data : Buffer.from(data, 'utf8');
-    if (buffer.length === 0) return;
-    if (task.telemetryWrapped) {
-      // Wrapped Pi agents stream control lines on stdout (telemetry + activity); child
-      // stderr is raw diagnostics and is always passed through to the transcript verbatim.
-      if (source === 'stdout') this.processAgentStdout(task, buffer.toString('utf8'));
-      else this.writeToStream(task, buffer);
-      return;
-    }
-    this.ingestTelemetry(task, buffer.toString('utf8'));
     this.writeToStream(task, buffer);
-  }
-
-  /** Reconstruct wrapped-agent stdout into whole control lines, routing telemetry to metrics and activity to the transcript. */
-  private processAgentStdout(task: BgTask, text: string): void {
-    const buffered = `${task.agentStdoutBuffer ?? ''}${text}`;
-    const lastNewline = buffered.lastIndexOf('\n');
-    task.agentStdoutBuffer = lastNewline >= 0 ? buffered.slice(lastNewline + 1) : buffered;
-    if (lastNewline < 0) return;
-    const latest: TelemetryDelta = {};
-    for (const line of buffered.slice(0, lastNewline).split('\n'))
-      this.consumeAgentLine(task, line, latest);
-    this.commitTelemetry(task, latest);
-  }
-
-  /** Flush a trailing partial wrapped-agent line on finalize so the last transcript fragment is never lost. */
-  private flushAgentStdout(task: BgTask): void {
-    const remainder = task.agentStdoutBuffer;
-    if (!remainder) return;
-    task.agentStdoutBuffer = '';
-    const latest: TelemetryDelta = {};
-    this.consumeAgentLine(task, remainder, latest);
-    this.commitTelemetry(task, latest);
-  }
-
-  private consumeAgentLine(task: BgTask, rawLine: string, latest: TelemetryDelta): void {
-    const line = rawLine.replace(/\r$/, '');
-    const trimmed = line.trim();
-    if (!trimmed) return;
-    if (!trimmed.startsWith('{') || !trimmed.endsWith('}')) {
-      this.writeNotice(task, `${line}\n`);
-      return;
-    }
-    let parsed: unknown;
-    try {
-      parsed = parseJsonText(trimmed);
-    } catch {
-      this.writeNotice(task, `${line}\n`);
-      return;
-    }
-    if (!isJsonObject(parsed)) {
-      this.writeNotice(task, `${line}\n`);
-      return;
-    }
-    const record: TelemetryControlPayload = parsed;
-    const type = record.type;
-    if (type === 'background-task-context-usage') {
-      const context = normalizeContextUsage(record);
-      if (context) latest.context = context;
-      return;
-    }
-    if (type === 'background-task-telemetry') {
-      const context = normalizeContextUsage(record.contextUsage);
-      if (context) latest.context = context;
-      const tokens = normalizeTokenUsage(record.tokenUsage);
-      if (tokens) latest.tokens = tokens;
-      const tools = normalizeToolUsage(record.toolUsage);
-      if (tools) latest.tools = tools;
-      const model = normalizeModel(record.model);
-      if (model) latest.model = model;
-      return;
-    }
-    const activity = parseAgentActivity(parsed);
-    if (activity) {
-      const formatted = formatAgentActivityLine(activity);
-      if (formatted) this.writeNotice(task, `${formatted}\n`);
-      return;
-    }
-    // Unknown JSON object: pass through to the transcript rather than silently dropping it.
-    this.writeNotice(task, `${line}\n`);
   }
 
   private getWindowsKillState(task: BgTask): WindowsKillState {
@@ -2625,14 +1329,15 @@ export class BackgroundTaskRegistry {
     if (task.status !== 'running') {
       throw new Error(`Task ${task.id} is ${task.status}, not running`);
     }
-    if (task.managedCancel !== undefined) {
-      if (task.managedCancelRequested) return;
-      task.managedCancelRequested = true;
+    if (task.externalCancel !== undefined) {
+      if (task.externalCancelRequested === true) return;
+      task.externalCancelRequested = true;
+      task.externalCancelId = randomBytes(12).toString('hex');
       try {
-        task.managedCancel();
+        task.externalCancel();
       } catch (error) {
         throw new Error(
-          `Could not cancel managed task ${task.id}: ${BackgroundTaskRegistry.errorMessage(error)}`,
+          `Could not cancel external task ${task.id}: ${BackgroundTaskRegistry.errorMessage(error)}`,
         );
       }
       task.killSignalSent = true;
@@ -2789,11 +1494,7 @@ export class BackgroundTaskRegistry {
     const error = task.error ? `\n  <error>${escapeXml(task.error)}</error>` : '';
     const taskName = taskDisplayName(task);
     const guidance =
-      task.fusion === undefined
-        ? 'Terminal state and output metadata are durable. Do not call bg_status to reconfirm; use bg_logs only if output is needed.'
-        : task.status === 'completed'
-          ? `Fusion result is durably committed at ${task.fusion.artifactDir}. Call bg_result({taskId:${JSON.stringify(task.id)}}) once to retrieve it; do not poll.`
-          : `Fusion ended ${task.status}. Inspect the preserved artifacts at ${task.fusion.artifactDir}; do not poll.`;
+      'Terminal state and output metadata are durable. Do not call bg_status to reconfirm; use bg_logs only if output is needed.';
     const content = [
       '<background-task-notification>',
       `  <task-id>${task.id}</task-id>`,
@@ -2877,21 +1578,8 @@ export class BackgroundTaskRegistry {
     task.exitCode = exitCode;
     task.signal = signal ?? null;
 
-    // Keep status="running" until the final wrapped-agent fragment has been
-    // consumed and the output plus terminal metadata are durable. Publishing a
-    // terminal state earlier lets bg_status observe the previous assistant
-    // turn's context snapshot and recreates the same false-completion race the
-    // attested producer is required to prevent.
     try {
-      if (task.telemetryWrapped) {
-        // Child-process close can be observed before the wrapper stdout listener has
-        // committed its last parsed telemetry batch. Wait for a short quiet window,
-        // then flush the trailing partial line, so completed status never races
-        // ahead of the final assistant-turn context/token/tool snapshot.
-        await new Promise<void>((resolve) => setTimeout(resolve, 25));
-        this.flushAgentStdout(task);
-      }
-      if (task.stream && !task.stream.destroyed) await closeAndFsyncOutputStream(task.stream);
+      if (task.stream && !task.stream.destroyed) await closeOutputStream(task.stream);
     } catch (finalizeError) {
       finalStatus = 'failed';
       const message =

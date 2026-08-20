@@ -3,8 +3,6 @@ import { open } from 'node:fs/promises';
 import { extname, isAbsolute, join, win32 } from 'node:path';
 import { DEFAULT_MAX_BYTES } from '@earendil-works/pi-coding-agent';
 import type { BackgroundTaskChildProcess } from './registry.js';
-import type { DelegateBudgetRouteSource, DelegateExtensionMode } from './delegate/types.js';
-import type { FusionResultDetails, FusionUsage, FusionWorkflowId } from './fusion/types.js';
 
 export const TASK_STATUS_VALUES = ['running', 'completed', 'failed', 'killed'] as const;
 export const TERMINAL_TASK_STATUS_VALUES = ['completed', 'failed', 'killed'] as const;
@@ -14,27 +12,6 @@ export type TerminalTaskStatus = (typeof TERMINAL_TASK_STATUS_VALUES)[number];
 export type KillKind = 'user' | 'timeout' | 'output_cap' | 'shutdown';
 
 export type JsonObject = Readonly<Record<PropertyKey, unknown>>;
-
-export interface TaskContextUsage {
-  tokens: number | null;
-  contextWindow: number;
-  percent: number | null;
-}
-
-export interface TaskTokenUsage {
-  input: number;
-  output: number;
-  cacheRead: number;
-  cacheWrite: number;
-  totalTokens: number;
-  costTotal?: number;
-}
-
-export interface TaskToolUsage {
-  total: number;
-  failed: number;
-  byName: Record<string, number>;
-}
 
 export interface BgTaskSnapshot {
   id: string;
@@ -56,79 +33,24 @@ export interface BgTaskSnapshot {
   notifyOnCompletion: boolean;
   triggerOnCompletion: boolean;
   timeoutSeconds?: number | undefined;
-  contextUsage?: TaskContextUsage | undefined;
-  tokenUsage?: TaskTokenUsage | undefined;
-  toolUsage?: TaskToolUsage | undefined;
-  model?: string | undefined;
-  telemetryUnavailableReason?: string | undefined;
-  attestationPath?: string | undefined;
-  delegate?: DelegateTaskFacts | undefined;
-  fusion?: FusionTaskFacts | undefined;
+  owner?: ExternalTaskOwnerReference | undefined;
+  capabilities?: ExternalTaskCapabilities | undefined;
 }
 
-export interface AttestedPiTaskFiles {
-  eventsPath: string;
-  stderrPath: string;
-  wrapperPath: string;
-  attestationPath: string;
+export interface ExternalTaskOwnerReference {
+  id: string;
+  ref: string;
 }
 
-export interface AttestedPiTaskSnapshot extends BgTaskSnapshot {
-  attestedPi?: AttestedPiTaskFiles | undefined;
-}
-
-/** Delegate-specific task facts surfaced through snapshots and `bg_result`. */
-export interface DelegateTaskFacts {
-  taskId: string;
-  launchNonce: string;
-  artifactDir: string;
-  artifactDirAbs: string;
-  seedSha256: string;
-  childSessionId: string;
-  route: { provider: string; model: string; qualifiedId: string };
-  budget: DelegateBudgetRouteSource;
-  extensionMode: DelegateExtensionMode;
-  autoDeliver: 'never' | 'when_small' | 'always';
-  /** Set once the run reaches a terminal state and its result has been evaluated. */
-  outcome?: DelegateTaskOutcome | undefined;
-}
-
-export interface DelegateTaskOutcome {
-  status: 'committed' | 'failed' | 'cancelled';
-  errorCode?: string | undefined;
-  answerBytes?: number | undefined;
-  answerSha256?: string | undefined;
-  turns?: number | undefined;
-  toolCalls?: number | undefined;
-}
-
-/** Fusion-specific task facts surfaced through snapshots and `bg_result`. */
-export interface FusionTaskFacts {
-  runId: string;
-  workflow: FusionWorkflowId;
-  artifactDir: string;
-  artifactDirAbs: string;
-  state: string;
-  outcome?: FusionTaskOutcome | undefined;
-  /** Durable once-only accounting claim made by the first successful bg_result retrieval. */
-  usageDelivered: boolean;
-}
-
-export interface FusionTaskOutcome {
-  status: 'committed' | 'failed' | 'cancelled';
-  resultDetails?: FusionResultDetails | undefined;
-  usage?: FusionUsage | undefined;
-  error?: string | undefined;
+export interface ExternalTaskCapabilities {
+  cancellable: boolean;
+  rerunnable: boolean;
 }
 
 export interface BgTask extends Omit<BgTaskSnapshot, 'name'> {
   name: string;
   outputAbsPath: string;
   metadataAbsPath: string;
-  eventsAbsPath?: string | undefined;
-  stderrAbsPath?: string | undefined;
-  wrapperAbsPath?: string | undefined;
-  attestationAbsPath?: string | undefined;
   child?: BackgroundTaskChildProcess | undefined;
   stream?: WriteStream | undefined;
   timeoutHandle?: NodeJS.Timeout | undefined;
@@ -155,20 +77,12 @@ export interface BgTask extends Omit<BgTaskSnapshot, 'name'> {
   terminalPublicationGate?: Promise<void> | undefined;
   /** Completion-notification barrier captured at launch; unlike terminal publication, a later kill response must not extend it. */
   completionDeliveryGate?: Promise<void> | undefined;
-  contextUsageBuffer?: string | undefined;
-  /** True when this task launched a telemetry-wrapped Pi agent; its stdout carries control lines, not raw output. */
-  telemetryWrapped?: boolean | undefined;
-  /** Partial trailing stdout line held between chunks while reconstructing wrapped-agent control lines. */
-  agentStdoutBuffer?: string | undefined;
-  telemetryUnavailableReason?: string | undefined;
-  attestationPath?: string | undefined;
-  attestedPi?: AttestedPiTaskFiles | undefined;
-  delegate?: DelegateTaskFacts | undefined;
-  fusion?: FusionTaskFacts | undefined;
-  /** Cancellation hook for an in-process managed task such as Fusion. */
-  managedCancel?: (() => void) | undefined;
-  managedCancelRequested?: boolean | undefined;
-  managedStopWaitMs?: number | undefined;
+  externalCancel?: (() => void) | undefined;
+  externalCancelRequested?: boolean | undefined;
+  externalCancelId?: string | undefined;
+  externalCancelAcknowledged?: boolean | undefined;
+  externalSequence?: number | undefined;
+  externalStopWaitMs?: number | undefined;
   metadataWriteChain?: Promise<void> | undefined;
   /** Waiters bounded by cancellation timeout; released at durable terminal status (phase A). */
   waiters: Array<() => void>;
@@ -266,44 +180,23 @@ export interface StartTaskOptions {
   terminalPublicationGate?: Promise<void> | undefined;
 }
 
-/** Prepared delegate launch handed to the registry after preflight has succeeded. */
-export interface StartManagedTaskOptions {
-  id: string;
+export interface RegisterExternalTaskOptions {
   name: string;
-  command: string;
   description?: string | undefined;
-  isAgent: boolean;
-  completion: Promise<void>;
+  owner: ExternalTaskOwnerReference;
+  capabilities: ExternalTaskCapabilities;
   cancel: () => void;
   notifyOnCompletion: boolean;
   triggerOnCompletion: boolean;
-  fusion: FusionTaskFacts;
   stopWaitMs?: number | undefined;
-  /** Prevent terminal publication until the launch receipt handoff is observable. */
   terminalPublicationGate?: Promise<void> | undefined;
 }
 
-export interface StartDelegateTaskOptions {
-  name: string;
-  argv: readonly string[];
-  /** Prompt bytes delivered over stdin, never as a shell or positional argument. */
-  stdinBytes: Buffer;
-  env: NodeJS.ProcessEnv;
-  facts: DelegateTaskFacts;
-  notifyOnCompletion: boolean;
-  triggerOnCompletion: boolean;
-  timeoutSeconds?: number | undefined;
-}
-
-export interface StartAttestedPiTaskOptions {
-  name: string;
-  provider: string;
-  model: string;
-  prompt: string;
-  reportPath: string;
-  extraPiArgs?: string[] | undefined;
-  thinking?: string | undefined;
-  timeoutSeconds?: number | undefined;
+export interface UpdateExternalTaskOptions {
+  name?: string | undefined;
+  description?: string | undefined;
+  capabilities?: ExternalTaskCapabilities | undefined;
+  line?: string | undefined;
 }
 
 export const DEFAULT_LOG_BYTES = Math.min(DEFAULT_MAX_BYTES, 50 * 1024);
@@ -507,120 +400,6 @@ export function formatCompactNumber(count: number): string {
   return `${String(Math.round(normalized / 1000000))}M`;
 }
 
-export function formatContextUsageSummary(usage?: TaskContextUsage): string | undefined {
-  if (usage?.contextWindow === undefined || usage.contextWindow <= 0) return undefined;
-  const window = formatCompactNumber(usage.contextWindow);
-  if (usage.percent === null || usage.tokens === null) return `ctx=?/${window}`;
-  return `ctx=${usage.percent.toFixed(1)}%/${window}`;
-}
-
-export function formatTokenUsageSummary(usage?: TaskTokenUsage): string | undefined {
-  if (!usage || usage.totalTokens <= 0) return undefined;
-  return `tokens=${formatCompactNumber(usage.totalTokens)}`;
-}
-
-export function formatToolUsageSummary(usage?: TaskToolUsage): string | undefined {
-  if (!usage || (usage.total <= 0 && usage.failed <= 0)) return undefined;
-  const failed = usage.failed > 0 ? ` failed=${String(usage.failed)}` : '';
-  return `tools=${String(usage.total)}${failed}`;
-}
-
-export function formatModelSummary(model?: string): string | undefined {
-  if (!model) return undefined;
-  return `model=${model}`;
-}
-
-/**
- * Human-readable activity transcript for telemetry-wrapped Pi agents.
- *
- * The wrapper emits one `background-task-activity` control line per meaningful
- * child-agent event (assistant text, reasoning, tool start, tool end) so the
- * registry can render "what the agent is actually doing" into the task output
- * file instead of leaking raw telemetry JSON. Both the parser and the formatter
- * are pure so the visible transcript is fully unit-testable.
- */
-export const AGENT_ACTIVITY_TYPE = 'background-task-activity';
-const AGENT_ACTIVITY_DETAIL_MAX = 80;
-
-export type AgentActivity =
-  | { kind: 'assistant_text'; text: string }
-  | { kind: 'reasoning'; text: string }
-  | { kind: 'tool_start'; tool: string; argsSummary: string }
-  | { kind: 'tool_end'; tool: string; isError: boolean; error?: string };
-
-interface AgentActivityPayload extends JsonObject {
-  readonly type?: unknown;
-  readonly kind?: unknown;
-  readonly text?: unknown;
-  readonly tool?: unknown;
-  readonly argsSummary?: unknown;
-  readonly isError?: unknown;
-  readonly error?: unknown;
-}
-
-function readActivityString(
-  record: AgentActivityPayload,
-  key: 'text' | 'tool' | 'argsSummary' | 'error',
-): string | undefined {
-  const value = record[key];
-  return typeof value === 'string' ? value : undefined;
-}
-
-/** Narrow a parsed `background-task-activity` control payload into a typed {@link AgentActivity}. */
-export function parseAgentActivity(payload: unknown): AgentActivity | undefined {
-  if (!isJsonObject(payload)) return undefined;
-  const record: AgentActivityPayload = payload;
-  if (record.type !== AGENT_ACTIVITY_TYPE) return undefined;
-  const kind = record.kind;
-  if (kind === 'assistant_text' || kind === 'reasoning') {
-    const text = readActivityString(record, 'text');
-    if (text === undefined) return undefined;
-    return { kind, text };
-  }
-  if (kind === 'tool_start') {
-    const tool = readActivityString(record, 'tool');
-    if (!tool) return undefined;
-    return { kind, tool, argsSummary: readActivityString(record, 'argsSummary') ?? '' };
-  }
-  if (kind === 'tool_end') {
-    const tool = readActivityString(record, 'tool');
-    if (!tool) return undefined;
-    const activity: AgentActivity = { kind, tool, isError: record.isError === true };
-    const error = readActivityString(record, 'error');
-    if (error !== undefined && error.trim().length > 0) activity.error = error;
-    return activity;
-  }
-  return undefined;
-}
-
-/**
- * Render an {@link AgentActivity} into a single transcript line, or `undefined`
- * when the event carries nothing worth showing (blank text, a successful tool
- * end). Successful tool ends are intentionally silent: the matching `→` start
- * line already announced the call, and the next line implies completion.
- */
-export function formatAgentActivityLine(activity: AgentActivity): string | undefined {
-  if (activity.kind === 'assistant_text') {
-    const text = activity.text.replace(/\s+$/u, '');
-    return text.trim().length > 0 ? text : undefined;
-  }
-  if (activity.kind === 'reasoning') {
-    const text = activity.text.replace(/\s+$/u, '');
-    return text.trim().length > 0 ? `\u2026 ${text}` : undefined;
-  }
-  if (activity.kind === 'tool_start') {
-    const summary = compactWhitespace(activity.argsSummary);
-    const suffix =
-      summary.length > 0 ? ` ${truncateChars(summary, AGENT_ACTIVITY_DETAIL_MAX)}` : '';
-    return `\u2192 ${activity.tool}${suffix}`;
-  }
-  if (!activity.isError) return undefined;
-  const detail = activity.error
-    ? `: ${truncateChars(compactWhitespace(activity.error), AGENT_ACTIVITY_DETAIL_MAX)}`
-    : '';
-  return `\u2717 ${activity.tool} failed${detail}`;
-}
-
 export function shellQuote(value: string): string {
   return `'${value.replace(/'/g, `'"'"'`)}'`;
 }
@@ -783,14 +562,8 @@ export function snapshot(task: BgTask): BgTaskSnapshot {
     notifyOnCompletion: task.notifyOnCompletion,
     triggerOnCompletion: task.triggerOnCompletion,
     timeoutSeconds: task.timeoutSeconds,
-    contextUsage: task.contextUsage,
-    tokenUsage: task.tokenUsage,
-    toolUsage: task.toolUsage,
-    model: task.model,
-    telemetryUnavailableReason: task.telemetryUnavailableReason,
-    attestationPath: task.attestationPath,
-    delegate: task.delegate,
-    fusion: task.fusion,
+    owner: task.owner,
+    capabilities: task.capabilities,
   };
 }
 
@@ -810,16 +583,8 @@ export function formatSnapshotList(tasks: BgTaskSnapshot[], now = Date.now()): s
       const code = task.exitCode !== undefined ? ` exit=${String(task.exitCode)}` : '';
       const pid = task.pid !== undefined ? ` pid=${String(task.pid)}` : '';
       const error = task.error ? ` error=${truncateChars(task.error, 80)}` : '';
-      const telemetry = [
-        formatContextUsageSummary(task.contextUsage),
-        formatModelSummary(task.model),
-        formatTokenUsageSummary(task.tokenUsage),
-        formatToolUsageSummary(task.toolUsage),
-      ]
-        .filter(Boolean)
-        .join(' ');
-      const telemetryText = telemetry ? ` ${telemetry}` : '';
-      return `${statusIcon} ${task.id} ${task.status} ${age}${code}${pid}${telemetryText} — ${truncateChars(taskDisplayName(task), COMMAND_PREVIEW_CHARS)}${error}\n    output: ${task.outputPath}`;
+      const owner = task.owner ? ` owner=${task.owner.id}/${task.owner.ref}` : '';
+      return `${statusIcon} ${task.id} ${task.status} ${age}${code}${pid}${owner} — ${truncateChars(taskDisplayName(task), COMMAND_PREVIEW_CHARS)}${error}\n    output: ${task.outputPath}`;
     })
     .join('\n');
 }

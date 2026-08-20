@@ -11,7 +11,6 @@ import {
 import {
   boundedRead,
   compactWhitespace,
-  formatCompactNumber,
   formatDuration,
   taskDisplayName,
   truncateChars,
@@ -97,85 +96,6 @@ function statusColor(
 
 function taskAge(task: BgTask, now = Date.now()): string {
   return formatDuration((task.endTime ?? now) - task.startTime);
-}
-
-function formatContextUsage(task: BgTask): string {
-  const usage = task.contextUsage;
-  if (!usage?.contextWindow) return '—';
-  const window = formatCompactNumber(usage.contextWindow);
-  if (usage.percent === null || usage.tokens === null) return `?/${window}`;
-  return `${usage.percent.toFixed(1)}%/${window}`;
-}
-
-function formatContextDetail(task: BgTask): string {
-  const usage = task.contextUsage;
-  if (!usage?.contextWindow) return 'not reported by this background task';
-  const window = formatCompactNumber(usage.contextWindow);
-  if (usage.percent === null || usage.tokens === null) return `unknown tokens / ${window} window`;
-  return `${usage.percent.toFixed(1)}% of ${window} window (${formatCompactNumber(usage.tokens)} tokens)`;
-}
-
-function formatTokenUsage(task: BgTask): string {
-  const usage = task.tokenUsage;
-  if (!usage || usage.totalTokens <= 0) return '';
-  return `tok ${formatCompactNumber(usage.totalTokens)}`;
-}
-
-function formatTokenDetail(task: BgTask): string {
-  const usage = task.tokenUsage;
-  if (!usage || usage.totalTokens <= 0) return 'not reported by this background task';
-  const parts = [
-    `input ${formatCompactNumber(usage.input)}`,
-    `output ${formatCompactNumber(usage.output)}`,
-    `cache read ${formatCompactNumber(usage.cacheRead)}`,
-    `cache write ${formatCompactNumber(usage.cacheWrite)}`,
-    `total ${formatCompactNumber(usage.totalTokens)}`,
-  ];
-  return parts.join(' · ');
-}
-
-function formatToolUsage(task: BgTask): string {
-  const usage = task.toolUsage;
-  if (!usage || (usage.total <= 0 && usage.failed <= 0)) return '';
-  const total = formatCount(usage.total);
-  const failed = formatCount(usage.failed);
-  return usage.failed > 0 ? `tools ${total}/${failed} failed` : `tools ${total}`;
-}
-
-function formatToolDetail(task: BgTask): string {
-  const usage = task.toolUsage;
-  if (!usage || (usage.total <= 0 && usage.failed <= 0))
-    return 'not reported by this background task';
-  const byName = Object.entries(usage.byName)
-    .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
-    .slice(0, 6)
-    .map(([name, count]) => `${name} ${formatCount(count)}`);
-  const parts = [`${formatCount(usage.total)} total`];
-  if (usage.failed > 0) parts.push(`${formatCount(usage.failed)} failed`);
-  parts.push(...byName);
-  return parts.join(' · ');
-}
-
-function shortModelName(model: string): string {
-  const slash = model.lastIndexOf('/');
-  return slash >= 0 ? model.slice(slash + 1) : model;
-}
-
-function formatModel(task: BgTask): string {
-  if (!task.model) return '';
-  return `model ${shortModelName(task.model)}`;
-}
-
-function formatModelDetail(task: BgTask): string {
-  if (!task.model) return 'not reported by this background task';
-  return task.model;
-}
-
-function contextColor(theme: TaskManagerTheme, task: BgTask, text: string): string {
-  const percent = task.contextUsage?.percent ?? 0;
-  if (percent > 90) return theme.fg('error', text);
-  if (percent > 70) return theme.fg('warning', text);
-  return theme.fg('dim', text);
 }
 
 function sortTasksForUi(tasks: BgTask[]): BgTask[] {
@@ -612,8 +532,8 @@ export class BackgroundTasksManager implements Component {
     const subtitleParts = this.showHistory
       ? [`${formatCount(allRunning)} active`, `${formatCount(historyCount)} history`]
       : allRunning > 0
-        ? [`${formatCount(allRunning)} active shell${pluralSuffix(allRunning)}`]
-        : ['No active shells'];
+        ? [`${formatCount(allRunning)} active task${pluralSuffix(allRunning)}`]
+        : ['No active tasks'];
     if (unseenFailed) subtitleParts.push(`${formatCount(unseenFailed)} failed`);
     if (unseenStopped) subtitleParts.push(`${formatCount(unseenStopped)} stopped`);
     if (unseenDone) subtitleParts.push(`${formatCount(unseenDone)} done`);
@@ -652,19 +572,14 @@ export class BackgroundTasksManager implements Component {
         const status = statusColor(this.theme, task.status, statusLabel(task.status));
         const runtime = taskAge(task);
         const size = formatSize(task.bytesWritten);
-        const context = formatContextUsage(task);
-        const contextText = ` ${contextColor(this.theme, task, `ctx ${context}`)}`;
-        const model = formatModel(task);
-        const modelText = model ? ` ${this.theme.fg('dim', model)}` : '';
-        const tokenUsage = formatTokenUsage(task);
-        const tokenText = tokenUsage ? ` ${this.theme.fg('dim', tokenUsage)}` : '';
-        const toolUsage = formatToolUsage(task);
-        const toolText = toolUsage ? ` ${this.theme.fg('dim', toolUsage)}` : '';
+        const ownerText = task.owner
+          ? ` ${this.theme.fg('dim', `owner ${task.owner.id}/${task.owner.ref}`)}`
+          : '';
         const activity = this.activityLabel(task);
         const activityText = activity ? ` ${this.theme.fg('warning', activity)}` : '';
         const exit =
           task.status !== 'running' ? this.theme.fg('dim', formatExitCodeText(task.exitCode)) : '';
-        let row = ` ${pointer} ${unreadMark} ${name} ${this.theme.fg('dim', task.id)} ${this.theme.fg('dim', '·')} ${status}${exit} ${this.theme.fg('dim', `${runtime} ${size}`)}${contextText}${modelText}${tokenText}${toolText}${activityText}`;
+        let row = ` ${pointer} ${unreadMark} ${name} ${this.theme.fg('dim', task.id)} ${this.theme.fg('dim', '·')} ${status}${exit} ${this.theme.fg('dim', `${runtime} ${size}`)}${ownerText}${activityText}`;
         if (selected) row = lightBlue(padAnsi(truncateToWidth(row, width - 4), width - 4));
         body.push(row);
       }
@@ -711,20 +626,14 @@ export class BackgroundTasksManager implements Component {
         ` ${this.theme.fg('toolTitle', 'Description:')} ${truncateToWidth(task.description, width - 16)}`,
       );
     }
-    const modelDetail = formatModelDetail(task);
-    body.push(
-      ` ${this.theme.fg('toolTitle', 'Model:')} ${task.model ? this.theme.fg('accent', modelDetail) : this.theme.fg('dim', modelDetail)}`,
-    );
-    const context = formatContextDetail(task);
-    body.push(
-      ` ${this.theme.fg('toolTitle', 'Context:')} ${contextColor(this.theme, task, context)}`,
-    );
-    body.push(
-      ` ${this.theme.fg('toolTitle', 'Tokens:')} ${this.theme.fg('dim', formatTokenDetail(task))}`,
-    );
-    body.push(
-      ` ${this.theme.fg('toolTitle', 'Tools:')} ${this.theme.fg('dim', formatToolDetail(task))}`,
-    );
+    if (task.owner !== undefined) {
+      body.push(
+        ` ${this.theme.fg('toolTitle', 'Owner:')} ${this.theme.fg('accent', `${task.owner.id}/${task.owner.ref}`)}`,
+      );
+      body.push(
+        ` ${this.theme.fg('toolTitle', 'Capabilities:')} ${this.theme.fg('dim', `cancellable ${String(task.capabilities?.cancellable === true)} · rerunnable ${String(task.capabilities?.rerunnable === true)}`)}`,
+      );
+    }
     body.push(
       ` ${this.theme.fg('toolTitle', 'Command:')} ${truncateToWidth(task.command, width - 13)}`,
     );

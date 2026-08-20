@@ -48,6 +48,17 @@ function record(value: unknown, label: string): Record<string, unknown> {
   return value as Record<string, unknown>;
 }
 
+function isV2Response(value: unknown): value is V2Response {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return false;
+  const response = value as Record<string, unknown>;
+  return (
+    response['schema_version'] === V2_RESPONSE_SCHEMA &&
+    typeof response['request_id'] === 'string' &&
+    typeof response['operation'] === 'string' &&
+    typeof response['ok'] === 'boolean'
+  );
+}
+
 function waitForResponse(bus: EventBus, requestId: string): Promise<V2Response> {
   return new Promise((resolve, reject) => {
     const timeout = setTimeout(() => {
@@ -55,8 +66,8 @@ function waitForResponse(bus: EventBus, requestId: string): Promise<V2Response> 
       reject(new Error(`timed out waiting for v2 response ${requestId}`));
     }, 300);
     const off = bus.on(V2_RESPONSE_CHANNEL, (value) => {
-      const response = record(value, 'v2 response') as unknown as V2Response;
-      assert.equal(response.schema_version, V2_RESPONSE_SCHEMA);
+      assert.ok(isV2Response(value), 'v2 response');
+      const response = value;
       if (response.request_id !== requestId) return;
       clearTimeout(timeout);
       off();
@@ -79,6 +90,17 @@ async function request(
     payload,
   });
   return response;
+}
+
+async function waitForTerminalCount(
+  terminals: readonly Record<string, unknown>[],
+  count: number,
+): Promise<void> {
+  const deadline = Date.now() + 500;
+  while (terminals.length < count && Date.now() < deadline) {
+    await new Promise<void>((resolve) => setTimeout(resolve, 5));
+  }
+  assert.equal(terminals.length, count);
 }
 
 async function harness() {
@@ -221,7 +243,7 @@ void describe('domain-neutral external task EventBus v2', () => {
       assert.equal(killed.ok, true, killed.error);
       await cancellationWorkflow;
       offCancel();
-      assert.equal(terminals.length, 1);
+      await waitForTerminalCount(terminals, 1);
       const terminalTask = record(terminals[0]?.['task'], 'terminal task');
       assert.equal(terminalTask['id'], taskId);
       assert.equal(terminalTask['status'], 'killed');

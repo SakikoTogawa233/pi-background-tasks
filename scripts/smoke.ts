@@ -14,8 +14,6 @@ try {
     [
       '--no-extensions',
       '-e',
-      './extensions/anthropic-attribution.ts',
-      '-e',
       './extensions/background-tasks.ts',
       '--offline',
       '--no-tools',

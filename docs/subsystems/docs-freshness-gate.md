@@ -9,17 +9,17 @@ covers_sources: []
 ---
 # Docs freshness gate
 
-This authored section defines the boundary: documentation facts are extracted from package metadata and TypeScript ASTs, then generated into docs and the manifest. Unsupported syntax fails the gate rather than falling back to regex or stale hand-maintained inventories. Public registrations must remain unconditional top-level direct calls or use the one validated local tool-wrapper shape; host/method aliases, computed access, nested or conditional registration, wrapper chaining/passing, constructor helpers, ambiguous public metadata, destructured Pi parameters, and repeated imported registrars are rejected.
+The docs engine extracts package metadata, public registrations, EventBus facts, runtime paths, schemas, environment references, and source ownership. Unsupported registration syntax fails instead of falling back to stale text.
 
 <!-- pi-docs:begin name="docs-freshness-gate" generator="scripts/docs/generate.mjs" -->
 - Canonical package version: `2.6.0`
-- Governed markdown docs: 42
-- Public surfaces extracted: 33
-- Governed production sources: 51
-- Tool contracts extracted: 12
-- Schema IDs extracted: 46
-- Environment variable references extracted: 49
-- Behavioral attestation receipts not passing: 0
+- Governed markdown docs: 27
+- Public surfaces extracted: 19
+- Governed production sources: 10
+- Tool contracts extracted: 5
+- Schema IDs extracted: 7
+- Environment variable references extracted: 18
+- Behavioral attestation receipts not passing: 4
 - Receipt store: `docs/attestations.json`
 
 `npm run docs:verify` is read-only: it renders generated files twice in memory and compares them with committed bytes. `npm run docs:generate` is the only docs writer.
