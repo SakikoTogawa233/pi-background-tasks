@@ -348,6 +348,22 @@ function waitForEventResponse(
   });
 }
 
+function waitForNamedTerminal(eventBus: EventBus, taskName: string): Promise<BgTaskSnapshot> {
+  return new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      unsubscribe();
+      reject(new Error(`timed out waiting for terminal task ${taskName}`));
+    }, EVENT_RESPONSE_TIMEOUT_MS);
+    const unsubscribe = eventBus.on(BG_TERMINAL_CHANNEL, (data) => {
+      const task = requireTerminal(data).task;
+      if (task.name !== taskName) return;
+      clearTimeout(timeout);
+      unsubscribe();
+      resolve(task);
+    });
+  });
+}
+
 async function emitEventRequest(
   eventBus: EventBus,
   requestId: string,
@@ -1053,8 +1069,10 @@ console.error('sdk stderr');
   });
 
   void it('fails timed-out tasks loudly', async () => {
-    const { session } = await harness();
+    const eventBus = createEventBus();
+    const { session } = await harness({ eventBus });
     try {
+      const terminalReceived = waitForNamedTerminal(eventBus, 'SDK Timeout');
       const r = await exec(session, 'bg_run', {
         isAgent: false,
         name: 'SDK Timeout',
@@ -1063,7 +1081,9 @@ console.error('sdk stderr');
         notifyOnCompletion: false,
         triggerOnCompletion: false,
       });
-      const t = await wait(session, taskFromResult(r).id, 80);
+      const launched = taskFromResult(r);
+      const t = await terminalReceived;
+      assert.equal(t.id, launched.id);
       assert.equal(t.status, 'failed');
       assert.match(t.error ?? '', /Timed out after 1s/);
       const logs = await exec(session, 'bg_logs', { taskId: t.id, maxBytes: 1000 });
