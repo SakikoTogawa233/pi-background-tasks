@@ -14,7 +14,7 @@ import {
 const root = resolve('.');
 const extensionPath = resolve('extensions/background-tasks.ts');
 const forbiddenPackedSurface =
-  /bg_delegate|bg_result|bg_run_pi_attested|fusion_(?:reason|investigate|research|validate|brainstorm)|\/fusion(?:-models)?\b|anthropic-attribution|delegate-child|fusion-child|\.pi\/fusion|\.pi\/delegate|attestation\.json/iu;
+  /bg_delegate|bg_result|bg_run_pi_attested|fusion_(?:reason|investigate|research|validate|brainstorm)|\/fusion(?:-models)?\b|anthropic-attribution|delegate-child|fusion-child|\.pi\/fusion|\.pi\/delegate|attestation\.json|delegate child|fusion workflow|blind eval|merger/iu;
 
 async function walk(dir: string): Promise<string[]> {
   const files: string[] = [];
@@ -121,7 +121,6 @@ void describe('extracted background-task lifecycle surface', () => {
       join(root, 'package.json'),
     ];
     for (const file of files) {
-      if (!/\.(?:ts|js|json|md)$/u.test(file)) continue;
       const source = await readFile(file, 'utf8');
       assert.doesNotMatch(source, forbiddenPackedSurface, file);
     }
