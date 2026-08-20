@@ -144,11 +144,10 @@
         "src/ui/background-tasks-manager.ts"
       ],
       "doc_id": "subsystems/host-ui-and-telemetry",
-      "notes": "Reviewed extension registration, footer/UI behavior, completion rendering, update checks, shutdown launch/task/request/publication drains, and fresh EventBus service rebinding on session reload.",
       "rel": "docs/subsystems/host-ui-and-telemetry.md",
       "required": true,
       "reviewer": "gpt-5.6-sol-final-lifecycle-reviewer",
-      "state": "pass"
+      "state": "stale-sources"
     }
   ],
   "docs": {
@@ -846,7 +845,7 @@
     "image": "https://raw.githubusercontent.com/SakikoTogawa233/pi-background-tasks/main/logo.png",
     "name": "@sakiko233/pi-background-tasks",
     "type": "module",
-    "version": "2.5.2"
+    "version": "2.5.3"
   },
   "public_surface_ids": [
     "command:bg",
@@ -1158,7 +1157,7 @@
           ],
           "type": "object"
         },
-        "source": "src/extension.ts:983"
+        "source": "src/extension.ts:982"
       },
       {
         "description": "Read bounded output from a background task for deliberate inspection; this is not a waiting primitive. Output is capped at 50.0KB for model safety and points to the full output file when truncated.",
@@ -1192,7 +1191,7 @@
           ],
           "type": "object"
         },
-        "source": "src/extension.ts:938"
+        "source": "src/extension.ts:937"
       },
       {
         "description": "Retrieve a hash-verified result from a bg_delegate or background Fusion task. Never blocks: a running task returns a typed not-ready result. Oversized answers are never truncated.",
@@ -1231,7 +1230,6 @@
         "label": "Background Run",
         "name": "bg_run",
         "promptGuidelines": [
-          "Use bg_run instead of bash for commands expected to run for a long time, such as test suites, dev servers, watchers, or builds.",
           "Always set isAgent: true only when the background task launches an LLM/agent process; set isAgent: false for scripts, tests, dev servers, sleeps, and ordinary shell commands.",
           "When using bg_run, always set name to a concise 2-6 word human-readable label for the footer task dock; do not use the raw command as the name unless it is already short and meaningful.",
           "bg_run returns immediately. With notifyOnCompletion:true and triggerOnCompletion:true (both defaults), completed, failed, or killed terminal state is delivered as <background-task-notification> and automatically starts a follow-up agent turn.",
@@ -1340,7 +1338,7 @@
           ],
           "type": "object"
         },
-        "source": "src/extension.ts:842"
+        "source": "src/extension.ts:841"
       },
       {
         "description": "Inspect one background task or list all running/recent background tasks. This is a point-in-time inspection tool, not a waiting primitive.",
@@ -1364,7 +1362,7 @@
           "required": [],
           "type": "object"
         },
-        "source": "src/extension.ts:907"
+        "source": "src/extension.ts:906"
       },
       {
         "description": "Start a five-model Fusion investigation as a tracked background task and return immediately after durable preflight. Retrieve the verified result with bg_result after notification. Candidate children run in clean bounded read-only contexts.",

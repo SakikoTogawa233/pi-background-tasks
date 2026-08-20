@@ -143,12 +143,12 @@ Generated navigation for every package-local documentation page. This index inte
 | command | `tasks` | `command:tasks` | `src/extension.ts:618` |
 | tool | `bash` | `tool:bash` | `src/core/foreground-bash.ts:611` |
 | tool | `bg_delegate` | `tool:bg_delegate` | `src/delegate-extension.ts:340` |
-| tool | `bg_kill` | `tool:bg_kill` | `src/extension.ts:983` |
-| tool | `bg_logs` | `tool:bg_logs` | `src/extension.ts:938` |
+| tool | `bg_kill` | `tool:bg_kill` | `src/extension.ts:982` |
+| tool | `bg_logs` | `tool:bg_logs` | `src/extension.ts:937` |
 | tool | `bg_result` | `tool:bg_result` | `src/delegate-extension.ts:516` |
 | tool | `bg_run` | `tool:bg_run` | `src/extension.ts:757` |
-| tool | `bg_run_pi_attested` | `tool:bg_run_pi_attested` | `src/extension.ts:842` |
-| tool | `bg_status` | `tool:bg_status` | `src/extension.ts:907` |
+| tool | `bg_run_pi_attested` | `tool:bg_run_pi_attested` | `src/extension.ts:841` |
+| tool | `bg_status` | `tool:bg_status` | `src/extension.ts:906` |
 | tool | `fusion_investigate` | `tool:fusion_investigate` | `src/fusion-extension.ts:1197` |
 | tool | `fusion_reason` | `tool:fusion_reason` | `src/fusion-extension.ts:1179` |
 | tool | `fusion_research` | `tool:fusion_research` | `src/fusion-extension.ts:1216` |

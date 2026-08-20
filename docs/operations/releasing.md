@@ -17,7 +17,7 @@ VERSION=$(node -p "require('./package.json').version")
 printf '%s@%s\n' "$NAME" "$VERSION"
 ```
 
-The current Sakiko fork release is `@sakiko233/pi-background-tasks@2.5.2`. The release workflow creates `v$VERSION`; do not certify a pinned git install until that tag exists in the Sakiko repository.
+The current Sakiko fork release is `@sakiko233/pi-background-tasks@2.5.3`. The release workflow creates `v$VERSION`; do not certify a pinned git install until that tag exists in the Sakiko repository.
 
 ## Ordinary release checks
 
@@ -69,4 +69,4 @@ Separate these activities:
 2. **git tag certification:** verify the Sakiko repo is at the exact release commit and clean. Release automation uses `npm run release:check-version -- --ref-type tag --ref-name "v$VERSION"`; with no arguments, the check reads the GitHub tag-ref environment. It never publishes.
 3. **post-publish install smoke:** install by `npm:@sakiko233/pi-background-tasks@$VERSION` in an isolated Pi agent dir. Use git install smoke only after the corresponding Sakiko tag exists.
 
-`.github/workflows/release.yml` authenticates npm publication by mapping the authorized `NPM_TOKEN` GitHub Actions repository secret to `NODE_AUTH_TOKEN`, as supported by the registry configuration from `actions/setup-node`. It publishes unpublished versions with `npm publish --provenance --access public` and creates the matching GitHub Release. Registry authentication uses the npm token; the provenance attestation separately uses GitHub Actions' OIDC identity. Never commit or print the token value. A future Trusted Publisher migration must update the workflow and governed release docs together.
+`.github/workflows/release.yml` authenticates npm publication through Trusted Publisher OIDC: the job's `id-token: write` permission plus the registry configuration from `actions/setup-node` let `npm publish` exchange the GitHub Actions OIDC token for registry credentials, matching the npm Trusted Publisher entry for repository `SakikoTogawa233/pi-background-tasks`, workflow filename `release.yml`, and no GitHub environment. It publishes unpublished versions with `npm publish --provenance --access public` and creates the matching GitHub Release. Registry authentication and the provenance attestation both use the OIDC identity; no npm token secret exists. Any Trusted Publisher change must update the workflow and governed release docs together.

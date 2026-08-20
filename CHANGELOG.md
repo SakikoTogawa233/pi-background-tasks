@@ -6,6 +6,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [2.5.3] - 2026-08-19
+
+### Changed
+
+- Removed the `bg_run` prompt guideline that steered agents to prefer `bg_run` over `bash` for long-running commands, leaving the tool selection decision entirely to the agent's own judgment.
+- Migrated npm publication from the `NPM_TOKEN` repository secret to Trusted Publisher OIDC: the release workflow now authenticates `npm publish` with the GitHub Actions identity (repository `SakikoTogawa233/pi-background-tasks`, workflow `release.yml`, no environment), with no `NODE_AUTH_TOKEN` mapping.
+
 ## [2.5.2] - 2026-08-19
 
 ### Changed
@@ -57,7 +64,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 - Exposed foreground Bash registration through the extension API and documented the Ctrl+B and timeout behavior in user and generated documentation.
 
-[Unreleased]: https://github.com/SakikoTogawa233/pi-background-tasks/compare/v2.5.2...HEAD
+[Unreleased]: https://github.com/SakikoTogawa233/pi-background-tasks/compare/v2.5.3...HEAD
+[2.5.3]: https://github.com/SakikoTogawa233/pi-background-tasks/compare/v2.5.2...v2.5.3
 [2.5.2]: https://github.com/SakikoTogawa233/pi-background-tasks/compare/v2.5.1...v2.5.2
 [2.5.1]: https://github.com/SakikoTogawa233/pi-background-tasks/compare/v2.5.0...v2.5.1
 [2.5.0]: https://github.com/SakikoTogawa233/pi-background-tasks/releases/tag/v2.5.0
