@@ -252,6 +252,7 @@ interface OwnerSession {
   id: string;
   token: string;
   refs: Map<string, string>;
+  pendingRefs: Set<string>;
 }
 
 function isRecord(value: unknown): value is JsonRecord {
@@ -639,7 +640,7 @@ class InstalledBackgroundTaskExtensionService implements BackgroundTaskExtension
       if (payload['protocol_version'] !== 2) throw new Error('handshake.payload.protocol_version must be 2');
       const ownerId = requireNonEmptyString(payload['owner_id'], 'handshake.payload.owner_id', MAX_OWNER_ID_CHARS);
       if (this.owners.has(ownerId)) throw new Error(`owner ${ownerId} already completed a handshake`);
-      const owner: OwnerSession = { id: ownerId, token: randomBytes(24).toString('hex'), refs: new Map() };
+      const owner: OwnerSession = { id: ownerId, token: randomBytes(24).toString('hex'), refs: new Map(), pendingRefs: new Set() };
       this.owners.set(ownerId, owner);
       return { ...BG_EXTERNAL_CAPABILITIES, service_id: this.serviceId, owner_id: owner.id, owner_token: owner.token };
     }
@@ -648,7 +649,7 @@ class InstalledBackgroundTaskExtensionService implements BackgroundTaskExtension
     if (operation === 'register') {
       assertClosed(payload, ['service_id', 'owner_id', 'owner_token', 'owner_ref', 'name', 'description', 'capabilities', 'notify_on_completion', 'trigger_on_completion', 'stop_wait_ms'], 'register.payload');
       const ownerRef = requireNonEmptyString(payload['owner_ref'], 'register.payload.owner_ref', MAX_OWNER_REF_CHARS);
-      if (owner.refs.has(ownerRef)) throw new Error(`owner reference ${ownerRef} is already registered`);
+      if (owner.refs.has(ownerRef) || owner.pendingRefs.has(ownerRef)) throw new Error(`owner reference ${ownerRef} is already registered`);
       const name = requireNonEmptyString(payload['name'], 'register.payload.name');
       const description = hasOwn(payload, 'description') ? requireNonEmptyString(payload['description'], 'register.payload.description') : undefined;
       const capabilities = externalCapabilities(payload['capabilities'], 'register.payload.capabilities');
@@ -656,17 +657,24 @@ class InstalledBackgroundTaskExtensionService implements BackgroundTaskExtension
       const triggerOnCompletion = requireBoolean(payload['trigger_on_completion'], 'register.payload.trigger_on_completion');
       const stopWaitMs = hasOwn(payload, 'stop_wait_ms') ? requirePositiveInteger(payload['stop_wait_ms'], 'register.payload.stop_wait_ms') : undefined;
       const ctx = this.requireContext();
+      owner.pendingRefs.add(ownerRef);
       let task!: BgTask;
-      task = await this.registry.registerExternalTask(ctx, {
-        name,
-        description,
-        owner: { id: owner.id, ref: ownerRef },
-        capabilities,
-        notifyOnCompletion,
-        triggerOnCompletion,
-        stopWaitMs,
-        cancel: () => this.publishCancellation(task),
-      });
+      try {
+        task = await this.registry.registerExternalTask(ctx, {
+          name,
+          description,
+          owner: { id: owner.id, ref: ownerRef },
+          capabilities,
+          notifyOnCompletion,
+          triggerOnCompletion,
+          stopWaitMs,
+          cancel: () => this.publishCancellation(task),
+        });
+      } catch (error) {
+        owner.pendingRefs.delete(ownerRef);
+        throw error;
+      }
+      owner.pendingRefs.delete(ownerRef);
       owner.refs.set(ownerRef, task.id);
       return { task: this.registry.snapshot(task), next_sequence: task.externalSequence ?? 1 };
     }
@@ -693,13 +701,13 @@ class InstalledBackgroundTaskExtensionService implements BackgroundTaskExtension
     }
 
     const sequence = requirePositiveInteger(payload['sequence'], `${operation}.payload.sequence`);
-    const expectedSequence = task.externalSequence ?? 1;
-    if (sequence !== expectedSequence) throw new Error(`Task ${task.id} expected sequence ${String(expectedSequence)}, received ${String(sequence)}`);
 
+    // Pure per-op validation first, so malformed frames never consume a sequence.
+    let action: () => Promise<void>;
     if (operation === 'log') {
       assertClosed(payload, ['service_id', 'owner_id', 'owner_token', 'task_id', 'sequence', 'text'], 'log.payload');
       const text = requireNonEmptyString(payload['text'], 'log.payload.text');
-      await this.registry.appendExternalLog(task, text);
+      action = () => this.registry.appendExternalLog(task, text);
     } else if (operation === 'update') {
       assertClosed(payload, ['service_id', 'owner_id', 'owner_token', 'task_id', 'sequence', 'name', 'description', 'capabilities'], 'update.payload');
       if (!hasOwn(payload, 'name') && !hasOwn(payload, 'description') && !hasOwn(payload, 'capabilities')) {
@@ -709,10 +717,11 @@ class InstalledBackgroundTaskExtensionService implements BackgroundTaskExtension
       if (hasOwn(payload, 'name')) update.name = requireNonEmptyString(payload['name'], 'update.payload.name');
       if (hasOwn(payload, 'description')) update.description = requireNonEmptyString(payload['description'], 'update.payload.description');
       if (hasOwn(payload, 'capabilities')) update.capabilities = externalCapabilities(payload['capabilities'], 'update.payload.capabilities');
-      await this.registry.updateExternalTask(task, update);
+      action = () => this.registry.updateExternalTask(task, update);
     } else if (operation === 'cancel_ack') {
       assertClosed(payload, ['service_id', 'owner_id', 'owner_token', 'task_id', 'sequence', 'cancel_id'], 'cancel_ack.payload');
-      this.registry.acknowledgeExternalCancellation(task, requireNonEmptyString(payload['cancel_id'], 'cancel_ack.payload.cancel_id'));
+      const cancelId = requireNonEmptyString(payload['cancel_id'], 'cancel_ack.payload.cancel_id');
+      action = () => Promise.resolve(this.registry.acknowledgeExternalCancellation(task, cancelId));
     } else if (operation === 'settle') {
       assertClosed(payload, ['service_id', 'owner_id', 'owner_token', 'task_id', 'sequence', 'status', 'error'], 'settle.payload');
       const status = payload['status'];
@@ -720,12 +729,21 @@ class InstalledBackgroundTaskExtensionService implements BackgroundTaskExtension
       const error = hasOwn(payload, 'error') ? requireNonEmptyString(payload['error'], 'settle.payload.error') : undefined;
       if (status === 'failed' && error === undefined) throw new Error('settle.payload.error is required for failed status');
       if (status !== 'failed' && error !== undefined) throw new Error('settle.payload.error is allowed only for failed status');
-      await this.registry.settleExternalTask(task, status, error, terminalPublicationGate);
+      action = () => this.registry.settleExternalTask(task, status, error, terminalPublicationGate);
     } else {
       throw new Error(`Unsupported external task operation ${operation}`);
     }
 
+    // Reservation commit point: the sequence check and advance are one
+    // synchronous step, so a duplicate-sequence frame pipelined in the same
+    // tick observes the committed sequence and fails loudly. A sequence is
+    // consumed only by fully validated frames; a registry failure after the
+    // reservation still consumes it.
+    const expectedSequence = task.externalSequence ?? 1;
+    if (sequence !== expectedSequence) throw new Error(`Task ${task.id} expected sequence ${String(expectedSequence)}, received ${String(sequence)}`);
     task.externalSequence = expectedSequence + 1;
+
+    await action();
     return { task: this.registry.snapshot(task), next_sequence: task.externalSequence };
   }
 
