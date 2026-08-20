@@ -144,10 +144,11 @@
         "src/ui/background-tasks-manager.ts"
       ],
       "doc_id": "subsystems/host-ui-and-telemetry",
+      "notes": "Reviewed updateUi footer projection, unseen finished clearing, update-only status, task manager details, RPC status, notifications, telemetry, shutdown, and update-check behavior against source and regression tests; running/done-only footer documentation is semantically accurate.",
       "rel": "docs/subsystems/host-ui-and-telemetry.md",
       "required": true,
-      "reviewer": "glm-5.3-independent-attestation-reviewer",
-      "state": "stale-authored-prose"
+      "reviewer": "openai-codex/gpt-5.6-sol delegate d286fa00b7934634a45ae45f5ed1170cc",
+      "state": "pass"
     }
   ],
   "docs": {
