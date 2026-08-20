@@ -481,6 +481,61 @@ void describe('domain-neutral external task EventBus v2', () => {
     }
   });
 
+  void it('rejects whitespace-only names for register and update without mutation', async () => {
+    const h = await harness();
+    try {
+      const owner = await handshake(h.bus, 'owner-blank-name');
+      const auth = ownerPayload(owner);
+      const blankRegister = await request(h.bus, 'blank-register', 'register', {
+        ...auth,
+        owner_ref: 'blank-work',
+        name: '   ',
+        capabilities: { cancellable: false, rerunnable: false },
+        notify_on_completion: false,
+        trigger_on_completion: false,
+      });
+      assert.equal(blankRegister.ok, false, 'whitespace-only register name must fail loudly');
+      assert.match(blankRegister.error ?? '', /register\.payload\.name/);
+      assert.equal(h.registry.allTasks().length, 0, 'blank register name must not mutate the registry');
+
+      const registered = await request(h.bus, 'blank-register-good', 'register', {
+        ...auth,
+        owner_ref: 'blank-work',
+        name: 'Named work',
+        capabilities: { cancellable: false, rerunnable: false },
+        notify_on_completion: false,
+        trigger_on_completion: false,
+      });
+      assert.equal(registered.ok, true, registered.error);
+      const taskId = String(record(record(registered.result, 'register result')['task'], 'task')['id']);
+      const before = h.registry.snapshot(h.registry.resolveTask(taskId));
+
+      const blankUpdate = await request(h.bus, 'blank-update', 'update', {
+        ...auth,
+        task_id: taskId,
+        sequence: 1,
+        name: ' \t\n ',
+      });
+      assert.equal(blankUpdate.ok, false, 'whitespace-only update name must fail loudly');
+      assert.match(blankUpdate.error ?? '', /update\.payload\.name/);
+      assert.deepEqual(h.registry.snapshot(h.registry.resolveTask(taskId)), before);
+
+      const renamed = await request(h.bus, 'blank-update-good', 'update', {
+        ...auth,
+        task_id: taskId,
+        sequence: 1,
+        name: '  Renamed with padding  ',
+      });
+      assert.equal(renamed.ok, true, renamed.error);
+      assert.equal(h.registry.snapshot(h.registry.resolveTask(taskId)).name, 'Renamed with padding');
+    } finally {
+      h.service.beginShutdown();
+      await h.service.drainRequests();
+      h.service.close();
+      await rm(h.root, { recursive: true, force: true });
+    }
+  });
+
   void it('keeps multiple external owners in one service, task namespace, and registry', async () => {
     const h = await harness();
     try {
