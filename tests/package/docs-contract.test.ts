@@ -48,6 +48,24 @@ void describe('docs package integration contract', () => {
     assert.match(eventbus, /During shutdown.*cancel_ack.*settle/s);
   });
 
+  void it('declares the extracted scope in the Unreleased changelog entry', () => {
+    const changelog = text('CHANGELOG.md');
+    const unreleased = changelog.slice(
+      changelog.indexOf('## [Unreleased]'),
+      changelog.indexOf('## [2.6.0]'),
+    );
+    assert.notEqual(unreleased, '', 'CHANGELOG.md must have an Unreleased section');
+    assert.match(unreleased, /### Removed/);
+    for (const removed of [/delegate/u, /attested/u, /Fusion/u, /Anthropic attribution/u]) {
+      assert.match(unreleased, removed, `Unreleased must describe the removed surface: ${String(removed)}`);
+    }
+    assert.match(unreleased, /EventBus v2 external-task/u);
+    assert.match(unreleased, /### Added|### Changed/u);
+    const pkg = parseJsonText(text('package.json')) as { version: string };
+    assert.doesNotMatch(unreleased, new RegExp(`\\[\\d+\\.\\d+\\.\\d+\\]`), 'Unreleased must not declare a version');
+    assert.equal(pkg.version, '2.6.0', 'Unreleased work must not bump the version');
+  });
+
   void it('generates only task runtime paths and v1/v2 schemas', () => {
     const runtime = text('docs/reference/runtime-contracts.md');
     assert.match(runtime, /\.pi\/tasks\/<session-id>-<pid>\//);
