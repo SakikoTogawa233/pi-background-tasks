@@ -21,7 +21,7 @@ void describe('docs package integration contract', () => {
       pi?: { image?: string };
     };
     assert.equal(pkg.name, '@sakiko233/pi-background-tasks');
-    assert.equal(pkg.version, '2.5.3');
+    assert.equal(pkg.version, '2.6.0');
     assert.equal(
       pkg.repository.url,
       'git+https://github.com/SakikoTogawa233/pi-background-tasks.git',

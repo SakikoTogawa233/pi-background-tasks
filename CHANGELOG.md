@@ -6,6 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [2.6.0] - 2026-08-20
+
+### Changed
+
+- Footer count labels now show only running tasks and unseen successful completed tasks.
+- Failed- or stopped-only unseen state now hides the background-task footer instead of showing failed or stopped counts.
+- Failed and killed task history, details, completion notifications, RPC data, and `/bg-clear` accounting remain available and unchanged.
+
 ## [2.5.3] - 2026-08-19
 
 ### Changed
@@ -64,7 +72,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 - Exposed foreground Bash registration through the extension API and documented the Ctrl+B and timeout behavior in user and generated documentation.
 
-[Unreleased]: https://github.com/SakikoTogawa233/pi-background-tasks/compare/v2.5.3...HEAD
+[Unreleased]: https://github.com/SakikoTogawa233/pi-background-tasks/compare/v2.6.0...HEAD
+[2.6.0]: https://github.com/SakikoTogawa233/pi-background-tasks/compare/v2.5.3...v2.6.0
 [2.5.3]: https://github.com/SakikoTogawa233/pi-background-tasks/compare/v2.5.2...v2.5.3
 [2.5.2]: https://github.com/SakikoTogawa233/pi-background-tasks/compare/v2.5.1...v2.5.2
 [2.5.1]: https://github.com/SakikoTogawa233/pi-background-tasks/compare/v2.5.0...v2.5.1
