@@ -156,9 +156,17 @@ class RPC {
   }
 
   async wait(pred: (event: object) => boolean, timeoutMs = 10_000): Promise<object> {
+    return this.waitAfter(0, pred, timeoutMs);
+  }
+
+  async waitAfter(
+    startIndex: number,
+    pred: (event: object) => boolean,
+    timeoutMs = 10_000,
+  ): Promise<object> {
     const start = Date.now();
     while (Date.now() - start < timeoutMs) {
-      const found = this.events.find(pred);
+      const found = this.events.slice(startIndex).find(pred);
       if (found) return found;
       await new Promise((resolve) => {
         setTimeout(resolve, 50);
@@ -381,24 +389,50 @@ void describe('rpc', () => {
     });
   });
 
-  void it('fails tasks that exceed the output cap and preserves a bounded log', async () => {
+  void it('projects mixed RPC footer states without failed/stopped counts', async () => {
     await withRpc(
-      async (rpc) => {
+      async (rpc, cwd) => {
+        await rpc.prompt(
+          `/bg --name "RPC Visible Done" ${await writeExactlyScript(cwd, 'rpc-visible-done', 'done')}`,
+        );
+        await rpc.wait(notifyWith(/Started RPC Visible Done/));
+        await rpc.wait(isSingleDoneBackgroundStatus);
+
+        const statusStart = rpc.events.length;
         await rpc.prompt(
           '/bg --name "RPC Output Cap" node -e "process.stdout.write(\'x\'.repeat(4096))"',
         );
-        const started = await rpc.wait(notifyWith(/Started RPC Output Cap/));
+        const started = await rpc.waitAfter(statusStart, notifyWith(/Started RPC Output Cap/));
         const id = extractTaskId(started);
         await new Promise((resolve) => setTimeout(resolve, 750));
         await rpc.prompt('/jobs');
-        await rpc.wait(
+        await rpc.waitAfter(
+          statusStart,
           notifyWith(
             /failed[\s\S]*RPC Output Cap[\s\S]*Output exceeded cap|failed[\s\S]*Output exceeded cap[\s\S]*RPC Output Cap/,
           ),
           15_000,
         );
+        const footer = await rpc.waitAfter(
+          statusStart,
+          (event) => {
+            const statusText = field(event, 'statusText');
+            return (
+              field(event, 'type') === 'extension_ui_request' &&
+              field(event, 'method') === 'setStatus' &&
+              field(event, 'statusKey') === 'background-tasks' &&
+              typeof statusText === 'string' &&
+              statusText.includes(' bg 1 done · Shift↓ · /bg-clear ') &&
+              !/failed|stopped/.test(statusText)
+            );
+          },
+        );
+        assert.ok(footer);
+
         await rpc.prompt(`/logs ${id} 200`);
         await rpc.wait(notifyWith(/background task error:[\s\S]*Output exceeded cap/));
+        await rpc.prompt('/bg-clear');
+        await rpc.wait(notifyWith(/Cleared 2 finished background task notices/));
       },
       { PI_BG_MAX_OUTPUT_BYTES: '256' },
     );
