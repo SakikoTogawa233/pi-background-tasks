@@ -21,7 +21,7 @@ void describe('docs package integration contract', () => {
       pi?: { image?: string };
     };
     assert.equal(pkg.name, '@sakiko233/pi-background-tasks');
-    assert.equal(pkg.version, '2.5.2');
+    assert.equal(pkg.version, '2.5.3');
     assert.equal(
       pkg.repository.url,
       'git+https://github.com/SakikoTogawa233/pi-background-tasks.git',
@@ -61,23 +61,26 @@ void describe('docs package integration contract', () => {
     }
   });
 
-  void it('pins repository-secret npm authentication and separate provenance identity', () => {
+  void it('pins Trusted Publisher OIDC npm authentication with shared provenance identity', () => {
     const workflow = text('.github/workflows/release.yml');
     assert.match(workflow, /registry-url: 'https:\/\/registry\.npmjs\.org'/);
     assert.match(workflow, /npm publish --provenance --access public/);
-    assert.match(workflow, /NODE_AUTH_TOKEN: \$\{\{ secrets\.NPM_TOKEN \}\}/);
     assert.match(workflow, /id-token: write/);
-    assert.doesNotMatch(workflow, /Publish to npm \(trusted publisher \/ OIDC\)/);
+    assert.match(workflow, /Publish to npm \(Trusted Publisher OIDC with provenance\)/);
+    // OIDC-only authentication: no npm token secret may appear anywhere in the workflow.
+    assert.doesNotMatch(workflow, /NPM_TOKEN/);
+    assert.doesNotMatch(workflow, /NODE_AUTH_TOKEN/);
 
     const publishing = text('PUBLISHING.md');
-    assert.match(publishing, /GitHub Actions repository secret `NPM_TOKEN`/);
-    assert.match(publishing, /maps the `NPM_TOKEN` GitHub Actions repository secret to `NODE_AUTH_TOKEN`/);
-    assert.match(publishing, /provenance using GitHub Actions' OIDC identity/);
+    assert.match(publishing, /authenticates through Trusted Publisher/);
+    assert.match(publishing, /no `NPM_TOKEN` repository secret, `NODE_AUTH_TOKEN` mapping, or locally stored npm token exists/);
+    assert.match(publishing, /Local `npm publish` cannot authenticate/);
+    assert.match(publishing, /repository `SakikoTogawa233\/pi-background-tasks` with workflow filename `release\.yml` and no GitHub environment/);
 
     const releasing = text('docs/operations/releasing.md');
-    assert.match(releasing, /mapping the authorized `NPM_TOKEN` GitHub Actions repository secret to `NODE_AUTH_TOKEN`/);
-    assert.match(releasing, /Registry authentication uses the npm token/);
-    assert.match(releasing, /provenance attestation separately uses GitHub Actions' OIDC identity/);
+    assert.match(releasing, /authenticates npm publication through Trusted Publisher OIDC/);
+    assert.match(releasing, /no npm token secret exists/);
+    assert.match(releasing, /Any Trusted Publisher change must update the workflow and governed release docs together/);
   });
 
   void it('pins reviewed runtime and generated artifact semantics', () => {

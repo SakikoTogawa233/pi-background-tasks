@@ -19,7 +19,7 @@ This authored section defines the boundary: documentation facts are extracted fr
 - Tool contracts extracted: 12
 - Schema IDs extracted: 46
 - Environment variable references extracted: 49
-- Behavioral attestation receipts not passing: 1
+- Behavioral attestation receipts not passing: 0
 - Receipt store: `docs/attestations.json`
 
 `npm run docs:verify` is read-only: it renders generated files twice in memory and compares them with committed bytes. `npm run docs:generate` is the only docs writer.

@@ -200,13 +200,13 @@
         "src/ui/background-tasks-manager.ts"
       ],
       "doc_id": "subsystems/host-ui-and-telemetry",
-      "notes": "Reviewed extension registration, footer/UI behavior, completion rendering, update checks, shutdown launch/task/request/publication drains, and fresh EventBus service rebinding on session reload.",
-      "reviewer": "gpt-5.6-sol-final-lifecycle-reviewer",
+      "notes": "Re-attested after the 2.5.3 change removing the bg_run prompt guideline that steered agents toward bg_run over bash; verified the document makes no claim about prompt guidelines or tool-preference steering, and re-verified registration surface (8 commands, 4 core tools plus advanced tools, 2 shortcuts, notification renderer), footer segment order and badge-clearing rules, task-manager list/detail behavior including 128 KiB/12-line/1-second follow tail semantics and confirmed stop-all, completion rendering, one-shot update-check environment/timeout/registry contracts, snapshot-only telemetry display, and the shutdown admission/drain/kill/finalize/close ordering; other covered sources (extensions/background-tasks.ts, src/core/update-check.ts, src/ui/background-tasks-manager.ts) unchanged from the cd99f6e baseline.",
+      "reviewer": "glm-5.3-independent-attestation-reviewer",
       "schema_version": "pi-background-tasks.docs-attestation.v1",
       "source_sha256": {
         "extensions/background-tasks.ts": "sha256:b221129d3a1449606de6e7c04bd8989c6b7feee3eaf5122339c2d45cffadf74f",
         "src/core/update-check.ts": "sha256:11305af5819a32d3950693053845271268737038c054a5b134e37c91d60205e5",
-        "src/extension.ts": "sha256:96ef78cd986a8d69cb1741a2ab4f0878877b0cff3dde6a3f072812447f80904b",
+        "src/extension.ts": "sha256:2c974a19ef2b3a9414d01dee8cac49c0909d23a0fd0a5127a302e4f16c1b3347",
         "src/ui/background-tasks-manager.ts": "sha256:96c71807767499887ab3417e5eabac973a19221e4f2e985e2218d4ad672dd687"
       },
       "verdict": "PASS"

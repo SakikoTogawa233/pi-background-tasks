@@ -144,10 +144,11 @@
         "src/ui/background-tasks-manager.ts"
       ],
       "doc_id": "subsystems/host-ui-and-telemetry",
+      "notes": "Re-attested after the 2.5.3 change removing the bg_run prompt guideline that steered agents toward bg_run over bash; verified the document makes no claim about prompt guidelines or tool-preference steering, and re-verified registration surface (8 commands, 4 core tools plus advanced tools, 2 shortcuts, notification renderer), footer segment order and badge-clearing rules, task-manager list/detail behavior including 128 KiB/12-line/1-second follow tail semantics and confirmed stop-all, completion rendering, one-shot update-check environment/timeout/registry contracts, snapshot-only telemetry display, and the shutdown admission/drain/kill/finalize/close ordering; other covered sources (extensions/background-tasks.ts, src/core/update-check.ts, src/ui/background-tasks-manager.ts) unchanged from the cd99f6e baseline.",
       "rel": "docs/subsystems/host-ui-and-telemetry.md",
       "required": true,
-      "reviewer": "gpt-5.6-sol-final-lifecycle-reviewer",
-      "state": "stale-sources"
+      "reviewer": "glm-5.3-independent-attestation-reviewer",
+      "state": "pass"
     }
   ],
   "docs": {
