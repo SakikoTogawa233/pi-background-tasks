@@ -6,6 +6,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Removed
+
+- Breaking scope reduction: removed the agent-delegation surfaces (`bg_delegate`, `bg_result`), the attested Pi task launcher (`bg_run_pi_attested`), and all Fusion workflow tooling (`fusion_reason`, `fusion_investigate`, `fusion_research`, `fusion_validate`) along with their commands, child process plumbing, attestation sidecars, and documentation.
+- Removed the Anthropic attribution entrypoint; `extensions/background-tasks.ts` is the single extension entrypoint.
+
+### Added
+
+- Added a shared EventBus v2 external-task service: other extensions can handshake as owners and `register`, `update`, `log`, cancel/`cancel_ack`, `settle`, `status`, `logs`, and `kill` background tasks through a closed, sequence-enforced frame protocol, with pipelined duplicate frames and blank names rejected loudly.
+
 ## [2.6.0] - 2026-08-20
 
 ### Changed
