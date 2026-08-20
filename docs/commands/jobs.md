@@ -12,7 +12,7 @@ covers_sources: []
 <!-- pi-docs:begin name="command-contract-jobs" generator="scripts/docs/generate.mjs" -->
 | Command | Description | Provenance |
 | --- | --- | --- |
-| `/jobs` | List running and recent background tasks | `src/extension.ts:680` |
+| `/jobs` | List running and recent background tasks | `src/extension.ts:673` |
 <!-- pi-docs:end name="command-contract-jobs" -->
 
 List running and recent background tasks.

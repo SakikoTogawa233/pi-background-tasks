@@ -348,6 +348,22 @@ function waitForEventResponse(
   });
 }
 
+function waitForNamedTerminal(eventBus: EventBus, taskName: string): Promise<BgTaskSnapshot> {
+  return new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      unsubscribe();
+      reject(new Error(`timed out waiting for terminal task ${taskName}`));
+    }, EVENT_RESPONSE_TIMEOUT_MS);
+    const unsubscribe = eventBus.on(BG_TERMINAL_CHANNEL, (data) => {
+      const task = requireTerminal(data).task;
+      if (task.name !== taskName) return;
+      clearTimeout(timeout);
+      unsubscribe();
+      resolve(task);
+    });
+  });
+}
+
 async function emitEventRequest(
   eventBus: EventBus,
   requestId: string,
@@ -1053,8 +1069,10 @@ console.error('sdk stderr');
   });
 
   void it('fails timed-out tasks loudly', async () => {
-    const { session } = await harness();
+    const eventBus = createEventBus();
+    const { session } = await harness({ eventBus });
     try {
+      const terminalReceived = waitForNamedTerminal(eventBus, 'SDK Timeout');
       const r = await exec(session, 'bg_run', {
         isAgent: false,
         name: 'SDK Timeout',
@@ -1063,7 +1081,9 @@ console.error('sdk stderr');
         notifyOnCompletion: false,
         triggerOnCompletion: false,
       });
-      const t = await wait(session, taskFromResult(r).id, 80);
+      const launched = taskFromResult(r);
+      const t = await terminalReceived;
+      assert.equal(t.id, launched.id);
       assert.equal(t.status, 'failed');
       assert.match(t.error ?? '', /Timed out after 1s/);
       const logs = await exec(session, 'bg_logs', { taskId: t.id, maxBytes: 1000 });
@@ -1430,7 +1450,7 @@ console.log(JSON.stringify({ type: "message_end", message: secondMessage }));
     }
   });
 
-  void it('reports failed/stopped/done footer combinations and focused dock status', async () => {
+  void it('hides failed/stopped footer counts while preserving clear and focused behavior', async () => {
     const { session } = await harness();
     const statuses: Array<string | undefined> = [];
     const notifications: UiNotification[] = [];
@@ -1445,7 +1465,10 @@ console.log(JSON.stringify({ type: "message_end", message: secondMessage }));
         notifyOnCompletion: false,
         triggerOnCompletion: false,
       });
-      await wait(session, taskFromResult(failed).id);
+      const failedTask = await wait(session, taskFromResult(failed).id);
+      assert.equal(failedTask.status, 'failed');
+      assert.match(failedTask.error ?? '', /Exited with code 2/);
+
       const stopped = await exec(session, 'bg_run', {
         isAgent: false,
         name: 'Footer Stopped',
@@ -1455,7 +1478,9 @@ console.log(JSON.stringify({ type: "message_end", message: secondMessage }));
       });
       const stoppedTask = taskFromResult(stopped);
       await exec(session, 'bg_kill', { taskId: stoppedTask.id });
-      await wait(session, stoppedTask.id);
+      const killedTask = await wait(session, stoppedTask.id);
+      assert.equal(killedTask.status, 'killed');
+
       const done = await exec(session, 'bg_run', {
         isAgent: false,
         name: 'Footer Done Matrix',
@@ -1463,9 +1488,10 @@ console.log(JSON.stringify({ type: "message_end", message: secondMessage }));
         notifyOnCompletion: false,
         triggerOnCompletion: false,
       });
-      await wait(session, taskFromResult(done).id);
+      const doneTask = await wait(session, taskFromResult(done).id);
       await new Promise((resolve) => setTimeout(resolve, 30));
-      assert.match(statuses.at(-1) ?? '', /1 failed · 1 stopped · 1 done · Shift↓ · \/bg-clear/);
+      assert.match(statuses.at(-1) ?? '', /bg 1 done · Shift↓ · \/bg-clear/);
+      assert.doesNotMatch(statuses.at(-1) ?? '', /failed|stopped/);
 
       const running = await exec(session, 'bg_run', {
         isAgent: false,
@@ -1474,23 +1500,95 @@ console.log(JSON.stringify({ type: "message_end", message: secondMessage }));
         notifyOnCompletion: false,
         triggerOnCompletion: false,
       });
+      const runningTask = taskFromResult(running);
       await new Promise((resolve) => setTimeout(resolve, 30));
-      assert.match(
-        statuses.at(-1) ?? '',
-        /1 running · 1 failed · 1 stopped · 1 done · Shift↓ · \/bg-clear/,
-      );
+      assert.match(statuses.at(-1) ?? '', /bg 1 running · 1 done · Shift↓ · \/bg-clear/);
+      assert.doesNotMatch(statuses.at(-1) ?? '', /failed|stopped/);
+
       const shortcuts = session.extensionRunner.getShortcuts({});
       const shiftDown = shortcuts.get('shift+down');
       assert.ok(shiftDown, 'Shift+Down shortcut should be registered');
       await shiftDown.handler(session.extensionRunner.createContext());
       assert.ok(
         statuses.some(
-          (status) =>
-            status?.includes('bg 1 running · 1 failed · 1 stopped · 1 done · focused') ?? false,
+          (status) => status?.includes('bg 1 running · 1 done · focused') ?? false,
         ),
       );
-      await exec(session, 'bg_kill', { taskId: taskFromResult(running).id });
-      assert.equal(notifications.length, 0);
+      assert.ok(statuses.every((status) => !status?.includes(' failed · ') && !status?.includes(' stopped · ')));
+
+      const clearCommand = session.extensionRunner
+        .getRegisteredCommands()
+        .find((cmd) => cmd.invocationName === 'bg-clear');
+      assert.ok(clearCommand);
+      await clearCommand.handler('', session.extensionRunner.createCommandContext());
+      assert.match(notifications.at(-1)?.message ?? '', /Cleared 3 finished/);
+      assert.match(statuses.at(-1) ?? '', /bg 1 running · Shift↓/);
+      assert.doesNotMatch(statuses.at(-1) ?? '', /done|failed|stopped|\/bg-clear/);
+
+      const failedAfterClear = firstTask(
+        await exec(session, 'bg_status', { taskId: failedTask.id }),
+      );
+      const killedAfterClear = firstTask(
+        await exec(session, 'bg_status', { taskId: killedTask.id }),
+      );
+      assert.equal(failedAfterClear.status, 'failed');
+      assert.equal(failedAfterClear.error, failedTask.error);
+      assert.equal(killedAfterClear.status, 'killed');
+      assert.equal(killedAfterClear.error, killedTask.error);
+      assert.equal(taskFromResult(await exec(session, 'bg_logs', { taskId: failedTask.id })).status, 'failed');
+      assert.equal(taskFromResult(await exec(session, 'bg_logs', { taskId: killedTask.id })).status, 'killed');
+      assert.equal(firstTask(await exec(session, 'bg_status', { taskId: doneTask.id })).status, 'completed');
+
+      await exec(session, 'bg_kill', { taskId: runningTask.id });
+      await new Promise((resolve) => setTimeout(resolve, 30));
+      assert.equal(statuses.at(-1), undefined);
+    } finally {
+      await session.extensionRunner.emit({ type: 'session_shutdown', reason: 'quit' });
+      session.dispose();
+    }
+  });
+
+  void it('clears the footer when failed and stopped are the only unseen task states', async () => {
+    const { session } = await harness();
+    const statuses: Array<string | undefined> = [];
+    const notifications: UiNotification[] = [];
+    session.extensionRunner.setUIContext(
+      makeStatusUi(session.extensionRunner.getUIContext(), statuses, notifications),
+    );
+    try {
+      const failed = await exec(session, 'bg_run', {
+        isAgent: false,
+        name: 'Hidden Failed Only',
+        command: 'node -e "process.exit(3)"',
+        notifyOnCompletion: false,
+        triggerOnCompletion: false,
+      });
+      const failedTask = await wait(session, taskFromResult(failed).id);
+      const stopped = await exec(session, 'bg_run', {
+        isAgent: false,
+        name: 'Hidden Stopped Only',
+        command: `node -e ${JSON.stringify('setTimeout(() => {}, 10000)')}`,
+        notifyOnCompletion: false,
+        triggerOnCompletion: false,
+      });
+      const stoppedTask = taskFromResult(stopped);
+      await exec(session, 'bg_kill', { taskId: stoppedTask.id });
+      const killedTask = await wait(session, stoppedTask.id);
+      await new Promise((resolve) => setTimeout(resolve, 30));
+
+      assert.equal(statuses.at(-1), undefined);
+      assert.equal(firstTask(await exec(session, 'bg_status', { taskId: failedTask.id })).status, 'failed');
+      assert.equal(firstTask(await exec(session, 'bg_status', { taskId: killedTask.id })).status, 'killed');
+
+      const clearCommand = session.extensionRunner
+        .getRegisteredCommands()
+        .find((cmd) => cmd.invocationName === 'bg-clear');
+      assert.ok(clearCommand);
+      await clearCommand.handler('', session.extensionRunner.createCommandContext());
+      assert.match(notifications.at(-1)?.message ?? '', /Cleared 2 finished/);
+      assert.equal(statuses.at(-1), undefined);
+      assert.equal(firstTask(await exec(session, 'bg_status', { taskId: failedTask.id })).status, 'failed');
+      assert.equal(firstTask(await exec(session, 'bg_status', { taskId: killedTask.id })).status, 'killed');
     } finally {
       await session.extensionRunner.emit({ type: 'session_shutdown', reason: 'quit' });
       session.dispose();

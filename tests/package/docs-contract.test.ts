@@ -21,7 +21,7 @@ void describe('docs package integration contract', () => {
       pi?: { image?: string };
     };
     assert.equal(pkg.name, '@sakiko233/pi-background-tasks');
-    assert.equal(pkg.version, '2.5.3');
+    assert.equal(pkg.version, '2.6.0');
     assert.equal(
       pkg.repository.url,
       'git+https://github.com/SakikoTogawa233/pi-background-tasks.git',
@@ -81,6 +81,29 @@ void describe('docs package integration contract', () => {
     assert.match(releasing, /authenticates npm publication through Trusted Publisher OIDC/);
     assert.match(releasing, /no npm token secret exists/);
     assert.match(releasing, /Any Trusted Publisher change must update the workflow and governed release docs together/);
+  });
+
+  void it('pins footer documentation to running/done counts only', () => {
+    const shortcuts = text('docs/reference/shortcuts-and-dock.md');
+    assert.match(shortcuts, /Footer counts display only `running` and unseen successful `done` tasks/);
+    assert.match(shortcuts, /failed and stopped tasks remain available in the focused dock/);
+    assert.doesNotMatch(shortcuts, /bg 1 running · 1 failed · 1 stopped/);
+
+    const subsystem = text('docs/subsystems/host-ui-and-telemetry.md');
+    assert.match(subsystem, /Visible task counts appear in this order:\s+1\. running,\s+2\. done/);
+    assert.match(subsystem, /failed\/killed-only unseen task state clears the task status/);
+    assert.doesNotMatch(subsystem, /1\. running,\s+2\. failed/);
+
+    const clear = text('docs/commands/bg-clear.md');
+    assert.match(clear, /completed, failed, and killed tasks remain part of the clearable unseen set/);
+    assert.doesNotMatch(clear, /failed, or killed task badges in the footer/);
+
+    assert.doesNotMatch(text('TESTING.md'), /mixed failed\/stopped\/done\/focused footer status/);
+    assert.doesNotMatch(text('TEST_PLAN.md'), /failed\/stopped\/done\/running combinations/);
+
+    const footerAsset = text('docs/assets/footer-dock.svg');
+    assert.match(footerAsset, /bg 1 running · 1 done · Shift↓ · \/bg-clear/);
+    assert.doesNotMatch(footerAsset, />bg [^<]*(?:failed|stopped)/);
   });
 
   void it('pins reviewed runtime and generated artifact semantics', () => {

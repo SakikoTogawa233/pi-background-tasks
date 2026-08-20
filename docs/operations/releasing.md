@@ -17,7 +17,7 @@ VERSION=$(node -p "require('./package.json').version")
 printf '%s@%s\n' "$NAME" "$VERSION"
 ```
 
-The current Sakiko fork release is `@sakiko233/pi-background-tasks@2.5.3`. The release workflow creates `v$VERSION`; do not certify a pinned git install until that tag exists in the Sakiko repository.
+The current Sakiko fork release is `@sakiko233/pi-background-tasks@2.6.0`. The release workflow creates `v$VERSION`; do not certify a pinned git install until that tag exists in the Sakiko repository.
 
 ## Ordinary release checks
 

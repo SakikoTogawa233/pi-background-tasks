@@ -43,9 +43,9 @@ This generated registry lists production environment-variable references, runtim
 | `PI_BG_DELEGATE_SEED_SHA256` | read, write | `src/core/delegate/launch.ts:355`<br>`src/delegate-child-extension.ts:385` |
 | `PI_BG_DELEGATE_TASK_ID` | read, write | `src/core/delegate/launch.ts:356`<br>`src/delegate-child-extension.ts:386` |
 | `PI_BG_DISABLE_PI_TELEMETRY` | read | `src/core/registry.ts:213` |
-| `PI_BG_DISABLE_UPDATE_CHECK` | read | `src/extension.ts:503` |
+| `PI_BG_DISABLE_UPDATE_CHECK` | read | `src/extension.ts:496` |
 | `PI_BG_MAX_OUTPUT_BYTES` | read | `src/core/registry.ts:69` |
-| `PI_BG_REGISTRY_URL` | read | `src/extension.ts:512` |
+| `PI_BG_REGISTRY_URL` | read | `src/extension.ts:505` |
 | `PI_BG_SHELL` | read | `src/core/common.ts:736` |
 | `PI_BG_SHELL_PATH` | read | `src/core/common.ts:737` |
 | `PI_CACHE_RETENTION` | read, write | `src/core/anthropic-attribution.ts:587`<br>`src/core/fusion/claude-cache.ts:57`<br>`src/core/fusion/pi-child.ts:273`<br>`src/core/fusion/pi-child.ts:274` |
@@ -55,7 +55,7 @@ This generated registry lists production environment-variable references, runtim
 | `PI_FUSION_SOURCE_POLICY_SHA256` | read, remove, write | `src/core/fusion/pi-child.ts:100`<br>`src/core/fusion/pi-child.ts:1904`<br>`src/fusion-child-extension.ts:556` |
 | `PI_FUSION_TOOL_CALL_LOG_PATH` | read, remove, write | `src/core/fusion/pi-child.ts:100`<br>`src/core/fusion/pi-child.ts:1891`<br>`src/fusion-child-extension.ts:598` |
 | `PI_MODEL` | read, remove, write | `src/core/delegate/launch.ts:330`<br>`src/core/foreground-bash.ts:589`<br>`src/core/foreground-bash.ts:596`<br>`src/core/fusion/pi-child.ts:100` |
-| `PI_OFFLINE` | read | `src/extension.ts:504` |
+| `PI_OFFLINE` | read | `src/extension.ts:497` |
 | `PI_PROVIDER` | read, remove, write | `src/core/delegate/launch.ts:330`<br>`src/core/foreground-bash.ts:588`<br>`src/core/foreground-bash.ts:595`<br>`src/core/fusion/pi-child.ts:100` |
 | `PI_REASONING_LEVEL` | read, remove, write | `src/core/delegate/launch.ts:330`<br>`src/core/foreground-bash.ts:590`<br>`src/core/foreground-bash.ts:598`<br>`src/core/fusion/pi-child.ts:100` |
 | `PI_SESSION_FILE` | read, remove, write | `src/core/delegate/launch.ts:330`<br>`src/core/foreground-bash.ts:587`<br>`src/core/foreground-bash.ts:593`<br>`src/core/fusion/pi-child.ts:100` |

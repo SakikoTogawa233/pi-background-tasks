@@ -12,9 +12,9 @@ covers_sources: []
 <!-- pi-docs:begin name="shortcut-contracts" generator="scripts/docs/generate.mjs" -->
 | Shortcut | Description | Provenance |
 | --- | --- | --- |
-| `ctrl+alt+c` | Clear finished background task footer notices (terminal-dependent fallback for /bg-clear) | `src/extension.ts:672` |
+| `ctrl+alt+c` | Clear finished background task footer notices (terminal-dependent fallback for /bg-clear) | `src/extension.ts:665` |
 | `ctrl+b` | Move the most recent active foreground bash command to the background | `src/core/foreground-bash.ts:641` |
-| `shift+down` | Open focused background task footer dock | `src/extension.ts:665` |
+| `shift+down` | Open focused background task footer dock | `src/extension.ts:658` |
 <!-- pi-docs:end name="shortcut-contracts" -->
 
 ## Registered shortcuts
@@ -31,24 +31,21 @@ If a terminal does not deliver `Ctrl+Alt+C`, use `/bg-clear`. It is the canonica
 
 ## Footer states
 
-The footer appears when there are running tasks, unseen finished tasks, or an update segment. Count labels are:
-
-- `running` for active tasks;
-- `failed` for status `failed`;
-- `stopped` for status `killed`;
-- `done` for status `completed`.
+Footer counts display only `running` and unseen successful `done` tasks; failed and stopped tasks remain available in the focused dock, task commands, tools, logs, history, RPC data, and notifications, but they never add footer count labels.
 
 Examples:
 
 ```text
 bg 1 running · Shift↓
 bg 1 done · Shift↓ · /bg-clear
-bg 1 running · 1 failed · 1 stopped · 1 done · Shift↓ · /bg-clear
+bg 1 running · 1 done · Shift↓ · /bg-clear
 bg 1 running · Shift↓ · ⬆ v999.0.0 /bg-update
 bg 1 running · focused
 ```
 
-The `/bg-clear` hint is hidden while the dock is open, where the entry hint becomes `focused`. A finished task's badge is marked seen when its detail view opens; `/bg-clear` or `Ctrl+Alt+C` marks all currently unseen finished tasks seen. Merely opening the list view or closing the dock does not clear badges.
+Failed/stopped notices remain clearable unseen finished notices. When a running or done segment is visible, they can still cause the `/bg-clear` hint to appear. If failed/stopped are the only unseen states, the task status is cleared; an independent update segment remains visible by itself.
+
+The `/bg-clear` hint is hidden while the dock is open, where the entry hint becomes `focused`. A finished task's notice is marked seen when its detail view opens; `/bg-clear` or `Ctrl+Alt+C` marks all currently unseen finished tasks seen. Merely opening the list view or closing the dock does not clear notices.
 
 ## Dock entry points
 
