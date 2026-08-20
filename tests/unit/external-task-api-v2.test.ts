@@ -363,6 +363,53 @@ void describe('domain-neutral external task EventBus v2', () => {
     }
   });
 
+  void it('keeps multiple external owners in one service, task namespace, and registry', async () => {
+    const h = await harness();
+    try {
+      const ownerOne = await handshake(h.bus, 'owner-one');
+      const ownerTwo = await handshake(h.bus, 'owner-two');
+      assert.equal(ownerOne['service_id'], ownerTwo['service_id']);
+
+      const registered: Array<{ owner: Record<string, unknown>; taskId: string }> = [];
+      for (const [index, owner] of [ownerOne, ownerTwo].entries()) {
+        const response = await request(h.bus, `multi-register-${String(index)}`, 'register', {
+          ...ownerPayload(owner),
+          owner_ref: `work-${String(index)}`,
+          name: `External owner ${String(index)}`,
+          capabilities: { cancellable: true, rerunnable: false },
+          notify_on_completion: false,
+          trigger_on_completion: false,
+        });
+        assert.equal(response.ok, true, response.error);
+        const task = record(record(response.result, 'register result')['task'], 'registered task');
+        registered.push({ owner, taskId: String(task['id']) });
+      }
+
+      assert.notEqual(registered[0]?.taskId, registered[1]?.taskId);
+      assert.equal(h.registry.allTasks().length, 2);
+      assert.deepEqual(
+        h.registry.allTasks().map((task) => task.owner?.id).sort(),
+        ['owner-one', 'owner-two'],
+      );
+
+      for (const [index, entry] of registered.entries()) {
+        const settled = await request(h.bus, `multi-settle-${String(index)}`, 'settle', {
+          ...ownerPayload(entry.owner),
+          task_id: entry.taskId,
+          sequence: 1,
+          status: 'completed',
+        });
+        assert.equal(settled.ok, true, settled.error);
+      }
+      await h.registry.waitForTerminalPublications();
+    } finally {
+      h.service.beginShutdown();
+      await h.service.drainRequests();
+      h.service.close();
+      await rm(h.root, { recursive: true, force: true });
+    }
+  });
+
   void it('enforces one service claim and keeps owner acknowledgement/settlement available during shutdown', async () => {
     const h = await harness();
     try {
