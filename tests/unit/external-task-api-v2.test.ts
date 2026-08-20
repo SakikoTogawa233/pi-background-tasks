@@ -92,6 +92,31 @@ async function request(
   return response;
 }
 
+interface PipelinedFrame {
+  requestId: string;
+  operation: string;
+  payload: Record<string, unknown>;
+}
+
+async function emitPipelinedPair(
+  bus: EventBus,
+  frames: [PipelinedFrame, PipelinedFrame],
+): Promise<[V2Response, V2Response]> {
+  const waits: [Promise<V2Response>, Promise<V2Response>] = [
+    waitForResponse(bus, frames[0].requestId),
+    waitForResponse(bus, frames[1].requestId),
+  ];
+  for (const frame of frames) {
+    bus.emit(V2_REQUEST_CHANNEL, {
+      schema_version: V2_REQUEST_SCHEMA,
+      request_id: frame.requestId,
+      operation: frame.operation,
+      payload: frame.payload,
+    });
+  }
+  return Promise.all(waits);
+}
+
 async function waitForTerminalCount(
   terminals: readonly Record<string, unknown>[],
   count: number,
@@ -355,6 +380,99 @@ void describe('domain-neutral external task EventBus v2', () => {
       assert.match(malformed.error ?? '', /at least one update field/);
 
       assert.deepEqual(h.registry.snapshot(h.registry.resolveTask(taskId)), before);
+    } finally {
+      h.service.beginShutdown();
+      await h.service.drainRequests();
+      h.service.close();
+      await rm(h.root, { recursive: true, force: true });
+    }
+  });
+
+  void it('rejects pipelined same-sequence frames emitted in one tick', async () => {
+    const h = await harness();
+    try {
+      const owner = await handshake(h.bus, 'owner-pipe-sequence');
+      const auth = ownerPayload(owner);
+      const registered = await request(h.bus, 'pipe-register', 'register', {
+        ...auth,
+        owner_ref: 'pipe-work',
+        name: 'Pipelined sequence work',
+        capabilities: { cancellable: false, rerunnable: false },
+        notify_on_completion: false,
+        trigger_on_completion: false,
+      });
+      assert.equal(registered.ok, true, registered.error);
+      const taskId = String(record(record(registered.result, 'register result')['task'], 'task')['id']);
+
+      const [first, second] = await emitPipelinedPair(h.bus, [
+        {
+          requestId: 'pipe-log-a',
+          operation: 'log',
+          payload: { ...auth, task_id: taskId, sequence: 1, text: 'pipelined line\n' },
+        },
+        {
+          requestId: 'pipe-log-b',
+          operation: 'log',
+          payload: { ...auth, task_id: taskId, sequence: 1, text: 'pipelined line\n' },
+        },
+      ]);
+      assert.equal(first.ok, true, first.error);
+      assert.equal(second.ok, false, 'duplicate sequence frame pipelined in the same tick must fail loudly');
+      assert.match(second.error ?? '', /expected sequence 2/);
+
+      const logs = await request(h.bus, 'pipe-logs', 'logs', { ...auth, task_id: taskId });
+      assert.equal(logs.ok, true, logs.error);
+      const text = String(record(logs.result, 'logs result')['text']);
+      assert.equal(text.split('pipelined line').length - 1, 1, 'duplicate sequence frame must not append twice');
+
+      const third = await request(h.bus, 'pipe-log-c', 'log', {
+        ...auth,
+        task_id: taskId,
+        sequence: 2,
+        text: 'next sequence line\n',
+      });
+      assert.equal(third.ok, true, third.error);
+      assert.equal(record(third.result, 'log result')['next_sequence'], 3);
+    } finally {
+      h.service.beginShutdown();
+      await h.service.drainRequests();
+      h.service.close();
+      await rm(h.root, { recursive: true, force: true });
+    }
+  });
+
+  void it('rejects pipelined duplicate owner_ref registration in one tick', async () => {
+    const h = await harness();
+    try {
+      const owner = await handshake(h.bus, 'owner-pipe-register');
+      const auth = ownerPayload(owner);
+      const registerPayload = (name: string): Record<string, unknown> => ({
+        ...auth,
+        owner_ref: 'dup-ref',
+        name,
+        capabilities: { cancellable: false, rerunnable: false },
+        notify_on_completion: false,
+        trigger_on_completion: false,
+      });
+
+      const [first, second] = await emitPipelinedPair(h.bus, [
+        { requestId: 'dup-register-a', operation: 'register', payload: registerPayload('Pipelined A') },
+        { requestId: 'dup-register-b', operation: 'register', payload: registerPayload('Pipelined B') },
+      ]);
+      assert.equal(first.ok, true, first.error);
+      assert.equal(second.ok, false, 'duplicate owner_ref frame pipelined in the same tick must fail loudly');
+      assert.match(second.error ?? '', /already registered/);
+      assert.equal(h.registry.allTasks().length, 1, 'duplicate registration must not create a second task');
+
+      const taskId = String(record(record(first.result, 'register result')['task'], 'task')['id']);
+      const settled = await request(h.bus, 'dup-settle', 'settle', {
+        ...auth,
+        task_id: taskId,
+        sequence: 1,
+        status: 'completed',
+      });
+      assert.equal(settled.ok, true, settled.error);
+      await h.registry.waitForTerminalPublications();
     } finally {
       h.service.beginShutdown();
       await h.service.drainRequests();
