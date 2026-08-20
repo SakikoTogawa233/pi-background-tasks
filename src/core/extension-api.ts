@@ -283,6 +283,12 @@ function requireNonEmptyString(value: unknown, label: string, maxChars = Number.
   return value;
 }
 
+function requireNonBlankString(value: unknown, label: string, maxChars = Number.MAX_SAFE_INTEGER): string {
+  const raw = requireNonEmptyString(value, label, maxChars);
+  if (raw.trim().length === 0) throw new Error(`${label} must be a non-blank string`);
+  return raw;
+}
+
 function requireBoolean(value: unknown, label: string): boolean {
   if (typeof value !== 'boolean') throw new Error(`${label} must be boolean`);
   return value;
@@ -650,7 +656,7 @@ class InstalledBackgroundTaskExtensionService implements BackgroundTaskExtension
       assertClosed(payload, ['service_id', 'owner_id', 'owner_token', 'owner_ref', 'name', 'description', 'capabilities', 'notify_on_completion', 'trigger_on_completion', 'stop_wait_ms'], 'register.payload');
       const ownerRef = requireNonEmptyString(payload['owner_ref'], 'register.payload.owner_ref', MAX_OWNER_REF_CHARS);
       if (owner.refs.has(ownerRef) || owner.pendingRefs.has(ownerRef)) throw new Error(`owner reference ${ownerRef} is already registered`);
-      const name = requireNonEmptyString(payload['name'], 'register.payload.name');
+      const name = requireNonBlankString(payload['name'], 'register.payload.name');
       const description = hasOwn(payload, 'description') ? requireNonEmptyString(payload['description'], 'register.payload.description') : undefined;
       const capabilities = externalCapabilities(payload['capabilities'], 'register.payload.capabilities');
       const notifyOnCompletion = requireBoolean(payload['notify_on_completion'], 'register.payload.notify_on_completion');
@@ -714,7 +720,7 @@ class InstalledBackgroundTaskExtensionService implements BackgroundTaskExtension
         throw new Error('update.payload must contain at least one update field');
       }
       const update: UpdateExternalTaskOptions = {};
-      if (hasOwn(payload, 'name')) update.name = requireNonEmptyString(payload['name'], 'update.payload.name');
+      if (hasOwn(payload, 'name')) update.name = requireNonBlankString(payload['name'], 'update.payload.name');
       if (hasOwn(payload, 'description')) update.description = requireNonEmptyString(payload['description'], 'update.payload.description');
       if (hasOwn(payload, 'capabilities')) update.capabilities = externalCapabilities(payload['capabilities'], 'update.payload.capabilities');
       action = () => this.registry.updateExternalTask(task, update);
