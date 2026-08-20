@@ -12,7 +12,7 @@ covers_sources: []
 <!-- pi-docs:begin name="command-contract-bg-clear" generator="scripts/docs/generate.mjs" -->
 | Command | Description | Provenance |
 | --- | --- | --- |
-| `/bg-clear` | Clear finished background task footer notices | `src/extension.ts:634` |
+| `/bg-clear` | Clear finished background task footer notices | `src/extension.ts:627` |
 <!-- pi-docs:end name="command-contract-bg-clear" -->
 
 Clear finished background task footer notices.
@@ -24,7 +24,7 @@ Clear finished background task footer notices.
 
 ## When to use
 
-Use this after you have seen completed, failed, or killed task badges in the footer and want to remove those finished counts from the dock status.
+Use this when you want to acknowledge finished task notices; completed, failed, and killed tasks remain part of the clearable unseen set even though footer counts display only successful completions.
 
 ## Defaults
 
@@ -32,7 +32,7 @@ No arguments. It only marks currently unseen finished tasks as seen.
 
 ## Lifecycle
 
-A finished task's footer badge is marked seen when its detail view opens. `/bg-clear` or the equivalent shortcut marks every currently unseen finished task seen at once. Merely opening the list view or closing the task manager does not clear badges. Running task counts remain visible after clearing finished notices.
+A finished task's notice is marked seen when its detail view opens. `/bg-clear` or the equivalent shortcut marks every currently unseen completed, failed, and killed task seen at once. Merely opening the list view or closing the task manager does not clear notices. Running task counts remain visible after clearing finished notices.
 
 ## Examples
 

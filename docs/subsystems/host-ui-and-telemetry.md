@@ -22,19 +22,16 @@ This subsystem owns the extension entrypoint, command/tool registration, footer 
 
 ## Footer status
 
-The footer widget is updated on task changes and once per second while a session is active. If there are no running tasks and no unseen finished tasks, the background-task footer is cleared unless an update segment is available.
+The footer widget is updated on task changes and once per second while a session is active. Footer task counts display only running tasks and unseen successful completions. If there are no running tasks and no unseen completed tasks, the background-task status is cleared unless an update segment is available. A failed/killed-only unseen task state clears the task status without marking those notices seen.
 
-When visible, the footer label includes counts in this order:
+Visible task counts appear in this order:
 
 1. running,
-2. failed,
-3. stopped (`killed`),
-4. done (`completed`),
-5. entry hint (`focused` while the dock is open, otherwise `Shift↓`),
-6. `/bg-clear` hint when there are unseen finished tasks **and the dock is closed**,
-7. optional update segment.
+2. done (`completed`).
 
-A finished badge is cleared when that task's detail view is opened, or when `/bg-clear` or its shortcut marks all currently unseen finished tasks as seen. Merely opening the list view or closing the dock does not clear badges.
+The count segments are followed by the entry hint (`focused` while the dock is open, otherwise `Shift↓`), the `/bg-clear` hint when any finished task is unseen **and the dock is closed**, and the optional update segment. Hidden failed and killed notices therefore still cause `/bg-clear` to appear when a running or done count keeps the task status visible. An update-only status remains visible without task entry or clear hints.
+
+A finished notice is cleared when that task's detail view is opened, or when `/bg-clear` or its shortcut marks all currently unseen finished tasks as seen. Merely opening the list view or closing the dock does not clear notices. Failed and killed tasks remain visible in the focused dock, commands, tools, history, logs, RPC data, and completion notifications.
 
 ## Task manager UI
 

@@ -136,7 +136,7 @@
       "state": "pass"
     },
     {
-      "authored_body_sha256": "sha256:d1fde1b760964fc2cf7efcb8a5843f2b32100cd1eef5903298256b4548a69492",
+      "authored_body_sha256": "sha256:c095a1e2d8c8cffa21096f1692ade4465a0c39c99a81d3ff74d02df6b68e9d80",
       "covers_sources": [
         "extensions/background-tasks.ts",
         "src/core/update-check.ts",
@@ -144,11 +144,10 @@
         "src/ui/background-tasks-manager.ts"
       ],
       "doc_id": "subsystems/host-ui-and-telemetry",
-      "notes": "Re-attested after the 2.5.3 change removing the bg_run prompt guideline that steered agents toward bg_run over bash; verified the document makes no claim about prompt guidelines or tool-preference steering, and re-verified registration surface (8 commands, 4 core tools plus advanced tools, 2 shortcuts, notification renderer), footer segment order and badge-clearing rules, task-manager list/detail behavior including 128 KiB/12-line/1-second follow tail semantics and confirmed stop-all, completion rendering, one-shot update-check environment/timeout/registry contracts, snapshot-only telemetry display, and the shutdown admission/drain/kill/finalize/close ordering; other covered sources (extensions/background-tasks.ts, src/core/update-check.ts, src/ui/background-tasks-manager.ts) unchanged from the cd99f6e baseline.",
       "rel": "docs/subsystems/host-ui-and-telemetry.md",
       "required": true,
       "reviewer": "glm-5.3-independent-attestation-reviewer",
-      "state": "pass"
+      "state": "stale-authored-prose"
     }
   ],
   "docs": {
@@ -890,28 +889,28 @@
         "id": "command:bg",
         "kind": "command",
         "name": "bg",
-        "source": "src/extension.ts:592"
+        "source": "src/extension.ts:585"
       },
       {
         "description": "Clear finished background task footer notices",
         "id": "command:bg-clear",
         "kind": "command",
         "name": "bg-clear",
-        "source": "src/extension.ts:634"
+        "source": "src/extension.ts:627"
       },
       {
         "description": "Open the background task manager UI",
         "id": "command:bg-tasks",
         "kind": "command",
         "name": "bg-tasks",
-        "source": "src/extension.ts:626"
+        "source": "src/extension.ts:619"
       },
       {
         "description": "Show how to update @sakiko233/pi-background-tasks to the latest published version",
         "id": "command:bg-update",
         "kind": "command",
         "name": "bg-update",
-        "source": "src/extension.ts:642"
+        "source": "src/extension.ts:635"
       },
       {
         "description": "Show or set Claude cache retention for this session (short, long, default)",
@@ -939,28 +938,28 @@
         "id": "command:jobs",
         "kind": "command",
         "name": "jobs",
-        "source": "src/extension.ts:680"
+        "source": "src/extension.ts:673"
       },
       {
         "description": "Stop a running background task: /kill <id>",
         "id": "command:kill",
         "kind": "command",
         "name": "kill",
-        "source": "src/extension.ts:724"
+        "source": "src/extension.ts:717"
       },
       {
         "description": "Show bounded output from a background task: /logs <id> [maxBytes]",
         "id": "command:logs",
         "kind": "command",
         "name": "logs",
-        "source": "src/extension.ts:693"
+        "source": "src/extension.ts:686"
       },
       {
         "description": "Open the Claude-like background task manager UI",
         "id": "command:tasks",
         "kind": "command",
         "name": "tasks",
-        "source": "src/extension.ts:618"
+        "source": "src/extension.ts:611"
       }
     ],
     "eventbus": [
@@ -988,7 +987,7 @@
         "id": "renderer:background-task-notification",
         "kind": "renderer",
         "name": "background-task-notification",
-        "source": "src/extension.ts:474"
+        "source": "src/extension.ts:467"
       },
       {
         "id": "renderer:fusion-result",
@@ -1003,7 +1002,7 @@
         "id": "shortcut:ctrl+alt+c",
         "kind": "shortcut",
         "name": "ctrl+alt+c",
-        "source": "src/extension.ts:672"
+        "source": "src/extension.ts:665"
       },
       {
         "description": "Move the most recent active foreground bash command to the background",
@@ -1017,7 +1016,7 @@
         "id": "shortcut:shift+down",
         "kind": "shortcut",
         "name": "shift+down",
-        "source": "src/extension.ts:665"
+        "source": "src/extension.ts:658"
       }
     ],
     "tool": [
@@ -1158,7 +1157,7 @@
           ],
           "type": "object"
         },
-        "source": "src/extension.ts:982"
+        "source": "src/extension.ts:975"
       },
       {
         "description": "Read bounded output from a background task for deliberate inspection; this is not a waiting primitive. Output is capped at 50.0KB for model safety and points to the full output file when truncated.",
@@ -1192,7 +1191,7 @@
           ],
           "type": "object"
         },
-        "source": "src/extension.ts:937"
+        "source": "src/extension.ts:930"
       },
       {
         "description": "Retrieve a hash-verified result from a bg_delegate or background Fusion task. Never blocks: a running task returns a typed not-ready result. Oversized answers are never truncated.",
@@ -1278,7 +1277,7 @@
           ],
           "type": "object"
         },
-        "source": "src/extension.ts:757"
+        "source": "src/extension.ts:750"
       },
       {
         "description": "Opt-in evidence-oriented direct Pi spawn. Launches exactly one `pi --mode json` child, records raw Pi events/stderr, hashes prompt/report/output, observes OAuth through ModelRegistry, and emits a strict attestation sidecar only after successful completion.",
@@ -1339,7 +1338,7 @@
           ],
           "type": "object"
         },
-        "source": "src/extension.ts:841"
+        "source": "src/extension.ts:834"
       },
       {
         "description": "Inspect one background task or list all running/recent background tasks. This is a point-in-time inspection tool, not a waiting primitive.",
@@ -1363,7 +1362,7 @@
           "required": [],
           "type": "object"
         },
-        "source": "src/extension.ts:906"
+        "source": "src/extension.ts:899"
       },
       {
         "description": "Start a five-model Fusion investigation as a tracked background task and return immediately after durable preflight. Retrieve the verified result with bg_result after notification. Candidate children run in clean bounded read-only contexts.",

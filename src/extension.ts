@@ -327,19 +327,14 @@ export default function backgroundTasksExtension(pi: ExtensionAPI): void {
       if (!ctx.hasUI) return;
       const allTasks = registry.allTasks();
       const running = allTasks.filter((task) => task.status === 'running');
-      const unseenFailed = allTasks.filter(
-        (task) => task.status === 'failed' && !seenTaskIds.has(task.id),
+      const unseenFinished = allTasks.filter(
+        (task) => task.status !== 'running' && !seenTaskIds.has(task.id),
       );
-      const unseenStopped = allTasks.filter(
-        (task) => task.status === 'killed' && !seenTaskIds.has(task.id),
-      );
-      const unseenDone = allTasks.filter(
-        (task) => task.status === 'completed' && !seenTaskIds.has(task.id),
-      );
-      const unseenFinishedCount = unseenFailed.length + unseenStopped.length + unseenDone.length;
+      const unseenDone = unseenFinished.filter((task) => task.status === 'completed');
+      const unseenFinishedCount = unseenFinished.length;
       const updateSegment = formatUpdateSegment(latestKnownVersion, PACKAGE_VERSION ?? '');
       ctx.ui.setWidget('background-tasks', undefined);
-      if (running.length === 0 && unseenFinishedCount === 0) {
+      if (running.length === 0 && unseenDone.length === 0) {
         ctx.ui.setStatus(
           'background-tasks',
           updateSegment ? lightBlue(` bg ${updateSegment} `) : undefined,
@@ -349,8 +344,6 @@ export default function backgroundTasksExtension(pi: ExtensionAPI): void {
 
       const parts: string[] = [];
       if (running.length > 0) parts.push(`${String(running.length)} running`);
-      if (unseenFailed.length > 0) parts.push(`${String(unseenFailed.length)} failed`);
-      if (unseenStopped.length > 0) parts.push(`${String(unseenStopped.length)} stopped`);
       if (unseenDone.length > 0) parts.push(`${String(unseenDone.length)} done`);
       const entryHint = dockOpen
         ? 'focused'
