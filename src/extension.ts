@@ -30,7 +30,6 @@ import {
   type BgStatusDetails,
   type BgTask,
   type BgTaskSnapshot,
-  type StartAttestedPiTaskOptions,
   type StartTaskOptions,
 } from './core/common.js';
 import {
@@ -53,8 +52,6 @@ import {
   type BackgroundTaskForUi,
   type TaskManagerResult,
 } from './ui/background-tasks-manager.js';
-import { registerFusionExtension } from './fusion-extension.js';
-import { registerDelegateExtension } from './delegate-extension.js';
 
 /**
  * Project-local Pi background task manager.
@@ -101,17 +98,6 @@ interface BgToolArgumentRecord {
   readonly triggerOnCompletion?: unknown;
 }
 
-interface BgPiAttestedArgumentRecord {
-  readonly name?: unknown;
-  readonly provider?: unknown;
-  readonly model?: unknown;
-  readonly prompt?: unknown;
-  readonly reportPath?: unknown;
-  readonly extraPiArgs?: unknown;
-  readonly thinking?: unknown;
-  readonly timeoutSeconds?: unknown;
-}
-
 function optionalTrimmed(value: string): string | undefined {
   const trimmed = value.trim();
   return trimmed.length > 0 ? trimmed : undefined;
@@ -125,7 +111,7 @@ const BgRunParams = Type.Object({
   command: Type.String({ description: 'Shell command to start in the background' }),
   isAgent: Type.Boolean({
     description:
-      'Required. Set true only when this background task launches an LLM/agent process, such as a child `pi -p ...` or `pi --mode json ...`, so Pi-agent telemetry can be collected. Set false for scripts, tests, servers, sleeps, and ordinary shell commands.',
+      'Required for preserved shell API compatibility. Classify the command as agent-launched or ordinary; this package applies no workflow-specific behavior.',
   }),
   description: Type.Optional(
     Type.String({ description: 'Optional longer human-readable context for the task' }),
@@ -144,31 +130,6 @@ const BgRunParams = Type.Object({
       description:
         'Whether that notification should automatically trigger a follow-up agent turn. Default: true for bg_run; requires notifyOnCompletion.',
     }),
-  ),
-});
-
-const BgPiAttestedParams = Type.Object({
-  name: Type.String({ description: 'Short human-readable name for this attested Pi task.' }),
-  provider: Type.String({
-    description: 'Exact Pi provider to launch, for example openai-codex or anthropic.',
-  }),
-  model: Type.String({ description: 'Exact provider-local Pi model id to launch.' }),
-  prompt: Type.String({ description: 'Prompt bytes passed as the single user prompt to Pi.' }),
-  reportPath: Type.String({
-    description:
-      'Relative path, inside the task cwd, that the child Pi run must write as its report.',
-  }),
-  extraPiArgs: Type.Optional(
-    Type.Array(
-      Type.String({
-        description:
-          'Additional literal Pi argv entries; mode/provider/model/api-key args are rejected.',
-      }),
-    ),
-  ),
-  thinking: Type.Optional(Type.String({ description: 'Optional Pi thinking level argument.' })),
-  timeoutSeconds: Type.Optional(
-    Type.Number({ description: 'Optional timeout; task is failed and killed when exceeded' }),
   ),
 });
 
@@ -200,7 +161,6 @@ const BgKillParams = Type.Object({
 });
 
 type BgRunParamsValue = Static<typeof BgRunParams>;
-type BgPiAttestedParamsValue = Static<typeof BgPiAttestedParams>;
 
 function renderPlainResult(result: TextToolResult, options: ToolRenderResultOptions, theme: Theme) {
   void options;
@@ -277,25 +237,6 @@ export default function backgroundTasksExtension(pi: ExtensionAPI): void {
   });
   registerForegroundBashFeature(pi, foregroundBash);
 
-  registerFusionExtension(pi, {
-    startManagedTask: async (ctx, options) => {
-      currentCtx = ctx;
-      return registry.startManagedTask(ctx, options);
-    },
-    snapshot: (task) => registry.snapshot(task),
-    updateManagedTask: (task, state, line) => registry.updateManagedTask(task, state, line),
-  });
-
-  registerDelegateExtension(pi, {
-    startDelegateTask: async (ctx, options) => {
-      currentCtx = ctx;
-      return registry.startDelegateTask(ctx, options);
-    },
-    snapshot: (task) => registry.snapshot(task),
-    resolveTask: (idOrPrefix) => registry.resolveTask(idOrPrefix),
-    claimFusionUsage: (task) => registry.claimFusionUsage(task),
-  });
-
   function unseenFinishedTasks(): BgTask[] {
     return registry
       .allTasks()
@@ -369,14 +310,6 @@ export default function backgroundTasksExtension(pi: ExtensionAPI): void {
     return registry.startTask(ctx, command, options);
   }
 
-  async function startAttestedPiTask(
-    ctx: ExtensionContext,
-    options: StartAttestedPiTaskOptions,
-  ): Promise<BgTask> {
-    currentCtx = ctx;
-    return registry.startAttestedPiTask(ctx, options);
-  }
-
   async function openTaskManager(
     ctx: ExtensionCommandContext | ExtensionContext,
     initialTaskId?: string,
@@ -406,9 +339,9 @@ export default function backgroundTasksExtension(pi: ExtensionAPI): void {
               return result;
             },
             rerunTask: async (task: BackgroundTaskForUi) => {
-              if (task.fusion !== undefined || task.delegate !== undefined) {
+              if (task.owner !== undefined) {
                 throw new Error(
-                  'Only shell-command tasks can be rerun from the dock; relaunch this typed workflow through its owning tool.',
+                  'Externally managed tasks must be rerun through their registered owner.',
                 );
               }
               const rerunOptions: StartTaskOptions = {
@@ -754,7 +687,7 @@ export default function backgroundTasksExtension(pi: ExtensionAPI): void {
     promptSnippet:
       'Start a named long-running shell command; default terminal notification wakes a follow-up turn, so yield instead of polling',
     promptGuidelines: [
-      'Always set isAgent: true only when the background task launches an LLM/agent process; set isAgent: false for scripts, tests, dev servers, sleeps, and ordinary shell commands.',
+      'Set bg_run isAgent truthfully for preserved shell API compatibility; it does not enable workflow-specific behavior.',
       'When using bg_run, always set name to a concise 2-6 word human-readable label for the footer task dock; do not use the raw command as the name unless it is already short and meaningful.',
       'bg_run returns immediately. With notifyOnCompletion:true and triggerOnCompletion:true (both defaults), completed, failed, or killed terminal state is delivered as <background-task-notification> and automatically starts a follow-up agent turn.',
       'After a default bg_run launch, continue only independent useful work that does not merely wait for the task; otherwise briefly acknowledge it if useful, then end the current turn. Do not call sleep, bg_status, or bg_logs merely to wait; the terminal notification will wake you.',
@@ -768,9 +701,7 @@ export default function backgroundTasksExtension(pi: ExtensionAPI): void {
       const input = args as BgToolArgumentRecord;
       if (typeof input.command !== 'string') throw new Error('bg_run requires command string');
       if (typeof input.isAgent !== 'boolean') {
-        throw new Error(
-          'bg_run requires isAgent boolean. Set true only for LLM/agent tasks; set false for scripts, tests, servers, sleeps, and ordinary shell commands.',
-        );
+        throw new Error('bg_run requires isAgent boolean for preserved shell API compatibility.');
       }
       const prepared: BgRunParamsValue = {
         command: input.command,
@@ -790,9 +721,7 @@ export default function backgroundTasksExtension(pi: ExtensionAPI): void {
     },
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
       if (typeof params.isAgent !== 'boolean') {
-        throw new Error(
-          'bg_run requires isAgent boolean. Set true only for LLM/agent tasks; set false for scripts, tests, servers, sleeps, and ordinary shell commands.',
-        );
+        throw new Error('bg_run requires isAgent boolean for preserved shell API compatibility.');
       }
       const taskOptions: StartTaskOptions = {
         name: params.name,
@@ -825,71 +754,6 @@ export default function backgroundTasksExtension(pi: ExtensionAPI): void {
       const { task } = result.details;
       return new Text(
         `${theme.fg('success', '✓ started')} ${theme.fg('accent', taskDisplayName(task))} ${theme.fg('dim', `(${task.id})`)}\n${theme.fg('dim', `Output: ${task.outputPath}`)}`,
-        0,
-        0,
-      );
-    },
-  });
-
-  pi.registerTool<typeof BgPiAttestedParams, BgRunDetails>({
-    name: 'bg_run_pi_attested',
-    label: 'Attested Pi Run',
-    description:
-      'Opt-in evidence-oriented direct Pi spawn. Launches exactly one `pi --mode json` child, records raw Pi events/stderr, hashes prompt/report/output, observes OAuth through ModelRegistry, and emits a strict attestation sidecar only after successful completion.',
-    promptSnippet: 'Start an attested direct Pi agent task and return its task ID plus output path',
-    promptGuidelines: [
-      'Use only when the user explicitly asks for an attested Pi evidence-producing task; ordinary background work should use bg_run unchanged.',
-      'Provide provider/model as structured fields and a relative reportPath that the child Pi prompt will write before exit.',
-      'Do not provide channel, auth, route, or hash claims; the producer observes those facts itself and fails loudly if it cannot attest them.',
-    ],
-    parameters: BgPiAttestedParams,
-    prepareArguments(args): BgPiAttestedParamsValue {
-      if (!args || typeof args !== 'object')
-        throw new Error('bg_run_pi_attested arguments must be an object');
-      const input = args as BgPiAttestedArgumentRecord;
-      if (typeof input.name !== 'string') throw new Error('bg_run_pi_attested requires name');
-      if (typeof input.provider !== 'string')
-        throw new Error('bg_run_pi_attested requires provider');
-      if (typeof input.model !== 'string') throw new Error('bg_run_pi_attested requires model');
-      if (typeof input.prompt !== 'string') throw new Error('bg_run_pi_attested requires prompt');
-      if (typeof input.reportPath !== 'string')
-        throw new Error('bg_run_pi_attested requires reportPath');
-      const prepared: BgPiAttestedParamsValue = {
-        name: input.name,
-        provider: input.provider,
-        model: input.model,
-        prompt: input.prompt,
-        reportPath: input.reportPath,
-      };
-      if (Array.isArray(input.extraPiArgs)) {
-        if (!input.extraPiArgs.every((entry) => typeof entry === 'string'))
-          throw new Error('bg_run_pi_attested extraPiArgs entries must be strings');
-        prepared.extraPiArgs = input.extraPiArgs;
-      }
-      if (typeof input.thinking === 'string') prepared.thinking = input.thinking;
-      if (typeof input.timeoutSeconds === 'number') prepared.timeoutSeconds = input.timeoutSeconds;
-      return prepared;
-    },
-    async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
-      const task = await startAttestedPiTask(ctx, params);
-      return {
-        content: textContent(
-          `Started attested Pi task ${taskDisplayName(task)} (${task.id})\nStatus: ${task.status}\nPID: ${String(task.pid ?? 'unknown')}\nOutput: ${task.outputPath}\nAttestation: ${task.attestationPath ?? 'pending until completion'}`,
-        ),
-        details: { task: registry.snapshot(task) },
-      };
-    },
-    renderCall(args, theme) {
-      return new Text(
-        `${theme.fg('toolTitle', theme.bold('bg_run_pi_attested '))}${theme.fg('muted', truncateChars(args.name, COMMAND_PREVIEW_CHARS))}`,
-        0,
-        0,
-      );
-    },
-    renderResult(result, _options, theme) {
-      const { task } = result.details;
-      return new Text(
-        `${theme.fg('success', '✓ started')} ${theme.fg('accent', taskDisplayName(task))} ${theme.fg('dim', `(${task.id})`)}\n${theme.fg('dim', `Output: ${task.outputPath}`)}\n${theme.fg('dim', `Attestation: ${task.attestationPath ?? 'pending'}`)}`,
         0,
         0,
       );

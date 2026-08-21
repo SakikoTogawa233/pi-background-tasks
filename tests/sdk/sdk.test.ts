@@ -1,9 +1,8 @@
-import { describe, it, afterEach, type TestContext } from 'node:test';
+import { describe, it, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
-import { spawnSync } from 'node:child_process';
-import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
-import { delimiter, dirname, join, resolve } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { createServer } from 'node:http';
 import {
@@ -33,31 +32,7 @@ import {
 import { parsePackageInfo } from '../../src/core/update-check.js';
 
 const extensionPath = resolve('extensions/background-tasks.ts');
-const scriptedProviderPath = resolve('tests/scripted-provider/scripted-provider-extension.ts');
 const roots: string[] = [];
-
-function skipWin32PiPathFixture(t: TestContext, target: string): boolean {
-  if (process.platform !== 'win32') return false;
-  t.skip(
-    `${target} fake Pi PATH interception is not applicable on win32 because production resolves the Pi package instead of PATH by design`,
-  );
-  return true;
-}
-
-function skipWin32PosixPiTelemetry(t: TestContext): boolean {
-  if (process.platform !== 'win32') return false;
-  t.skip('POSIX-shell Pi telemetry wrapping is not applicable on win32 cmd tasks by design');
-  return true;
-}
-
-function shellQuote(value: string): string {
-  return `'${value.replace(/'/g, `'"'"'`)}'`;
-}
-
-function resolvePiCli(): string | undefined {
-  const which = spawnSync('bash', ['-lc', 'command -v pi'], { encoding: 'utf8' });
-  return which.status === 0 ? which.stdout.trim() || undefined : undefined;
-}
 
 interface SdkHarnessOptions {
   eventBus?: EventBus | undefined;
@@ -470,21 +445,6 @@ interface SettledFooterOptions {
   registryStatus?: number;
 }
 
-function git(cwd: string, args: string[]): void {
-  const result = spawnSync('git', args, { cwd, encoding: 'utf8' });
-  assert.equal(result.status, 0, result.stderr || result.stdout);
-}
-
-async function initCleanGit(cwd: string): Promise<void> {
-  git(cwd, ['init']);
-  git(cwd, ['config', 'user.email', 'pi-bg@example.invalid']);
-  git(cwd, ['config', 'user.name', 'Pi BG Tests']);
-  await writeFile(join(cwd, 'README.md'), 'clean\n', 'utf8');
-  await writeFile(join(cwd, '.gitignore'), '.pi/\nbin/\nreport.md\n', 'utf8');
-  git(cwd, ['add', 'README.md', '.gitignore']);
-  git(cwd, ['commit', '-m', 'init']);
-}
-
 function restoreEnvValue(key: string, value: string | undefined): void {
   if (value === undefined) {
     Reflect.deleteProperty(process.env, key);
@@ -545,7 +505,8 @@ void describe('sdk', () => {
       );
       const properties = bgRunParams['properties'];
       const isAgentSchema = isJsonObject(properties) ? properties['isAgent'] : bgRunParams;
-      assert.match(JSON.stringify(isAgentSchema), /LLM\/agent/);
+      assert.match(JSON.stringify(isAgentSchema), /preserved shell API compatibility/);
+      assert.match(JSON.stringify(isAgentSchema), /no workflow-specific behavior/);
       const cmds = session.extensionRunner.getRegisteredCommands().map((c) => c.invocationName);
       for (const cmd of [
         'bg',
@@ -869,121 +830,6 @@ void describe('sdk', () => {
     }
   });
 
-  void it('runs the structured bg_run_pi_attested tool and writes a complete flat attestation', async (t) => {
-    if (skipWin32PiPathFixture(t, 'attested')) return;
-    const { session, cwd, modelRegistry, modelRuntime } = await harness();
-    const oldPath = process.env['PATH'];
-    try {
-      await initCleanGit(cwd);
-      modelRegistry.registerProvider('openai-codex', {
-        name: 'OpenAI Codex Test OAuth',
-        baseUrl: 'https://example.invalid',
-        apiKey: 'PI_BG_TEST_KEY',
-        api: 'openai-codex-responses',
-        models: [
-          {
-            id: 'gpt-5.5',
-            name: 'GPT 5.5',
-            reasoning: false,
-            input: ['text'],
-            cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-            contextWindow: 100000,
-            maxTokens: 4096,
-          },
-        ],
-      });
-      // Pi 0.83 builds its own ModelRegistry facade per session, so the OAuth
-      // observation must be stubbed on the shared ModelRuntime it delegates to.
-      const originalOAuth = modelRuntime.isUsingOAuth.bind(modelRuntime);
-      modelRuntime.isUsingOAuth = (providerId: string) =>
-        providerId === 'openai-codex' ? true : originalOAuth(providerId);
-      const bin = join(cwd, 'bin');
-      await mkdir(bin, { recursive: true });
-      const fakePi = join(bin, 'pi');
-      await writeFile(
-        fakePi,
-        `#!/usr/bin/env node
-const { writeFileSync } = require('node:fs');
-const args = process.argv.slice(2);
-if (args[0] !== '--mode' || args[1] !== 'json') process.exit(10);
-writeFileSync('report.md', 'sdk report\\n');
-const provider = args[args.indexOf('--provider') + 1];
-const model = args[args.indexOf('--model') + 1];
-const events = [
-  { type: 'session', version: 3, id: 'pi-session-sdk', timestamp: '2026-01-01T00:00:00.000Z', cwd: process.cwd() },
-  { type: 'agent_start' },
-  { type: 'message_end', message: { role: 'assistant', provider, model, usage: { input: 20, output: 10, cacheRead: 0, cacheWrite: 0, totalTokens: 30, cost: { total: 0.44 } }, content: [{ type: 'text', text: 'sdk attested done' }], stopReason: 'stop' } },
-  { type: 'agent_end', messages: [] },
-];
-for (const event of events) console.log(JSON.stringify(event));
-console.error('sdk stderr');
-`,
-        'utf8',
-      );
-      await chmod(fakePi, 0o755);
-      process.env['PATH'] = `${bin}${delimiter}${oldPath ?? ''}`;
-
-      const result = await exec(session, 'bg_run_pi_attested', {
-        name: 'SDK Attested',
-        provider: 'openai-codex',
-        model: 'gpt-5.5',
-        prompt: 'produce sdk attestation',
-        reportPath: 'report.md',
-        extraPiArgs: ['--no-extensions'],
-      });
-      const task = await wait(session, taskFromResult(result).id, 100);
-      assert.equal(task.status, 'completed');
-      assert.match(task.id, /^b[0-9a-f]{32}$/);
-      assert.equal(task.model, 'openai-codex/gpt-5.5');
-      assert.deepEqual(task.tokenUsage, {
-        input: 20,
-        output: 10,
-        cacheRead: 0,
-        cacheWrite: 0,
-        totalTokens: 30,
-        costTotal: 0.44,
-      });
-      const attestationPath = join(cwd, task.outputPath.replace(/\.output$/, '.attestation.json'));
-      for (let attempt = 0; attempt < 100 && !existsSync(attestationPath); attempt++) {
-        await new Promise((resolve) => setTimeout(resolve, 25));
-      }
-      assert.ok(existsSync(attestationPath));
-      const attestation = parseJsonObject(
-        await readFile(attestationPath, 'utf8'),
-        'SDK attestation should be JSON',
-      );
-      const invocation = requiredJsonObject(attestation['invocation'], 'invocation');
-      assert.equal(invocation['pi_session_id'], 'pi-session-sdk');
-      assert.deepEqual(invocation['argv'], [
-        'pi',
-        '--mode',
-        'json',
-        '--provider',
-        'openai-codex',
-        '--model',
-        'gpt-5.5',
-        '--no-extensions',
-        'produce sdk attestation',
-      ]);
-      assert.equal(invocation['credential_kind'], 'oauth');
-      const artifacts = requiredJsonObject(attestation['artifacts'], 'artifacts');
-      const sourceHashes = requiredJsonObject(attestation['source_hashes'], 'source hashes');
-      assert.equal(
-        requiredJsonObject(artifacts['task_output'], 'task output')['sha256'],
-        sourceHashes['output_sha256'],
-      );
-      assert.match(await readFile(join(cwd, task.outputPath), 'utf8'), /sdk attested done/);
-      assert.match(
-        await readFile(join(cwd, task.outputPath.replace(/\.output$/, '.stderr')), 'utf8'),
-        /sdk stderr/,
-      );
-    } finally {
-      restoreEnvValue('PATH', oldPath);
-      await session.extensionRunner.emit({ type: 'session_shutdown', reason: 'quit' });
-      session.dispose();
-    }
-  });
-
   void it('supports status/log prefix resolution, all-task listing, head/tail truncation, and ambiguous/unknown ID errors', async () => {
     const { session } = await harness();
     try {
@@ -1136,263 +982,6 @@ console.error('sdk stderr');
       session.dispose();
     }
   });
-
-  void it('captures only task-owned explicit telemetry in snapshots and metadata', async () => {
-    const { session, cwd } = await harness();
-    try {
-      const tool = session.getToolDefinition('bg_run');
-      assert.ok(tool, 'bg_run tool should be registered');
-      const ctx = session.extensionRunner.createContext();
-      ctx.getContextUsage = () => ({ tokens: 999_000, contextWindow: 1_000_000, percent: 99.9 });
-      const script = `console.log(JSON.stringify({ type: "background-task-telemetry", model: "test-provider/test-model", contextUsage: { tokens: 50000, contextWindow: 200000, percent: 25 }, tokenUsage: { input: 1000, output: 200, cacheRead: 30, cacheWrite: 20, totalTokens: 1250 }, toolUsage: { total: 2, failed: 1, byName: { read: 1, bash: 1 } } })); console.log("context");`;
-      const command = `node -e ${JSON.stringify(script)}`;
-      const rawResult: unknown = await tool.execute(
-        'call-context',
-        {
-          isAgent: false,
-          name: 'Context SDK',
-          command,
-          notifyOnCompletion: false,
-          triggerOnCompletion: false,
-        },
-        undefined,
-        undefined,
-        ctx,
-      );
-      assert.ok(isTestToolResult(rawResult), 'bg_run should return a typed tool result');
-      const t = await wait(session, taskFromResult(rawResult).id);
-      assert.deepEqual(t.contextUsage, { tokens: 50_000, contextWindow: 200_000, percent: 25 });
-      assert.deepEqual(t.tokenUsage, {
-        input: 1000,
-        output: 200,
-        cacheRead: 30,
-        cacheWrite: 20,
-        totalTokens: 1250,
-      });
-      assert.deepEqual(t.toolUsage, { total: 2, failed: 1, byName: { read: 1, bash: 1 } });
-      assert.equal(t.model, 'test-provider/test-model');
-      const status = await exec(session, 'bg_status', { taskId: t.id });
-      assert.match(resultText(status), /ctx=25\.0%\/200k/);
-      assert.match(resultText(status), /model=test-provider\/test-model/);
-      assert.match(resultText(status), /tokens=1\.3k/);
-      assert.match(resultText(status), /tools=2 failed=1/);
-      const metadataPath = join(cwd, t.outputPath.replace(/\.output$/, '.json'));
-      let metadata = parseJsonObject(
-        await readFile(metadataPath, 'utf8'),
-        'telemetry metadata should be an object',
-      );
-      for (let attempt = 0; attempt < 40; attempt++) {
-        metadata = parseJsonObject(
-          await readFile(metadataPath, 'utf8'),
-          'telemetry metadata should be an object',
-        );
-        if (metadata['contextUsage'] !== undefined) break;
-        await new Promise((resolve) => setTimeout(resolve, 25));
-      }
-      assert.deepEqual(metadata['contextUsage'], {
-        tokens: 50_000,
-        contextWindow: 200_000,
-        percent: 25,
-      });
-      assert.deepEqual(metadata['tokenUsage'], t.tokenUsage);
-      assert.deepEqual(metadata['toolUsage'], t.toolUsage);
-      assert.equal(metadata['model'], 'test-provider/test-model');
-
-      const legacy = await exec(session, 'bg_run', {
-        isAgent: false,
-        name: 'Legacy Context SDK',
-        command: `node -e ${JSON.stringify('console.log(JSON.stringify({ type: "background-task-context-usage", tokens: 42, contextWindow: 1000, percent: 4.2 }))')}`,
-        notifyOnCompletion: false,
-        triggerOnCompletion: false,
-      });
-      const legacyTask = await wait(session, taskFromResult(legacy).id);
-      assert.deepEqual(legacyTask.contextUsage, { tokens: 42, contextWindow: 1000, percent: 4.2 });
-      assert.equal(legacyTask.tokenUsage, undefined);
-
-      const noTelemetry = await exec(session, 'bg_run', {
-        isAgent: false,
-        name: 'No Context SDK',
-        command: 'echo no-context',
-        notifyOnCompletion: false,
-        triggerOnCompletion: false,
-      });
-      const noTelemetryTask = await wait(session, taskFromResult(noTelemetry).id);
-      assert.equal(noTelemetryTask.contextUsage, undefined);
-      assert.equal(noTelemetryTask.tokenUsage, undefined);
-      assert.equal(noTelemetryTask.toolUsage, undefined);
-      assert.equal(noTelemetryTask.model, undefined);
-    } finally {
-      await session.extensionRunner.emit({ type: 'session_shutdown', reason: 'quit' });
-      session.dispose();
-    }
-  });
-
-  void it('wraps explicitly marked background Pi agents and captures context telemetry', async (t) => {
-    if (skipWin32PosixPiTelemetry(t)) return;
-    const { session, cwd } = await harness();
-    const oldPath = process.env['PATH'];
-    try {
-      const bin = join(cwd, 'bin');
-      await mkdir(bin, { recursive: true });
-      const fakePi = join(bin, 'pi');
-      await writeFile(
-        fakePi,
-        `#!/usr/bin/env node
-const args = process.argv.slice(2);
-if (!args.includes("--mode") || args[args.indexOf("--mode") + 1] !== "json") {
-  console.error("expected --mode json: " + JSON.stringify(args));
-  process.exit(3);
-}
-if (args.includes("-p") || args.includes("--print")) {
-  console.error("print flag should be removed: " + JSON.stringify(args));
-  process.exit(4);
-}
-const firstMessage = {
-  role: "assistant",
-  model: "openai-codex/gpt-5.5",
-  usage: { input: 1000, output: 200, cacheRead: 30, cacheWrite: 20, totalTokens: 1250 },
-  content: [{ type: "toolCall", id: "call-read", name: "read", arguments: { path: "README.md" } }],
-  stopReason: "toolUse",
-  timestamp: Date.now()
-};
-const secondMessage = {
-  role: "assistant",
-  model: "openai-codex/gpt-5.5",
-  usage: { input: 300, output: 50, cacheRead: 0, cacheWrite: 10, totalTokens: 360 },
-  content: [{ type: "text", text: "fake child final" }],
-  stopReason: "stop",
-  timestamp: Date.now()
-};
-console.log(JSON.stringify({ type: "message_end", message: firstMessage }));
-console.log(JSON.stringify({ type: "tool_execution_start", toolCallId: "call-read", toolName: "read", args: { path: "README.md" } }));
-console.log(JSON.stringify({ type: "tool_execution_end", toolCallId: "call-read", toolName: "read", result: {}, isError: false }));
-console.log(JSON.stringify({ type: "tool_execution_start", toolCallId: "call-bash", toolName: "bash", args: { command: "false" } }));
-console.log(JSON.stringify({ type: "tool_execution_end", toolCallId: "call-bash", toolName: "bash", result: {}, isError: true }));
-console.log(JSON.stringify({ type: "message_end", message: secondMessage }));
-`,
-        'utf8',
-      );
-      await chmod(fakePi, 0o755);
-      process.env['PATH'] = `${bin}${delimiter}${oldPath ?? ''}`;
-
-      const r = await exec(session, 'bg_run', {
-        isAgent: true,
-        name: 'Wrapped Pi Agent',
-        command: 'pi --model openai-codex/gpt-5.5 -p hello',
-        notifyOnCompletion: false,
-        triggerOnCompletion: false,
-      });
-      const t = await wait(session, taskFromResult(r).id);
-      assert.equal(t.status, 'completed');
-      assert.deepEqual(t.contextUsage, {
-        tokens: 360,
-        contextWindow: 272000,
-        percent: (360 / 272000) * 100,
-      });
-      assert.deepEqual(t.tokenUsage, {
-        input: 1300,
-        output: 250,
-        cacheRead: 30,
-        cacheWrite: 30,
-        totalTokens: 1610,
-      });
-      assert.deepEqual(t.toolUsage, { total: 2, failed: 1, byName: { read: 1, bash: 1 } });
-      assert.equal(t.model, 'openai-codex/gpt-5.5');
-      const status = await exec(session, 'bg_status', { taskId: t.id });
-      assert.match(resultText(status), /model=openai-codex\/gpt-5\.5/);
-      assert.match(resultText(status), /tokens=1\.6k/);
-      assert.match(resultText(status), /tools=2 failed=1/);
-      const logs = await exec(session, 'bg_logs', { taskId: t.id, maxBytes: 4000, tail: false });
-      const logText = resultText(logs);
-      assert.match(logText, /\u2192 read README\.md/);
-      assert.match(logText, /\u2717 bash failed/);
-      assert.match(logText, /fake child final/);
-      assert.doesNotMatch(logText, /background-task-telemetry/);
-      assert.doesNotMatch(logText, /background-task-context-usage/);
-      assert.doesNotMatch(logText, /background-task-activity/);
-      const metadataPath = join(cwd, t.outputPath.replace(/\.output$/, '.json'));
-      const metadata = parseJsonObject(
-        await readFile(metadataPath, 'utf8'),
-        'wrapped Pi metadata should be an object',
-      );
-      assert.deepEqual(metadata['contextUsage'], t.contextUsage);
-      assert.deepEqual(metadata['tokenUsage'], t.tokenUsage);
-      assert.deepEqual(metadata['toolUsage'], t.toolUsage);
-      assert.equal(metadata['model'], 'openai-codex/gpt-5.5');
-    } finally {
-      restoreEnvValue('PATH', oldPath);
-      await session.extensionRunner.emit({ type: 'session_shutdown', reason: 'quit' });
-      session.dispose();
-    }
-  });
-
-  void it(
-    'wraps an explicitly marked real child Pi and counts JSON token/tool telemetry',
-    { timeout: 20_000 },
-    async (t) => {
-      if (process.platform === 'win32') {
-        t.skip('POSIX shell env-prefix child-pi telemetry smoke is not portable to Windows');
-        return;
-      }
-      const piCli = resolvePiCli();
-      if (!piCli) {
-        t.skip('pi CLI is not available on PATH for real child-pi telemetry smoke');
-        return;
-      }
-      const { session, cwd } = await harness();
-      try {
-        const childAgentDir = join(cwd, 'child-agent');
-        const childSessionDir = join(cwd, 'child-sessions');
-        await mkdir(childAgentDir, { recursive: true });
-        await mkdir(childSessionDir, { recursive: true });
-        const envPrefix = Object.entries({
-          PI_BG_SCRIPTED_SCENARIO: 'json-tool-telemetry',
-          PI_BG_SCRIPTED_API_KEY: 'scripted-api-key',
-          PI_CODING_AGENT_DIR: childAgentDir,
-          PI_CODING_AGENT_SESSION_DIR: childSessionDir,
-          PI_OFFLINE: '1',
-          PI_SKIP_VERSION_CHECK: '1',
-          PI_TELEMETRY: '0',
-          CI: '1',
-          PATH: `${dirname(piCli)}${delimiter}${process.env['PATH'] ?? ''}`,
-        })
-          .map(([key, value]) => `${key}=${shellQuote(value)}`)
-          .join(' ');
-        const command = `${envPrefix} pi --offline --no-session --no-extensions -e ${shellQuote(scriptedProviderPath)} --no-skills --no-prompt-templates --no-context-files --model pi-bg-scripted/scripted-model -p ${shellQuote('exercise real json tool telemetry')}`;
-        const r = await exec(session, 'bg_run', {
-          isAgent: true,
-          name: 'Real Pi Telemetry',
-          command,
-          notifyOnCompletion: false,
-          triggerOnCompletion: false,
-        });
-        const t = await wait(session, taskFromResult(r).id, 240);
-        assert.equal(t.status, 'completed');
-        assert.deepEqual(t.tokenUsage, {
-          input: 20,
-          output: 10,
-          cacheRead: 0,
-          cacheWrite: 0,
-          totalTokens: 30,
-          costTotal: 0,
-        });
-        assert.deepEqual(t.toolUsage, { total: 2, failed: 1, byName: { scripted_echo: 2 } });
-        assert.equal(t.model, 'pi-bg-scripted/scripted-model');
-        const status = await exec(session, 'bg_status', { taskId: t.id });
-        assert.match(resultText(status), /model=pi-bg-scripted\/scripted-model/);
-        assert.match(resultText(status), /tokens=30/);
-        assert.match(resultText(status), /tools=2 failed=1/);
-        const logs = await exec(session, 'bg_logs', { taskId: t.id, maxBytes: 8000, tail: false });
-        const logText = resultText(logs);
-        assert.match(logText, /JSON tool telemetry complete/);
-        assert.match(logText, /scripted_echo/);
-        assert.doesNotMatch(logText, /background-task-telemetry/);
-      } finally {
-        await session.extensionRunner.emit({ type: 'session_shutdown', reason: 'quit' });
-        session.dispose();
-      }
-    },
-  );
 
   void it('keeps finished footer notices until explicit /bg-clear', async () => {
     const { session } = await harness();

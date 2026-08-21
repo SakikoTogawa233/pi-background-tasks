@@ -40,7 +40,7 @@ const ALLOWED_MODE = ['generated', 'authored', 'mixed'];
 const ALLOWED_REVIEW = ['contract', 'behavioral'];
 const ALLOWED_STABILITY = ['stable', 'evolving', 'frozen'];
 const PUBLIC_KINDS = ['command', 'tool', 'shortcut', 'renderer', 'eventbus', 'workflow'];
-const EXCLUDED_PARENT_TOOL_NAMES = new Set(['delegate_read_artifact', 'fusion_web_fetch']);
+const EXCLUDED_PARENT_TOOL_NAMES = new Set();
 const ROOT_MARKDOWN_RELS = [
   'README.md',
   'BACKGROUND-TASKS-INSTRUCTIONS.md',
@@ -1352,43 +1352,58 @@ function extractEventBus(ts, root, cache) {
   };
 }
 
-function extractFusionWorkflows(ts, root, cache) {
-  const rel = 'src/core/fusion/workflows.ts';
-  const names = ['FUSION_REASON_WORKFLOW', 'FUSION_INVESTIGATE_WORKFLOW', 'FUSION_RESEARCH_WORKFLOW', 'FUSION_VALIDATE_WORKFLOW'];
-  const keys = ['id', 'publicName', 'toolName', 'runIdPrefix', 'contextKind', 'candidateCapability', 'candidateTools', 'evaluatorCapability', 'evaluatorTools', 'mergeCapability', 'mergeTools', 'label'];
-  const workflows = [];
+function extractExternalEventBus(ts, root, cache) {
+  const rel = 'src/core/extension-api.ts';
+  const constants = new Map(exportedConstants(ts, root, rel, cache).map((x) => [x.name, x]));
+  const required = [
+    'BG_EXTERNAL_REQUEST_CHANNEL',
+    'BG_EXTERNAL_RESPONSE_CHANNEL',
+    'BG_EXTERNAL_CANCEL_CHANNEL',
+    'BG_EXTERNAL_TERMINAL_CHANNEL',
+    'BG_EXTERNAL_REQUEST_SCHEMA',
+    'BG_EXTERNAL_RESPONSE_SCHEMA',
+    'BG_EXTERNAL_CANCEL_SCHEMA',
+    'BG_EXTERNAL_TERMINAL_SCHEMA',
+    'BG_EXTERNAL_CAPABILITIES',
+  ];
+  for (const key of required) if (!constants.has(key)) throw new DocsGateError(`External EventBus extraction missing ${key}`);
   const info = moduleInfo(ts, root, rel, cache);
-  for (const name of names) {
-    const decl = info.constDecls.get(name);
-    if (!decl) throw new DocsGateError(`missing ${name}`);
-    const init = stripAsConst(ts, decl.expr);
-    if (!ts.isCallExpression(init) || !ts.isIdentifier(init.expression) || init.expression.text !== 'freezeProfile' || init.arguments.length !== 1) throw new DocsGateError(`${name} must be freezeProfile({...}) for docs extraction`);
-    const obj = stripAsConst(ts, init.arguments[0]);
-    if (!ts.isObjectLiteralExpression(obj)) throw new DocsGateError(`${name} workflow profile must be an object literal`);
-    const profile = {};
-    for (const prop of obj.properties) {
-      if (!ts.isPropertyAssignment(prop)) throw new DocsGateError(`${name} contains unsupported workflow property syntax`);
-      const key = propertyNameText(ts, root, rel, prop.name, cache);
-      if (!keys.includes(key)) continue;
-      profile[key] = literalValue(ts, root, rel, prop.initializer, cache);
+  const operations = [];
+  const visit = (node) => {
+    if (ts.isTypeAliasDeclaration(node) && node.name.text === 'ExternalTaskOperation' && ts.isUnionTypeNode(node.type)) {
+      for (const type of node.type.types) {
+        if (!ts.isLiteralTypeNode(type) || !ts.isStringLiteral(type.literal)) throw new DocsGateError('ExternalTaskOperation contains a non-string member');
+        operations.push(type.literal.text);
+      }
     }
-    for (const key of keys) if (!Object.prototype.hasOwnProperty.call(profile, key)) throw new DocsGateError(`${name} missing workflow key ${key}`);
-    profile.source = `${rel}:${lineOf(info.sf, decl.expr, ts).split(':').pop()}`;
-    workflows.push(profile);
-  }
-  return workflows.sort((a, b) => a.id.localeCompare(b.id));
+    ts.forEachChild(node, visit);
+  };
+  visit(info.sf);
+  if (operations.length === 0) throw new DocsGateError('ExternalTaskOperation union was not extracted');
+  return {
+    id: 'external-task-v2',
+    source: rel,
+    channels: {
+      request: constants.get('BG_EXTERNAL_REQUEST_CHANNEL').value,
+      response: constants.get('BG_EXTERNAL_RESPONSE_CHANNEL').value,
+      cancel: constants.get('BG_EXTERNAL_CANCEL_CHANNEL').value,
+      terminal: constants.get('BG_EXTERNAL_TERMINAL_CHANNEL').value,
+    },
+    schemas: {
+      request: constants.get('BG_EXTERNAL_REQUEST_SCHEMA').value,
+      response: constants.get('BG_EXTERNAL_RESPONSE_SCHEMA').value,
+      cancel: constants.get('BG_EXTERNAL_CANCEL_SCHEMA').value,
+      terminal: constants.get('BG_EXTERNAL_TERMINAL_SCHEMA').value,
+    },
+    operations: operations.sort(),
+    capabilities: constants.get('BG_EXTERNAL_CAPABILITIES').value,
+  };
 }
 
 function extractStatusVocabularies(ts, root, cache) {
   const candidates = [
     ['TASK_STATUS_VALUES', 'src/core/common.ts'],
     ['TERMINAL_TASK_STATUS_VALUES', 'src/core/common.ts'],
-    ['DELEGATE_MANIFEST_STATES', 'src/core/delegate/artifacts.ts'],
-    ['FUSION_STAGE_VALUES', 'src/core/fusion/types.ts'],
-    ['FUSION_CAPABILITY_VALUES', 'src/core/fusion/types.ts'],
-    ['FUSION_STATE_VALUES', 'src/core/fusion/types.ts'],
-    ['FUSION_TERMINAL_STATE_VALUES', 'src/core/fusion/types.ts'],
-    ['FUSION_BUDGET_STAGE_VALUES', 'src/core/fusion/types.ts'],
   ];
   const out = {};
   for (const [name, rel] of candidates) out[name] = resolveIdentifierValue(ts, root, rel, name, cache);
@@ -1402,47 +1417,11 @@ function dedupeByName(items) {
 }
 
 function runtimeArtifacts(ts, root) {
-  const source = (rel, literal) => lineForLiteral(ts, root, rel, literal);
   const sourceText = (rel, needle) => lineForText(root, rel, needle);
   const items = [
     { kind: 'directory', value: '.pi/tasks/<session-id>-<pid>/', source: sourceText('src/core/registry.ts', "join(ctx.cwd, '.pi', 'tasks'") },
     { kind: 'task-file', value: '.pi/tasks/<session-id>-<pid>/<task-id>.output', source: sourceText('src/core/registry.ts', 'const outputAbsPath = join(dir.abs') },
     { kind: 'task-file', value: '.pi/tasks/<session-id>-<pid>/<task-id>.json', source: sourceText('src/core/registry.ts', 'const metadataAbsPath = join(dir.abs') },
-    { kind: 'task-file', value: '.pi/tasks/<session-id>-<pid>/<task-id>.pi-events.jsonl', source: sourceText('src/core/attested-pi-run.ts', 'eventsAbsPath: join') },
-    { kind: 'task-file', value: '.pi/tasks/<session-id>-<pid>/<task-id>.stderr', source: sourceText('src/core/attested-pi-run.ts', 'stderrAbsPath: join') },
-    { kind: 'task-file', value: '.pi/tasks/<session-id>-<pid>/<task-id>.pi-telemetry-wrapper.cjs', source: sourceText('src/core/attested-pi-run.ts', 'wrapperAbsPath: join') },
-    { kind: 'task-file', value: '.pi/tasks/<session-id>-<pid>/<task-id>.attestation.json', source: sourceText('src/core/attested-pi-run.ts', 'attestationAbsPath: join') },
-    { kind: 'directory', value: '.pi/delegate/<session-id>-<pid>/<task-id>/', source: source('src/core/delegate/artifacts.ts', '.pi') },
-    { kind: 'delegate-artifact', value: 'seed.json', source: source('src/core/delegate/artifacts.ts', 'seed.json') },
-    { kind: 'delegate-artifact', value: 'child-prompt.txt', source: source('src/core/delegate/artifacts.ts', 'child-prompt.txt') },
-    { kind: 'delegate-artifact', value: 'context-omission-ledger.json', source: source('src/core/delegate/artifacts.ts', 'context-omission-ledger.json') },
-    { kind: 'delegate-artifact', value: 'budget-plan.json', source: source('src/core/delegate/artifacts.ts', 'budget-plan.json') },
-    { kind: 'delegate-artifact', value: 'manifest.json', source: source('src/core/delegate/artifacts.ts', 'manifest.json') },
-    { kind: 'delegate-artifact', value: 'result.json', source: source('src/core/delegate/result-package.ts', 'result.json') },
-    { kind: 'delegate-artifact', value: 'outcome.json', source: source('src/core/delegate/artifacts.ts', 'outcome.json') },
-    { kind: 'delegate-artifact', value: 'error.json', source: source('src/core/delegate/artifacts.ts', 'error.json') },
-    { kind: 'delegate-artifact', value: 'spill/<receipt-named-file>', source: source('src/core/delegate/artifacts.ts', 'spill') },
-    { kind: 'directory', value: '.pi/fusion/<session-id>-<pid>/<run-id>/', source: source('src/core/fusion/artifacts.ts', '.pi') },
-    { kind: 'fusion-artifact', value: 'canonical-input.json', source: source('src/core/fusion/artifacts.ts', 'canonical-input.json') },
-    { kind: 'fusion-artifact', value: 'context-omission-ledger.json', source: source('src/core/fusion/artifacts.ts', 'context-omission-ledger.json') },
-    { kind: 'fusion-artifact', value: 'source-policy.private.json', source: source('src/core/fusion/artifacts.ts', 'source-policy.private.json') },
-    { kind: 'fusion-artifact', value: 'budget-plan.json', source: source('src/core/fusion/artifacts.ts', 'budget-plan.json') },
-    { kind: 'fusion-artifact', value: 'blind-candidates.json', source: source('src/core/fusion/artifacts.ts', 'blind-candidates.json') },
-    { kind: 'fusion-artifact', value: 'evaluation.json', source: source('src/core/fusion/artifacts.ts', 'evaluation.json') },
-    { kind: 'fusion-artifact', value: 'merged.md', source: source('src/core/fusion/artifacts.ts', 'merged.md') },
-    { kind: 'fusion-artifact', value: 'result.json', source: source('src/core/fusion/artifacts.ts', 'result.json') },
-    { kind: 'fusion-artifact', value: 'error.json', source: source('src/core/fusion/artifacts.ts', 'error.json') },
-    { kind: 'fusion-artifact', value: '<attempt-prefix> = candidate-<slot>.attempt-<n> | evaluation.attempt-<n> | merge.attempt-<n>', source: sourceText('src/core/fusion/artifacts.ts', 'function attemptPrefix') },
-    { kind: 'fusion-artifact', value: '<attempt-prefix>.prompt.txt', source: source('src/core/fusion/artifacts.ts', '.prompt.txt') },
-    { kind: 'fusion-artifact', value: '<attempt-prefix>.events.jsonl', source: source('src/core/fusion/artifacts.ts', '.events.jsonl') },
-    { kind: 'fusion-artifact', value: '<attempt-prefix>.stderr.txt', source: source('src/core/fusion/artifacts.ts', '.stderr.txt') },
-    { kind: 'fusion-artifact', value: 'candidate-<slot>.attempt-<n>.response.md | candidate-<slot>.attempt-<n>.response.partial.md', source: sourceText('src/core/fusion/artifacts.ts', 'function responseName') },
-    { kind: 'fusion-artifact', value: 'evaluation.attempt-<n>.response.txt | evaluation.attempt-<n>.response.partial.txt', source: sourceText('src/core/fusion/artifacts.ts', 'function responseName') },
-    { kind: 'fusion-artifact', value: 'merge.attempt-<n>.response.md | merge.attempt-<n>.response.partial.md', source: sourceText('src/core/fusion/artifacts.ts', 'function responseName') },
-    { kind: 'fusion-artifact', value: 'candidate-<slot>.attempt-<n>.tool-calls.jsonl', source: source('src/core/fusion/artifacts.ts', '.tool-calls.jsonl') },
-    { kind: 'fusion-artifact', value: 'candidate-<slot>.attempt-<n>.tool-calls.jsonl.seal.json', source: source('src/core/fusion/child-protocol.ts', '.seal.json') },
-    { kind: 'fusion-artifact', value: '<attempt-prefix>.calibration-violation.json', source: source('src/core/fusion/artifacts.ts', '.calibration-violation.json') },
-    { kind: 'config', value: 'fusion-models.json', source: source('src/core/fusion/config.ts', 'fusion-models.json') },
   ];
   return items.sort((a, b) => a.kind.localeCompare(b.kind) || a.value.localeCompare(b.value));
 }
@@ -1457,10 +1436,10 @@ export function buildCodeFacts(options = {}) {
   const governedSources = [...walkFiles(root, 'src', () => true), ...walkFiles(root, 'extensions', () => true)].sort();
   const registrations = extractEntrypoint(root, pkg, ts, cache);
   const eventBus = extractEventBus(ts, root, cache);
-  const workflows = extractFusionWorkflows(ts, root, cache);
+  const externalEventBus = extractExternalEventBus(ts, root, cache);
   const synthetic = [
     { kind: 'eventbus', name: eventBus.id, id: `eventbus:${eventBus.id}`, source: eventBus.source, channels: eventBus.channels, operations: eventBus.operations },
-    ...workflows.map((workflow) => ({ kind: 'workflow', name: workflow.id, id: `workflow:${workflow.id}`, source: workflow.source, toolName: workflow.toolName, contextKind: workflow.contextKind })),
+    { kind: 'eventbus', name: externalEventBus.id, id: `eventbus:${externalEventBus.id}`, source: externalEventBus.source, channels: externalEventBus.channels, operations: externalEventBus.operations },
   ];
   const allSurfaces = uniqueRegistrations([...registrations, ...synthetic]);
   const byKind = Object.fromEntries(PUBLIC_KINDS.map((kind) => [kind, allSurfaces.filter((r) => r.kind === kind).map((r) => sortDeep(r))]));
@@ -1469,7 +1448,7 @@ export function buildCodeFacts(options = {}) {
   const envVars = new Map();
   for (const rel of tsSources) {
     collectStringLiterals(ts, root, rel, (text, file, source) => {
-      if (/^pi-background-tasks[.A-Za-z0-9_-]*\.v\d+$/u.test(text) || text === 'phase2.pi_task_attestation.v1') schemaIds.set(text, { id: text, source });
+      if (/^pi-background-tasks[.A-Za-z0-9_-]*\.v\d+$/u.test(text)) schemaIds.set(text, { id: text, source });
     });
     collectEnvReferences(ts, root, rel, (name, access, file, source) => {
       const key = String(name);
@@ -1504,7 +1483,7 @@ export function buildCodeFacts(options = {}) {
     shortcut_contracts: registrations.filter((r) => r.kind === 'shortcut').map((r) => sortDeep(r)).sort((a, b) => a.name.localeCompare(b.name)),
     renderer_contracts: registrations.filter((r) => r.kind === 'renderer').map((r) => sortDeep(r)).sort((a, b) => a.name.localeCompare(b.name)),
     event_bus: eventBus,
-    fusion_workflows: workflows,
+    external_event_bus: externalEventBus,
     status_vocabularies: extractStatusVocabularies(ts, root, cache),
     schema_ids: [...schemaIds.values()].sort((a, b) => a.id.localeCompare(b.id)),
     runtime_paths_and_artifacts: runtimeArtifacts(ts, root),
@@ -2183,15 +2162,18 @@ function buildShortcutRegion(codeFacts) {
 }
 
 function buildEventBusRegion(codeFacts) {
-  return `${mdTable(['Channel purpose', 'Channel', 'Schema'], [
+  const v1 = `${mdTable(['v1 channel purpose', 'Channel', 'Schema'], [
     ['Request', `\`${codeFacts.event_bus.channels.request}\``, `\`${codeFacts.event_bus.schemas.request}\``],
     ['Response', `\`${codeFacts.event_bus.channels.response}\``, `\`${codeFacts.event_bus.schemas.response}\``],
     ['Terminal', `\`${codeFacts.event_bus.channels.terminal}\``, `\`${codeFacts.event_bus.schemas.terminal}\``],
-  ])}\n\nOperations: ${codeFacts.event_bus.operations.map((op) => `\`${op}\``).join(', ')}.\n\n${codeBlockJson(codeFacts.event_bus.capabilities)}`;
-}
-
-function buildFusionWorkflowRegion(codeFacts) {
-  return mdTable(['Workflow', 'Tool', 'Context', 'Candidate capability', 'Candidate tools', 'Evaluator/merger tools', 'Provenance'], codeFacts.fusion_workflows.map((w) => [`\`${w.id}\``, `\`${w.toolName}\``, `\`${w.contextKind}\``, `\`${w.candidateCapability}\``, w.candidateTools.length ? w.candidateTools.map((x) => `\`${x}\``).join(', ') : 'none', 'none', `\`${w.source}\``]));
+  ])}\n\nv1 operations: ${codeFacts.event_bus.operations.map((op) => `\`${op}\``).join(', ')}.\n\n${codeBlockJson(codeFacts.event_bus.capabilities)}`;
+  const v2 = `${mdTable(['v2 channel purpose', 'Channel', 'Schema'], [
+    ['Request', `\`${codeFacts.external_event_bus.channels.request}\``, `\`${codeFacts.external_event_bus.schemas.request}\``],
+    ['Response', `\`${codeFacts.external_event_bus.channels.response}\``, `\`${codeFacts.external_event_bus.schemas.response}\``],
+    ['Cancellation', `\`${codeFacts.external_event_bus.channels.cancel}\``, `\`${codeFacts.external_event_bus.schemas.cancel}\``],
+    ['Terminal', `\`${codeFacts.external_event_bus.channels.terminal}\``, `\`${codeFacts.external_event_bus.schemas.terminal}\``],
+  ])}\n\nv2 operations: ${codeFacts.external_event_bus.operations.map((op) => `\`${op}\``).join(', ')}.\n\n${codeBlockJson(codeFacts.external_event_bus.capabilities)}`;
+  return `${v1}\n\n${v2}`;
 }
 
 function buildRuntimeRegion(codeFacts) {
@@ -2220,9 +2202,6 @@ function applyGeneratedRegionsToDoc(doc, codeFacts, coverage, docsModel, attesta
         'docs/commands/bg.md': ['bg'],
         'docs/commands/bg-clear.md': ['bg-clear'],
         'docs/commands/bg-update.md': ['bg-update'],
-        'docs/commands/claude-cache.md': ['claude-cache'],
-        'docs/commands/fusion.md': ['fusion'],
-        'docs/commands/fusion-models.md': ['fusion-models'],
         'docs/commands/jobs.md': ['jobs'],
         'docs/commands/kill.md': ['kill'],
         'docs/commands/logs.md': ['logs'],
@@ -2235,7 +2214,6 @@ function applyGeneratedRegionsToDoc(doc, codeFacts, coverage, docsModel, attesta
     }
     if (doc.rel === 'docs/reference/shortcuts-and-dock.md') body = replaceOrInsertRegion(body, 'shortcut-contracts', buildShortcutRegion(codeFacts));
     if (doc.rel === 'docs/api/eventbus-v1.md') body = replaceOrInsertRegion(body, 'eventbus-contract', buildEventBusRegion(codeFacts));
-    if (doc.rel === 'docs/subsystems/fusion.md') body = replaceOrInsertRegion(body, 'fusion-workflows', buildFusionWorkflowRegion(codeFacts));
     if (doc.rel === 'docs/reference/runtime-contracts.md') body = replaceOrInsertRegion(body, 'runtime-contracts', buildRuntimeRegion(codeFacts));
   }
   return `${serializeFrontmatter(canonicalFrontmatter(fm))}${body.trimEnd()}\n`;
@@ -2345,7 +2323,7 @@ function assertSvgSafe(root, rel) {
 
 export function checkPayloadFiles(files, root = PACKAGE_ROOT) {
   const fileSet = new Set(files);
-  const requiredRoots = ['extensions/anthropic-attribution.ts', 'extensions/background-tasks.ts', 'extensions/delegate-child.ts', 'extensions/fusion-child.ts', 'README.md', 'TESTING.md', 'TEST_PLAN.md', 'PUBLISHING.md', 'BACKGROUND-TASKS-INSTRUCTIONS.md', 'THIRD_PARTY_NOTICES.md', 'logo.png', 'LICENSE', 'package.json'];
+  const requiredRoots = ['extensions/background-tasks.ts', 'README.md', 'TESTING.md', 'TEST_PLAN.md', 'PUBLISHING.md', 'BACKGROUND-TASKS-INSTRUCTIONS.md', 'THIRD_PARTY_NOTICES.md', 'logo.png', 'LICENSE', 'package.json'];
   for (const f of requiredRoots) if (!fileSet.has(f)) throw new DocsGateError(`packed payload missing ${f}`);
   for (const f of walkFiles(root, 'src', () => true)) if (!fileSet.has(f)) throw new DocsGateError(`packed payload missing ${f}`);
   for (const f of walkFiles(root, 'extensions', () => true)) if (!fileSet.has(f)) throw new DocsGateError(`packed payload missing ${f}`);

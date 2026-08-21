@@ -5,14 +5,14 @@ import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { parseJsonText } from '../../src/core/common.js';
-import { piLaunchArgv, resolvePiLaunch } from '../../src/core/pi-launch.js';
+import { piCliArgv, resolvePiCliLaunch } from '../helpers/pi-cli.js';
 import { isolatedTestEnv } from '../helpers/normalize.js';
 
 // npm installs `pi` as a pi.cmd shim on Windows, and a shell-less spawn does not
 // consult PATHEXT, so spawning the bare name fails with ENOENT. Production solves
 // this by resolving the Pi package bin and launching it through Node; reusing that
 // resolver keeps the harness aligned with real launch behaviour on every platform.
-const piLaunch = resolvePiLaunch();
+const piLaunch = resolvePiCliLaunch();
 
 const extensionPath = resolve('extensions/background-tasks.ts');
 
@@ -86,7 +86,7 @@ class RPC {
   ) {
     this.proc = spawn(
       piLaunch.executable,
-      piLaunchArgv(piLaunch, [
+      piCliArgv(piLaunch, [
         '--mode',
         'rpc',
         '--no-session',

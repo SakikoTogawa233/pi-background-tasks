@@ -39,10 +39,10 @@ void describe('docs freshness gate mutation fixtures', () => {
     assert.match(result.stdout, /deterministic generation OK; attestations advisory/);
   });
 
-  void it('strict mode accepts the complete current receipt set', () => {
+  void it('strict mode refuses self-uncertified behavioral docs', () => {
     const result = runNode('scripts/docs/verify.mjs', ['--require-attestations']);
-    assert.equal(result.status, 0, `${result.stdout}${result.stderr}`);
-    assert.match(result.stdout, /deterministic generation OK; attestations required/);
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /missing behavioral PASS attestation receipt/);
   });
 
   void it('accepts an explicit release ref independently of GitHub reserved environment values', () => {

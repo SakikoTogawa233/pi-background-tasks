@@ -1,10 +1,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { resolve } from 'node:path';
 import { PTY_SKIP_REASON, ptyInputSupported, runExpect } from '../helpers/pty-harness.js';
 
-const extensionPath = resolve('extensions/background-tasks.ts');
-const scriptedProviderPath = resolve('tests/scripted-provider/scripted-provider-extension.ts');
 
 void describe('interactive PTY', () => {
   void it(
@@ -30,74 +27,6 @@ send "x"
       assert.match(output, /bg tasks focused|No background tasks/);
     },
   );
-
-  void it(
-    'launches Fusion in the background and renders terminal completion in the real TUI',
-    { timeout: 65_000 },
-    async (t) => {
-      if (!(await ptyInputSupported())) {
-        t.skip(PTY_SKIP_REASON);
-        return;
-      }
-      const output = await runExpect(
-        `
-send "/fusion pty fusion prompt"
-send "\\r"
-expect {
-  -re "Started fusion reason" {}
-  timeout { puts "FUSION_LAUNCH_TIMEOUT"; exit 41 }
-}
-expect {
-  -re "\\[bg completed\\].*fusion reason" {}
-  timeout { puts "FUSION_TERMINAL_TIMEOUT"; exit 42 }
-}
-`,
-        55,
-        undefined,
-        {
-          extensionPaths: [scriptedProviderPath, extensionPath],
-          model: 'pi-bg-scripted/scripted-model',
-          env: {
-            PI_BG_SCRIPTED_API_KEY: 'scripted-api-key',
-            PI_BG_SCRIPTED_SCENARIO: 'display-only-bg',
-          },
-          fusionFakeMergedText: 'PTY fused answer.',
-        },
-      );
-      assert.match(output, /Started fusion reason/);
-      assert.match(output, /\[bg completed\].*fusion reason/);
-    },
-  );
-
-  void it('opens the Fusion model selector in the real TUI', { timeout: 45_000 }, async (t) => {
-    if (!(await ptyInputSupported())) {
-      t.skip(PTY_SKIP_REASON);
-      return;
-    }
-    const output = await runExpect(
-      `
-send "/fusion-models"
-send "\\r"
-expect {
-  -re "Fusion models(.|\n)*Candidate 1(.|\n)*Evaluator" {}
-  timeout { puts "FUSION_MODELS_TIMEOUT"; exit 42 }
-}
-send "\\033"
-`,
-      35,
-      undefined,
-      {
-        extensionPaths: [scriptedProviderPath, extensionPath],
-        model: 'pi-bg-scripted/scripted-model',
-        env: {
-          PI_BG_SCRIPTED_API_KEY: 'scripted-api-key',
-          PI_BG_SCRIPTED_SCENARIO: 'display-only-bg',
-        },
-      },
-    );
-    assert.match(output, /Fusion models/);
-    assert.match(output, /Candidate 1/);
-  });
 
   void it(
     'opens the footer dock via Shift+Down after starting a named task',

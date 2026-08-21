@@ -5,7 +5,6 @@ import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { isolatedTestEnv, stripAnsi } from './normalize.js';
-import { installFusionFakePi } from './fusion-fake-pi.js';
 
 const expectBin = '/usr/bin/expect';
 const backgroundExtensionPath = resolve('extensions/background-tasks.ts');
@@ -72,7 +71,6 @@ export interface RunExpectOptions {
   extensionPaths?: readonly string[] | undefined;
   model?: string | undefined;
   env?: Readonly<Record<string, string>> | undefined;
-  fusionFakeMergedText?: string | undefined;
 }
 
 /** Run a real Pi TUI in an isolated cwd/HOME/session under Expect. */
@@ -86,10 +84,6 @@ export async function runExpect(
   const cwd = join(root, 'project');
   await mkdir(cwd, { recursive: true });
   const script = join(root, 'scenario.expect');
-  const fake =
-    options.fusionFakeMergedText === undefined
-      ? undefined
-      : await installFusionFakePi(root, { mergedText: options.fusionFakeMergedText });
   const requestedSize = options.size ?? size;
   const sttyInit = requestedSize
     ? `set stty_init {rows ${String(requestedSize.rows)} columns ${String(requestedSize.cols)}}\n`
@@ -101,7 +95,6 @@ export async function runExpect(
   const optionEnv = Object.entries(options.env ?? {})
     .map(([key, value]) => `set env(${key}) ${tclQuote(value)}`)
     .join('\n');
-  const pathEnv = fake === undefined ? '' : `set env(PATH) ${tclQuote(fake.env['PATH'] ?? '')}`;
   const content = `
 set timeout ${String(timeoutSeconds)}
 ${sttyInit}`;
@@ -114,7 +107,6 @@ set env(PI_CODING_AGENT_DIR) ${tclQuote(join(root, 'agent'))}
 set env(PI_CODING_AGENT_SESSION_DIR) ${tclQuote(join(root, 'sessions'))}
 set env(NPM_CONFIG_CACHE) "/tmp/pi-npm-cache"
 set env(TERM) "xterm-256color"
-${pathEnv}
 ${optionEnv}
 spawn -noecho /usr/local/bin/pi --offline --no-session --no-extensions ${extensionArgs} --no-skills --no-prompt-templates --no-context-files --no-tools${modelArg}
 expect {

@@ -8,11 +8,8 @@ import {
   compareSemver,
   deriveCompletionDeliveryGuidance,
   deriveTaskNameFromCommand,
-  formatAgentActivityLine,
-  parseAgentActivity,
   formatCompactNumber,
   formatDuration,
-  formatModelSummary,
   formatSnapshotList,
   formatUpdateSegment,
   isNewerVersion,
@@ -165,16 +162,8 @@ void describe('core', () => {
           notified: true,
           notifyOnCompletion: true,
           triggerOnCompletion: false,
-          contextUsage: { tokens: 1250, contextWindow: 200_000, percent: 0.625 },
-          tokenUsage: {
-            input: 1000,
-            output: 200,
-            cacheRead: 30,
-            cacheWrite: 20,
-            totalTokens: 1250,
-          },
-          toolUsage: { total: 2, failed: 1, byName: { read: 1, bash: 1 } },
-          model: 'anthropic/claude-sonnet-4',
+          owner: { id: 'owner-a', ref: 'work-1' },
+          capabilities: { cancellable: true, rerunnable: false },
         },
         {
           id: 'b99999999',
@@ -196,18 +185,9 @@ void describe('core', () => {
       2000,
     );
     assert.match(text, /Unit Task/);
-    assert.match(text, /ctx=0\.6%\/200k/);
-    assert.match(text, /model=anthropic\/claude-sonnet-4/);
-    assert.match(text, /tokens=1\.3k/);
-    assert.match(text, /tools=2 failed=1/);
+    assert.match(text, /owner=owner-a\/work-1/);
     assert.match(text, /✗ b99999999 failed/);
     assert.match(text, /output: \.pi\/tasks/);
-    assert.equal(
-      formatModelSummary('anthropic/claude-sonnet-4'),
-      'model=anthropic/claude-sonnet-4',
-    );
-    assert.equal(formatModelSummary(undefined), undefined);
-    assert.equal(formatModelSummary(''), undefined);
   });
 
   void it('parses and compares semver including prerelease precedence', () => {
@@ -343,115 +323,6 @@ void describe('core', () => {
     } finally {
       await rm(root, { recursive: true, force: true });
     }
-  });
-
-  void it('parses and formats agent activity transcript lines', () => {
-    assert.deepEqual(
-      parseAgentActivity({
-        type: 'background-task-activity',
-        kind: 'assistant_text',
-        text: 'Done.\n',
-      }),
-      { kind: 'assistant_text', text: 'Done.\n' },
-    );
-    assert.equal(
-      formatAgentActivityLine({ kind: 'assistant_text', text: 'Looks good\n\n' }),
-      'Looks good',
-    );
-    assert.equal(formatAgentActivityLine({ kind: 'assistant_text', text: '  \n ' }), undefined);
-
-    assert.equal(
-      formatAgentActivityLine({ kind: 'reasoning', text: 'weighing options' }),
-      '\u2026 weighing options',
-    );
-    assert.equal(formatAgentActivityLine({ kind: 'reasoning', text: '   ' }), undefined);
-
-    assert.deepEqual(
-      parseAgentActivity({
-        type: 'background-task-activity',
-        kind: 'tool_start',
-        tool: 'read',
-        argsSummary: 'README.md',
-      }),
-      { kind: 'tool_start', tool: 'read', argsSummary: 'README.md' },
-    );
-    assert.equal(
-      formatAgentActivityLine({
-        kind: 'tool_start',
-        tool: 'read',
-        argsSummary: '  src/index.ts  ',
-      }),
-      '\u2192 read src/index.ts',
-    );
-    assert.equal(
-      formatAgentActivityLine({ kind: 'tool_start', tool: 'bash', argsSummary: '' }),
-      '\u2192 bash',
-    );
-    assert.equal(
-      formatAgentActivityLine({ kind: 'tool_start', tool: 'bash', argsSummary: 'x'.repeat(120) }),
-      `\u2192 bash ${'x'.repeat(79)}\u2026`,
-    );
-    assert.deepEqual(
-      parseAgentActivity({ type: 'background-task-activity', kind: 'tool_start', tool: 'ls' }),
-      { kind: 'tool_start', tool: 'ls', argsSummary: '' },
-    );
-
-    assert.deepEqual(
-      parseAgentActivity({
-        type: 'background-task-activity',
-        kind: 'tool_end',
-        tool: 'bash',
-        isError: true,
-        error: 'boom',
-      }),
-      { kind: 'tool_end', tool: 'bash', isError: true, error: 'boom' },
-    );
-    assert.equal(
-      formatAgentActivityLine({ kind: 'tool_end', tool: 'read', isError: false }),
-      undefined,
-    );
-    assert.equal(
-      formatAgentActivityLine({ kind: 'tool_end', tool: 'bash', isError: true }),
-      '\u2717 bash failed',
-    );
-    assert.equal(
-      formatAgentActivityLine({
-        kind: 'tool_end',
-        tool: 'bash',
-        isError: true,
-        error: 'exit 1\nmore',
-      }),
-      '\u2717 bash failed: exit 1 more',
-    );
-
-    assert.equal(parseAgentActivity(null), undefined);
-    assert.equal(parseAgentActivity('background-task-activity'), undefined);
-    assert.equal(
-      parseAgentActivity({ type: 'background-task-telemetry', kind: 'tool_start', tool: 'read' }),
-      undefined,
-    );
-    assert.equal(
-      parseAgentActivity({ type: 'background-task-activity', kind: 'mystery' }),
-      undefined,
-    );
-    assert.equal(
-      parseAgentActivity({ type: 'background-task-activity', kind: 'tool_start' }),
-      undefined,
-    );
-    assert.equal(
-      parseAgentActivity({ type: 'background-task-activity', kind: 'assistant_text' }),
-      undefined,
-    );
-    assert.deepEqual(
-      parseAgentActivity({
-        type: 'background-task-activity',
-        kind: 'tool_end',
-        tool: 'x',
-        isError: false,
-        error: '   ',
-      }),
-      { kind: 'tool_end', tool: 'x', isError: false },
-    );
   });
 
   void it('boundedRead supports head, tail, truncation, and empty files', async () => {
