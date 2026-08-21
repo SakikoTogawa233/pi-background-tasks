@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [3.0.0] - 2026-08-21
+
 ### Removed
 
 - Breaking scope reduction: removed the agent-delegation surfaces (`bg_delegate`, `bg_result`), the attested Pi task launcher (`bg_run_pi_attested`), and all Fusion workflow tooling (`fusion_reason`, `fusion_investigate`, `fusion_research`, `fusion_validate`) along with their commands, child process plumbing, attestation sidecars, and documentation.

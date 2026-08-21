@@ -1,6 +1,6 @@
 {
   "name": "@sakiko233/pi-background-tasks",
-  "version": "2.6.0",
+  "version": "3.0.0",
   "description": "Pi extension for durable background shell task lifecycle, foreground handoff, bounded logs, completion notifications, and a shared external-task EventBus service.",
   "type": "module",
   "license": "ISC",

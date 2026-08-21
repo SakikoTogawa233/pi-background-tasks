@@ -6,7 +6,7 @@ Durable background shell task lifecycle for Pi.
 | Fact | Value |
 | --- | --- |
 | Package | `@sakiko233/pi-background-tasks` |
-| Version | `2.6.0` |
+| Version | `3.0.0` |
 | Node engine | `>=22.19.0` |
 | Pi entrypoints | `./extensions/background-tasks.ts` |
 | Package image | [logo.png](https://raw.githubusercontent.com/SakikoTogawa233/pi-background-tasks/main/logo.png) |

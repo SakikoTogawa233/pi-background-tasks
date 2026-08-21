@@ -12,7 +12,7 @@ covers_sources: []
 The docs engine extracts package metadata, public registrations, EventBus facts, runtime paths, schemas, environment references, and source ownership. Unsupported registration syntax fails instead of falling back to stale text.
 
 <!-- pi-docs:begin name="docs-freshness-gate" generator="scripts/docs/generate.mjs" -->
-- Canonical package version: `2.6.0`
+- Canonical package version: `3.0.0`
 - Governed markdown docs: 27
 - Public surfaces extracted: 19
 - Governed production sources: 10

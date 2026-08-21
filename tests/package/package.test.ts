@@ -45,7 +45,7 @@ void describe('package', () => {
   void it('declares only the background lifecycle entrypoint and runtime dependencies', async () => {
     const pkg = await manifest();
     assert.equal(pkg['name'], '@sakiko233/pi-background-tasks');
-    assert.equal(pkg['version'], '2.6.0');
+    assert.equal(pkg['version'], '3.0.0');
     assert.equal(pkg['type'], 'module');
     assert.match(String(pkg['description']), /background shell task lifecycle/iu);
     const pi = object(pkg['pi'], 'pi');

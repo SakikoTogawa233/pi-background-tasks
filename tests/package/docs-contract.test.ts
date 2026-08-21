@@ -48,22 +48,26 @@ void describe('docs package integration contract', () => {
     assert.match(eventbus, /During shutdown.*cancel_ack.*settle/s);
   });
 
-  void it('declares the extracted scope in the Unreleased changelog entry', () => {
+  void it('declares the extracted scope in the 3.0.0 changelog entry', () => {
     const changelog = text('CHANGELOG.md');
     const unreleased = changelog.slice(
       changelog.indexOf('## [Unreleased]'),
+      changelog.indexOf('## [3.0.0]'),
+    );
+    assert.doesNotMatch(unreleased, /### (Removed|Added|Changed)/u, 'Unreleased must be empty after the 3.0.0 cut');
+    const released = changelog.slice(
+      changelog.indexOf('## [3.0.0]'),
       changelog.indexOf('## [2.6.0]'),
     );
-    assert.notEqual(unreleased, '', 'CHANGELOG.md must have an Unreleased section');
-    assert.match(unreleased, /### Removed/);
+    assert.match(released, /^## \[3\.0\.0\] - \d{4}-\d{2}-\d{2}$/m);
+    assert.match(released, /### Removed/);
     for (const removed of [/delegate/u, /attested/u, /Fusion/u, /Anthropic attribution/u]) {
-      assert.match(unreleased, removed, `Unreleased must describe the removed surface: ${String(removed)}`);
+      assert.match(released, removed, `3.0.0 must describe the removed surface: ${String(removed)}`);
     }
-    assert.match(unreleased, /EventBus v2 external-task/u);
-    assert.match(unreleased, /### Added|### Changed/u);
+    assert.match(released, /EventBus v2 external-task/u);
+    assert.match(released, /### Added|### Changed/u);
     const pkg = parseJsonText(text('package.json')) as { version: string };
-    assert.doesNotMatch(unreleased, new RegExp(`\\[\\d+\\.\\d+\\.\\d+\\]`), 'Unreleased must not declare a version');
-    assert.equal(pkg.version, '2.6.0', 'Unreleased work must not bump the version');
+    assert.equal(pkg.version, '3.0.0', 'package.json must match the 3.0.0 changelog entry');
   });
 
   void it('generates only task runtime paths and v1/v2 schemas', () => {
