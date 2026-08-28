@@ -16,10 +16,15 @@ import {
   type AgentSession,
   type EventBus,
   type ExtensionUIContext,
+  type ExtensionWidgetOptions,
 } from '@earendil-works/pi-coding-agent';
 import { parseJsonText, type BgTaskSnapshot, type TaskStatus } from '../../src/core/common.js';
 import {
   BG_EXTENSION_CAPABILITIES,
+  BG_EXTERNAL_REQUEST_CHANNEL,
+  BG_EXTERNAL_REQUEST_SCHEMA,
+  BG_EXTERNAL_RESPONSE_CHANNEL,
+  BG_EXTERNAL_RESPONSE_SCHEMA,
   BG_REQUEST_CHANNEL,
   BG_REQUEST_SCHEMA,
   BG_RESPONSE_CHANNEL,
@@ -28,6 +33,7 @@ import {
   BG_TERMINAL_SCHEMA,
   type BackgroundTaskExtensionResponse,
   type BackgroundTaskExtensionTerminal,
+  type ExternalTaskResponse,
 } from '../../src/core/extension-api.js';
 import { parsePackageInfo } from '../../src/core/update-check.js';
 
@@ -110,6 +116,25 @@ interface PreparedBgRunArgs extends JsonObject {
 interface UiNotification {
   message: string;
   type?: 'info' | 'warning' | 'error';
+}
+
+interface UiStatusCall {
+  key: string;
+  text: string | undefined;
+}
+
+interface UiWidgetCall {
+  key: string;
+  lines: string[] | undefined;
+  placement: ExtensionWidgetOptions['placement'] | undefined;
+}
+
+const LIGHT_BLUE_BG = '\x1b[48;2;183;223;255m';
+const LIGHT_BLUE_FG = '\x1b[38;2;11;70;110m';
+const ANSI_RESET = '\x1b[0m';
+
+function expectedBackgroundLabel(text: string): string {
+  return `${LIGHT_BLUE_BG}${LIGHT_BLUE_FG} bg ${text} ${ANSI_RESET}`;
 }
 
 function isTaskStatus(value: unknown): value is TaskStatus {
@@ -355,6 +380,68 @@ async function emitEventRequest(
   return pending;
 }
 
+function requireExternalResponse(value: unknown): ExternalTaskResponse {
+  assert.ok(isJsonObject(value), 'external EventBus response must be an object');
+  assert.equal(value['schema_version'], BG_EXTERNAL_RESPONSE_SCHEMA);
+  assert.equal(typeof value['request_id'], 'string');
+  assert.equal(typeof value['operation'], 'string');
+  assert.equal(typeof value['ok'], 'boolean');
+  return value as ExternalTaskResponse;
+}
+
+function waitForExternalResponse(eventBus: EventBus, requestId: string): Promise<ExternalTaskResponse> {
+  return new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      unsubscribe();
+      reject(new Error(`timed out waiting for external EventBus response ${requestId}`));
+    }, EVENT_RESPONSE_TIMEOUT_MS);
+    const unsubscribe = eventBus.on(BG_EXTERNAL_RESPONSE_CHANNEL, (data) => {
+      const response = requireExternalResponse(data);
+      if (response.request_id !== requestId) return;
+      clearTimeout(timeout);
+      unsubscribe();
+      resolve(response);
+    });
+  });
+}
+
+async function emitExternalRequest(
+  eventBus: EventBus,
+  requestId: string,
+  operation: string,
+  payload: Record<string, unknown>,
+): Promise<ExternalTaskResponse> {
+  const pending = waitForExternalResponse(eventBus, requestId);
+  eventBus.emit(BG_EXTERNAL_REQUEST_CHANNEL, {
+    schema_version: BG_EXTERNAL_REQUEST_SCHEMA,
+    request_id: requestId,
+    operation,
+    payload,
+  });
+  return pending;
+}
+
+function requireExternalResult(response: ExternalTaskResponse): unknown {
+  assert.equal(response.ok, true, response.ok ? 'ok' : response.error);
+  return response.ok ? response.result : undefined;
+}
+
+async function externalOwner(
+  eventBus: EventBus,
+  ownerId: 'pi-subagent' | 'pi-agent-fusion',
+): Promise<Record<string, unknown>> {
+  const response = await emitExternalRequest(eventBus, `handshake-${ownerId}`, 'handshake', {
+    protocol_version: 2,
+    owner_id: ownerId,
+  });
+  const result = requiredJsonObject(requireExternalResult(response), 'external handshake result');
+  return {
+    service_id: result['service_id'],
+    owner_id: result['owner_id'],
+    owner_token: result['owner_token'],
+  };
+}
+
 // Matches EVENT_RESPONSE_TIMEOUT_MS: a killed task only reaches a terminal state
 // after the Windows grace window elapses, so the same platform budget applies.
 const TERMINAL_SNAPSHOT_POLL_MS = 25;
@@ -384,7 +471,17 @@ function makeStatusUi(
   baseUi: ExtensionUIContext,
   statuses: Array<string | undefined>,
   notifications: UiNotification[],
+  widgets: UiWidgetCall[] = [],
+  statusCalls: UiStatusCall[] = [],
 ): ExtensionUIContext {
+  const setWidget = ((
+    key: string,
+    content: string[] | undefined,
+    options?: ExtensionWidgetOptions,
+  ): void => {
+    assert.ok(content === undefined || Array.isArray(content), 'background widget must use RPC-observable string lines');
+    widgets.push({ key, lines: content, placement: options?.placement });
+  }) as ExtensionUIContext['setWidget'];
   return {
     ...baseUi,
     notify: (message, type) => {
@@ -392,10 +489,28 @@ function makeStatusUi(
       if (type !== undefined) notification.type = type;
       notifications.push(notification);
     },
-    setStatus: (_key, text) => {
+    setStatus: (key, text) => {
       statuses.push(text);
+      statusCalls.push({ key, text });
     },
+    setWidget,
   };
+}
+
+function latestBackgroundWidget(widgets: readonly UiWidgetCall[]): UiWidgetCall {
+  for (let index = widgets.length - 1; index >= 0; index--) {
+    const widget = widgets[index];
+    if (widget?.key === 'background-tasks') return widget;
+  }
+  throw new Error('background-tasks widget should have been projected');
+}
+
+function latestBackgroundStatus(statuses: readonly UiStatusCall[]): UiStatusCall {
+  for (let index = statuses.length - 1; index >= 0; index--) {
+    const status = statuses[index];
+    if (status?.key === 'background-tasks') return status;
+  }
+  throw new Error('background-tasks status should have been projected');
 }
 
 async function startRegistry(
@@ -983,12 +1098,144 @@ void describe('sdk', () => {
     }
   });
 
+  void it('projects shell, pi-subagent, and pi-agent-fusion work through one dedicated status row', async () => {
+    const eventBus = createEventBus();
+    const { session } = await harness({ eventBus });
+    const statuses: Array<string | undefined> = [];
+    const notifications: UiNotification[] = [];
+    const widgets: UiWidgetCall[] = [];
+    const statusCalls: UiStatusCall[] = [];
+    session.extensionRunner.setUIContext(
+      makeStatusUi(
+        session.extensionRunner.getUIContext(),
+        statuses,
+        notifications,
+        widgets,
+        statusCalls,
+      ),
+    );
+    try {
+      await session.extensionRunner.emit({ type: 'session_start', reason: 'startup' });
+
+      const subagentOwner = await externalOwner(eventBus, 'pi-subagent');
+      const subagentRegistered = await emitExternalRequest(eventBus, 'register-subagent', 'register', {
+        ...subagentOwner,
+        owner_ref: 'subagent-work-1',
+        name: 'Subagent work',
+        capabilities: { cancellable: true, rerunnable: false },
+        notify_on_completion: false,
+        trigger_on_completion: false,
+      });
+      const subagentTask = requiredTask(
+        requiredJsonObject(requireExternalResult(subagentRegistered), 'subagent register result')['task'],
+        'subagent registered task',
+      );
+      assert.deepEqual(latestBackgroundWidget(widgets), {
+        key: 'background-tasks',
+        lines: [expectedBackgroundLabel('1 running · Shift↓')],
+        placement: 'belowEditor',
+      });
+      assert.deepEqual(latestBackgroundStatus(statusCalls), {
+        key: 'background-tasks',
+        text: undefined,
+      });
+
+      const shell = await exec(session, 'bg_run', {
+        isAgent: false,
+        name: 'Shared Shell',
+        command: `node -e ${JSON.stringify('setTimeout(() => {}, 10000)')}`,
+        notifyOnCompletion: false,
+        triggerOnCompletion: false,
+      });
+      assert.deepEqual(latestBackgroundWidget(widgets), {
+        key: 'background-tasks',
+        lines: [expectedBackgroundLabel('2 running · Shift↓')],
+        placement: 'belowEditor',
+      });
+
+      const fusionOwner = await externalOwner(eventBus, 'pi-agent-fusion');
+      const fusionRegistered = await emitExternalRequest(eventBus, 'register-fusion', 'register', {
+        ...fusionOwner,
+        owner_ref: 'fusion-work-1',
+        name: 'Fusion work',
+        capabilities: { cancellable: true, rerunnable: false },
+        notify_on_completion: false,
+        trigger_on_completion: false,
+      });
+      const fusionTask = requiredTask(
+        requiredJsonObject(requireExternalResult(fusionRegistered), 'fusion register result')['task'],
+        'fusion registered task',
+      );
+      assert.deepEqual(latestBackgroundWidget(widgets), {
+        key: 'background-tasks',
+        lines: [expectedBackgroundLabel('3 running · Shift↓')],
+        placement: 'belowEditor',
+      });
+      assert.deepEqual(latestBackgroundStatus(statusCalls), {
+        key: 'background-tasks',
+        text: undefined,
+      });
+      assert.ok(widgets.every((widget) => widget.key === 'background-tasks'));
+
+      for (const [requestId, owner, task] of [
+        ['settle-subagent', subagentOwner, subagentTask],
+        ['settle-fusion', fusionOwner, fusionTask],
+      ] as const) {
+        const settled = await emitExternalRequest(eventBus, requestId, 'settle', {
+          ...owner,
+          task_id: task.id,
+          sequence: 1,
+          status: 'completed',
+        });
+        assert.equal(settled.ok, true, settled.ok ? 'ok' : settled.error);
+      }
+      assert.deepEqual(latestBackgroundWidget(widgets), {
+        key: 'background-tasks',
+        lines: [expectedBackgroundLabel('1 running · 2 done · Shift↓ · /bg-clear')],
+        placement: 'belowEditor',
+      });
+
+      const clearCommand = session.extensionRunner
+        .getRegisteredCommands()
+        .find((cmd) => cmd.invocationName === 'bg-clear');
+      assert.ok(clearCommand);
+      await clearCommand.handler('', session.extensionRunner.createCommandContext());
+      assert.deepEqual(latestBackgroundWidget(widgets), {
+        key: 'background-tasks',
+        lines: [expectedBackgroundLabel('1 running · Shift↓')],
+        placement: 'belowEditor',
+      });
+
+      await exec(session, 'bg_kill', { taskId: taskFromResult(shell).id });
+      assert.deepEqual(latestBackgroundWidget(widgets), {
+        key: 'background-tasks',
+        lines: undefined,
+        placement: undefined,
+      });
+      assert.deepEqual(latestBackgroundStatus(statusCalls), {
+        key: 'background-tasks',
+        text: undefined,
+      });
+    } finally {
+      await session.extensionRunner.emit({ type: 'session_shutdown', reason: 'quit' });
+      session.dispose();
+    }
+  });
+
   void it('keeps finished footer notices until explicit /bg-clear', async () => {
     const { session } = await harness();
     const statuses: Array<string | undefined> = [];
     const notifications: UiNotification[] = [];
+    const widgets: UiWidgetCall[] = [];
+    const statusCalls: UiStatusCall[] = [];
     session.extensionRunner.setUIContext(
-      makeStatusUi(session.extensionRunner.getUIContext(), statuses, notifications),
+      makeStatusUi(
+        session.extensionRunner.getUIContext(),
+        statuses,
+        notifications,
+        widgets,
+        statusCalls,
+      ),
     );
     try {
       const done = await exec(session, 'bg_run', {
@@ -1000,7 +1247,12 @@ void describe('sdk', () => {
       });
       await wait(session, taskFromResult(done).id);
       await new Promise((resolve) => setTimeout(resolve, 20));
-      assert.match(statuses.at(-1) ?? '', /bg 1 done · Shift↓ · \/bg-clear/);
+      assert.deepEqual(latestBackgroundWidget(widgets), {
+        key: 'background-tasks',
+        lines: [expectedBackgroundLabel('1 done · Shift↓ · /bg-clear')],
+        placement: 'belowEditor',
+      });
+      assert.equal(latestBackgroundStatus(statusCalls).text, undefined);
 
       const shortcuts = session.extensionRunner.getShortcuts({});
       assert.ok(shortcuts.has('ctrl+alt+c'));
@@ -1009,7 +1261,12 @@ void describe('sdk', () => {
         .find((cmd) => cmd.invocationName === 'bg-clear');
       assert.ok(clearCommand);
       await clearCommand.handler('', session.extensionRunner.createCommandContext());
-      assert.equal(statuses.at(-1), undefined);
+      assert.deepEqual(latestBackgroundWidget(widgets), {
+        key: 'background-tasks',
+        lines: undefined,
+        placement: undefined,
+      });
+      assert.equal(latestBackgroundStatus(statusCalls).text, undefined);
       assert.match(notifications.at(-1)?.message ?? '', /Cleared 1 finished/);
 
       const running = await exec(session, 'bg_run', {
@@ -1028,10 +1285,18 @@ void describe('sdk', () => {
       });
       await wait(session, taskFromResult(secondDone).id);
       await new Promise((resolve) => setTimeout(resolve, 20));
-      assert.match(statuses.at(-1) ?? '', /1 running · 1 done · Shift↓ · \/bg-clear/);
+      assert.deepEqual(latestBackgroundWidget(widgets), {
+        key: 'background-tasks',
+        lines: [expectedBackgroundLabel('1 running · 1 done · Shift↓ · /bg-clear')],
+        placement: 'belowEditor',
+      });
       await clearCommand.handler('', session.extensionRunner.createCommandContext());
-      assert.match(statuses.at(-1) ?? '', /bg 1 running · Shift↓/);
-      assert.doesNotMatch(statuses.at(-1) ?? '', /done|\/bg-clear/);
+      assert.deepEqual(latestBackgroundWidget(widgets), {
+        key: 'background-tasks',
+        lines: [expectedBackgroundLabel('1 running · Shift↓')],
+        placement: 'belowEditor',
+      });
+      assert.equal(latestBackgroundStatus(statusCalls).text, undefined);
       await exec(session, 'bg_kill', { taskId: taskFromResult(running).id });
     } finally {
       await session.extensionRunner.emit({ type: 'session_shutdown', reason: 'quit' });
@@ -1043,8 +1308,16 @@ void describe('sdk', () => {
     const { session } = await harness();
     const statuses: Array<string | undefined> = [];
     const notifications: UiNotification[] = [];
+    const widgets: UiWidgetCall[] = [];
+    const statusCalls: UiStatusCall[] = [];
     session.extensionRunner.setUIContext(
-      makeStatusUi(session.extensionRunner.getUIContext(), statuses, notifications),
+      makeStatusUi(
+        session.extensionRunner.getUIContext(),
+        statuses,
+        notifications,
+        widgets,
+        statusCalls,
+      ),
     );
     try {
       const failed = await exec(session, 'bg_run', {
@@ -1079,8 +1352,12 @@ void describe('sdk', () => {
       });
       const doneTask = await wait(session, taskFromResult(done).id);
       await new Promise((resolve) => setTimeout(resolve, 30));
-      assert.match(statuses.at(-1) ?? '', /bg 1 done · Shift↓ · \/bg-clear/);
-      assert.doesNotMatch(statuses.at(-1) ?? '', /failed|stopped/);
+      assert.deepEqual(latestBackgroundWidget(widgets), {
+        key: 'background-tasks',
+        lines: [expectedBackgroundLabel('1 done · Shift↓ · /bg-clear')],
+        placement: 'belowEditor',
+      });
+      assert.doesNotMatch(latestBackgroundWidget(widgets).lines?.[0] ?? '', /failed|stopped/);
 
       const running = await exec(session, 'bg_run', {
         isAgent: false,
@@ -1091,19 +1368,29 @@ void describe('sdk', () => {
       });
       const runningTask = taskFromResult(running);
       await new Promise((resolve) => setTimeout(resolve, 30));
-      assert.match(statuses.at(-1) ?? '', /bg 1 running · 1 done · Shift↓ · \/bg-clear/);
-      assert.doesNotMatch(statuses.at(-1) ?? '', /failed|stopped/);
+      assert.deepEqual(latestBackgroundWidget(widgets), {
+        key: 'background-tasks',
+        lines: [expectedBackgroundLabel('1 running · 1 done · Shift↓ · /bg-clear')],
+        placement: 'belowEditor',
+      });
+      assert.doesNotMatch(latestBackgroundWidget(widgets).lines?.[0] ?? '', /failed|stopped/);
 
       const shortcuts = session.extensionRunner.getShortcuts({});
       const shiftDown = shortcuts.get('shift+down');
       assert.ok(shiftDown, 'Shift+Down shortcut should be registered');
       await shiftDown.handler(session.extensionRunner.createContext());
       assert.ok(
-        statuses.some(
-          (status) => status?.includes('bg 1 running · 1 done · focused') ?? false,
+        widgets.some(
+          (widget) => widget.lines?.[0]?.includes('bg 1 running · 1 done · focused') ?? false,
         ),
       );
-      assert.ok(statuses.every((status) => !status?.includes(' failed · ') && !status?.includes(' stopped · ')));
+      assert.ok(
+        widgets.every(
+          (widget) =>
+            !widget.lines?.[0]?.includes(' failed · ') &&
+            !widget.lines?.[0]?.includes(' stopped · '),
+        ),
+      );
 
       const clearCommand = session.extensionRunner
         .getRegisteredCommands()
@@ -1111,8 +1398,12 @@ void describe('sdk', () => {
       assert.ok(clearCommand);
       await clearCommand.handler('', session.extensionRunner.createCommandContext());
       assert.match(notifications.at(-1)?.message ?? '', /Cleared 3 finished/);
-      assert.match(statuses.at(-1) ?? '', /bg 1 running · Shift↓/);
-      assert.doesNotMatch(statuses.at(-1) ?? '', /done|failed|stopped|\/bg-clear/);
+      assert.deepEqual(latestBackgroundWidget(widgets), {
+        key: 'background-tasks',
+        lines: [expectedBackgroundLabel('1 running · Shift↓')],
+        placement: 'belowEditor',
+      });
+      assert.equal(latestBackgroundStatus(statusCalls).text, undefined);
 
       const failedAfterClear = firstTask(
         await exec(session, 'bg_status', { taskId: failedTask.id }),
@@ -1130,7 +1421,12 @@ void describe('sdk', () => {
 
       await exec(session, 'bg_kill', { taskId: runningTask.id });
       await new Promise((resolve) => setTimeout(resolve, 30));
-      assert.equal(statuses.at(-1), undefined);
+      assert.deepEqual(latestBackgroundWidget(widgets), {
+        key: 'background-tasks',
+        lines: undefined,
+        placement: undefined,
+      });
+      assert.equal(latestBackgroundStatus(statusCalls).text, undefined);
     } finally {
       await session.extensionRunner.emit({ type: 'session_shutdown', reason: 'quit' });
       session.dispose();
@@ -1141,8 +1437,16 @@ void describe('sdk', () => {
     const { session } = await harness();
     const statuses: Array<string | undefined> = [];
     const notifications: UiNotification[] = [];
+    const widgets: UiWidgetCall[] = [];
+    const statusCalls: UiStatusCall[] = [];
     session.extensionRunner.setUIContext(
-      makeStatusUi(session.extensionRunner.getUIContext(), statuses, notifications),
+      makeStatusUi(
+        session.extensionRunner.getUIContext(),
+        statuses,
+        notifications,
+        widgets,
+        statusCalls,
+      ),
     );
     try {
       const failed = await exec(session, 'bg_run', {
@@ -1165,7 +1469,12 @@ void describe('sdk', () => {
       const killedTask = await wait(session, stoppedTask.id);
       await new Promise((resolve) => setTimeout(resolve, 30));
 
-      assert.equal(statuses.at(-1), undefined);
+      assert.deepEqual(latestBackgroundWidget(widgets), {
+        key: 'background-tasks',
+        lines: undefined,
+        placement: undefined,
+      });
+      assert.equal(latestBackgroundStatus(statusCalls).text, undefined);
       assert.equal(firstTask(await exec(session, 'bg_status', { taskId: failedTask.id })).status, 'failed');
       assert.equal(firstTask(await exec(session, 'bg_status', { taskId: killedTask.id })).status, 'killed');
 
@@ -1175,7 +1484,12 @@ void describe('sdk', () => {
       assert.ok(clearCommand);
       await clearCommand.handler('', session.extensionRunner.createCommandContext());
       assert.match(notifications.at(-1)?.message ?? '', /Cleared 2 finished/);
-      assert.equal(statuses.at(-1), undefined);
+      assert.deepEqual(latestBackgroundWidget(widgets), {
+        key: 'background-tasks',
+        lines: undefined,
+        placement: undefined,
+      });
+      assert.equal(latestBackgroundStatus(statusCalls).text, undefined);
       assert.equal(firstTask(await exec(session, 'bg_status', { taskId: failedTask.id })).status, 'failed');
       assert.equal(firstTask(await exec(session, 'bg_status', { taskId: killedTask.id })).status, 'killed');
     } finally {
@@ -1302,8 +1616,16 @@ void describe('sdk', () => {
     const { session } = await harness();
     const statuses: Array<string | undefined> = [];
     const notifications: UiNotification[] = [];
+    const widgets: UiWidgetCall[] = [];
+    const statusCalls: UiStatusCall[] = [];
     session.extensionRunner.setUIContext(
-      makeStatusUi(session.extensionRunner.getUIContext(), statuses, notifications),
+      makeStatusUi(
+        session.extensionRunner.getUIContext(),
+        statuses,
+        notifications,
+        widgets,
+        statusCalls,
+      ),
     );
     try {
       const commands = session.extensionRunner
@@ -1320,8 +1642,13 @@ void describe('sdk', () => {
         await new Promise((resolve) => setTimeout(resolve, 20));
       }
       assert.match(footer ?? '', /bg \u2b06 v999\.0\.0 \/bg-update/);
+      assert.deepEqual(latestBackgroundWidget(widgets), {
+        key: 'background-tasks',
+        lines: undefined,
+        placement: undefined,
+      });
 
-      // Append-to-active-footer path: segment trails the running/entry-hint status.
+      // Append-to-active-row path: the update segment trails the running/entry-hint status.
       const running = await exec(session, 'bg_run', {
         isAgent: false,
         name: 'Update Footer Running',
@@ -1330,8 +1657,19 @@ void describe('sdk', () => {
         triggerOnCompletion: false,
       });
       await renderFooterViaJobs(session);
-      assert.match(statuses.at(-1) ?? '', /bg 1 running · Shift↓ · \u2b06 v999\.0\.0 \/bg-update/);
+      assert.deepEqual(latestBackgroundWidget(widgets), {
+        key: 'background-tasks',
+        lines: [expectedBackgroundLabel('1 running · Shift↓ · ⬆ v999.0.0 /bg-update')],
+        placement: 'belowEditor',
+      });
+      assert.equal(latestBackgroundStatus(statusCalls).text, undefined);
       await exec(session, 'bg_kill', { taskId: taskFromResult(running).id });
+      assert.deepEqual(latestBackgroundWidget(widgets), {
+        key: 'background-tasks',
+        lines: undefined,
+        placement: undefined,
+      });
+      assert.match(latestBackgroundStatus(statusCalls).text ?? '', /bg \u2b06 v999\.0\.0 \/bg-update/);
 
       const updateCommand = session.extensionRunner
         .getRegisteredCommands()

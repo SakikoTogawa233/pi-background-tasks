@@ -27,14 +27,19 @@ void describe('docs package integration contract', () => {
     assert.match(publishing, /Production dependencies are empty/);
   });
 
-  void it('pins one registry/dock and running/done footer semantics', () => {
+  void it('pins one registry/dock and dedicated task-row semantics', () => {
     const host = text('docs/subsystems/host-ui.md');
     assert.match(host, /exactly five tools/);
-    assert.match(host, /one footer status, one overlay dock, one task namespace/);
+    assert.match(
+      host,
+      /one dedicated below-editor task row, one update-only native footer status, one overlay dock, one task namespace/,
+    );
+    assert.match(host, /running tasks or unseen successful completions/);
+    assert.match(host, /failed and stopped tasks do not keep the row visible/);
     const shortcuts = text('docs/reference/shortcuts-and-dock.md');
     assert.match(shortcuts, /Ctrl\+B/);
     assert.match(shortcuts, /Shift\+Down/);
-    assert.match(text('README.md'), /one registry and footer dock/);
+    assert.match(text('README.md'), /one dedicated task-status row and one footer dock/);
   });
 
   void it('pins v1 preservation and v2 owner-correlated ordering', () => {
@@ -54,7 +59,9 @@ void describe('docs package integration contract', () => {
       changelog.indexOf('## [Unreleased]'),
       changelog.indexOf('## [3.0.0]'),
     );
-    assert.doesNotMatch(unreleased, /### (Removed|Added|Changed)/u, 'Unreleased must be empty after the 3.0.0 cut');
+    assert.match(unreleased, /### Changed/u);
+    assert.match(unreleased, /dedicated row above Pi's native footer/u);
+    assert.doesNotMatch(unreleased, /### (Removed|Added)/u);
     const released = changelog.slice(
       changelog.indexOf('## [3.0.0]'),
       changelog.indexOf('## [2.6.0]'),

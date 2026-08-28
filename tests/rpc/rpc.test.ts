@@ -1,6 +1,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
+import { createServer } from 'node:http';
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -47,6 +48,25 @@ async function sleepScript(cwd: string, name: string, ms: number): Promise<strin
   const file = `${name}.cjs`;
   await writeFile(join(cwd, file), `setTimeout(Boolean, ${String(ms)});\n`, 'utf8');
   return `node ${file}`;
+}
+
+async function startRegistry(payload: string): Promise<{ url: string; close: () => Promise<void> }> {
+  const server = createServer((_request, response) => {
+    response.writeHead(200, { 'content-type': 'application/json' });
+    response.end(payload);
+  });
+  await new Promise<void>((resolve) => {
+    server.listen(0, '127.0.0.1', resolve);
+  });
+  const address = server.address();
+  assert.ok(address !== null && typeof address === 'object');
+  return {
+    url: `http://127.0.0.1:${String(address.port)}`,
+    close: () =>
+      new Promise<void>((resolve) => {
+        server.close(() => resolve());
+      }),
+  };
 }
 
 function isObject(value: unknown): value is object {
@@ -227,14 +247,51 @@ function notifyWith(re: RegExp): (event: object) => boolean {
   return (event) => field(event, 'type') === 'extension_ui_request' && re.test(eventMessage(event));
 }
 
-function isSingleDoneBackgroundStatus(event: object): boolean {
-  const statusText = field(event, 'statusText');
+function isBackgroundWidgetRequest(event: object): boolean {
+  return (
+    field(event, 'type') === 'extension_ui_request' &&
+    field(event, 'method') === 'setWidget' &&
+    field(event, 'widgetKey') === 'background-tasks'
+  );
+}
+
+function backgroundWidgetLine(event: object): string | undefined {
+  if (!isBackgroundWidgetRequest(event)) return undefined;
+  const lines = field(event, 'widgetLines');
+  if (!Array.isArray(lines) || lines.length !== 1 || typeof lines[0] !== 'string') return undefined;
+  return lines[0];
+}
+
+function isSingleDoneBackgroundWidget(event: object): boolean {
+  const line = backgroundWidgetLine(event);
+  return (
+    field(event, 'widgetPlacement') === 'belowEditor' &&
+    typeof line === 'string' &&
+    line.includes(' bg 1 done · Shift↓ · /bg-clear ')
+  );
+}
+
+function isBackgroundWidgetClear(event: object): boolean {
+  return isBackgroundWidgetRequest(event) && field(event, 'widgetLines') === undefined;
+}
+
+function isBackgroundStatusClear(event: object): boolean {
   return (
     field(event, 'type') === 'extension_ui_request' &&
     field(event, 'method') === 'setStatus' &&
     field(event, 'statusKey') === 'background-tasks' &&
-    typeof statusText === 'string' &&
-    statusText.includes(' bg 1 done · Shift↓ · /bg-clear ')
+    field(event, 'statusText') === undefined
+  );
+}
+
+function isUpdateOnlyBackgroundStatus(event: object): boolean {
+  const text = field(event, 'statusText');
+  return (
+    field(event, 'type') === 'extension_ui_request' &&
+    field(event, 'method') === 'setStatus' &&
+    field(event, 'statusKey') === 'background-tasks' &&
+    typeof text === 'string' &&
+    text.includes(' bg ⬆ v999.0.0 /bg-update ')
   );
 }
 
@@ -257,31 +314,33 @@ function commandNames(event: object): string[] {
 }
 
 void describe('rpc', () => {
-  void it('matches only the single completed background-task RPC status', () => {
-    const terminalStatus = {
+  void it('matches only the single completed background-task RPC widget', () => {
+    const terminalWidget = {
       type: 'extension_ui_request',
-      method: 'setStatus',
-      statusKey: 'background-tasks',
-      statusText: '\u001b[34m bg 1 done · Shift↓ · /bg-clear \u001b[0m',
+      method: 'setWidget',
+      widgetKey: 'background-tasks',
+      widgetLines: ['\u001b[34m bg 1 done · Shift↓ · /bg-clear \u001b[0m'],
+      widgetPlacement: 'belowEditor',
     };
 
-    assert.equal(isSingleDoneBackgroundStatus(terminalStatus), true);
-    assert.equal(isSingleDoneBackgroundStatus({ ...terminalStatus, method: 'notify' }), false);
-    assert.equal(isSingleDoneBackgroundStatus({ ...terminalStatus, statusKey: 'other' }), false);
+    assert.equal(isSingleDoneBackgroundWidget(terminalWidget), true);
+    assert.equal(isSingleDoneBackgroundWidget({ ...terminalWidget, method: 'notify' }), false);
+    assert.equal(isSingleDoneBackgroundWidget({ ...terminalWidget, widgetKey: 'other' }), false);
     assert.equal(
-      isSingleDoneBackgroundStatus({
-        ...terminalStatus,
-        statusText: ' bg 1 running · 1 done · Shift↓ · /bg-clear ',
+      isSingleDoneBackgroundWidget({
+        ...terminalWidget,
+        widgetLines: [' bg 1 running · 1 done · Shift↓ · /bg-clear '],
       }),
       false,
     );
     assert.equal(
-      isSingleDoneBackgroundStatus({
-        ...terminalStatus,
-        statusText: ' bg 2 done · Shift↓ · /bg-clear ',
+      isSingleDoneBackgroundWidget({
+        ...terminalWidget,
+        widgetLines: [' bg 2 done · Shift↓ · /bg-clear '],
       }),
       false,
     );
+    assert.equal(isSingleDoneBackgroundWidget({ ...terminalWidget, widgetPlacement: 'aboveEditor' }), false);
   });
 
   void it('discovers commands and covers /bg + /logs slash flow', async () => {
@@ -305,12 +364,16 @@ void describe('rpc', () => {
       );
       const started = await rpc.wait(notifyWith(/Started RPC Echo/));
       const id = extractTaskId(started);
-      await rpc.wait(isSingleDoneBackgroundStatus);
+      await rpc.wait(isSingleDoneBackgroundWidget);
+      await rpc.wait(isBackgroundStatusClear);
       await rpc.prompt(`/logs ${id} 200`);
       const logs = await rpc.wait(notifyWith(/rpc-ok[\s\S]*Full output/));
       assert.ok(logs);
+      const clearStart = rpc.events.length;
       await rpc.prompt('/bg-clear');
-      await rpc.wait(notifyWith(/Cleared 1 finished background task notice/));
+      await rpc.waitAfter(clearStart, notifyWith(/Cleared 1 finished background task notice/));
+      await rpc.waitAfter(clearStart, isBackgroundWidgetClear);
+      await rpc.waitAfter(clearStart, isBackgroundStatusClear);
     });
   });
 
@@ -321,8 +384,11 @@ void describe('rpc', () => {
       const id = extractTaskId(started);
       await rpc.prompt('/jobs');
       await rpc.wait(notifyWith(/running[\s\S]*RPC Sleep/));
+      const killStart = rpc.events.length;
       await rpc.prompt(`/kill ${id}`);
-      await rpc.wait(notifyWith(/Killed RPC Sleep/));
+      await rpc.waitAfter(killStart, notifyWith(/Killed RPC Sleep/));
+      await rpc.waitAfter(killStart, isBackgroundWidgetClear);
+      await rpc.waitAfter(killStart, isBackgroundStatusClear);
       await rpc.prompt('/jobs');
       await rpc.wait(notifyWith(/killed[\s\S]*RPC Sleep/));
     });
@@ -362,6 +428,54 @@ void describe('rpc', () => {
     });
   });
 
+  void it('keeps update-only text native and appends updates to the dedicated RPC row', async () => {
+    const registry = await startRegistry(
+      JSON.stringify({ name: '@sakiko233/pi-background-tasks', version: '999.0.0' }),
+    );
+    try {
+      await withRpc(
+        async (rpc, cwd) => {
+          const updateOnly = await rpc.wait(isUpdateOnlyBackgroundStatus);
+          const updateOnlyIndex = rpc.events.indexOf(updateOnly);
+          await rpc.waitAfter(0, isBackgroundWidgetClear);
+          assert.equal(
+            rpc.events
+              .slice(0, updateOnlyIndex + 1)
+              .some((event) => backgroundWidgetLine(event)?.includes('bg-update') ?? false),
+            false,
+          );
+
+          const runningStart = rpc.events.length;
+          await rpc.prompt(`/bg --name "RPC Update Row" ${await sleepScript(cwd, 'rpc-update-row', 10000)}`);
+          const started = await rpc.waitAfter(runningStart, notifyWith(/Started RPC Update Row/));
+          const id = extractTaskId(started);
+          const row = await rpc.waitAfter(runningStart, (event) => {
+            const line = backgroundWidgetLine(event);
+            return (
+              field(event, 'widgetPlacement') === 'belowEditor' &&
+              typeof line === 'string' &&
+              line.includes(' bg 1 running · Shift↓ · ⬆ v999.0.0 /bg-update ')
+            );
+          });
+          assert.ok(row);
+          await rpc.waitAfter(runningStart, isBackgroundStatusClear);
+
+          const killStart = rpc.events.length;
+          await rpc.prompt(`/kill ${id}`);
+          await rpc.waitAfter(killStart, notifyWith(/Killed RPC Update Row/));
+          await rpc.waitAfter(killStart, isBackgroundWidgetClear);
+          await rpc.waitAfter(killStart, isUpdateOnlyBackgroundStatus);
+        },
+        {
+          PI_OFFLINE: '0',
+          PI_BG_REGISTRY_URL: registry.url,
+        },
+      );
+    } finally {
+      await registry.close();
+    }
+  });
+
   void it('prints non-installing /bg-update instructions offline', async () => {
     await withRpc(async (rpc) => {
       const response = await rpc.prompt('/bg-update');
@@ -378,12 +492,8 @@ void describe('rpc', () => {
     await withRpc(async (rpc) => {
       const tasksResponse = await rpc.prompt('/tasks');
       assert.equal(field(tasksResponse, 'success'), true);
-      await rpc.wait(
-        (event) =>
-          field(event, 'type') === 'extension_ui_request' &&
-          field(event, 'method') === 'setStatus' &&
-          field(event, 'statusKey') === 'background-tasks',
-      );
+      await rpc.wait(isBackgroundWidgetClear);
+      await rpc.wait(isBackgroundStatusClear);
       const bgTasksResponse = await rpc.prompt('/bg-tasks bdeadbeef');
       assert.equal(field(bgTasksResponse, 'success'), true);
     });
@@ -396,7 +506,8 @@ void describe('rpc', () => {
           `/bg --name "RPC Visible Done" ${await writeExactlyScript(cwd, 'rpc-visible-done', 'done')}`,
         );
         await rpc.wait(notifyWith(/Started RPC Visible Done/));
-        await rpc.wait(isSingleDoneBackgroundStatus);
+        await rpc.wait(isSingleDoneBackgroundWidget);
+        await rpc.wait(isBackgroundStatusClear);
 
         const statusStart = rpc.events.length;
         await rpc.prompt(
@@ -413,26 +524,28 @@ void describe('rpc', () => {
           ),
           15_000,
         );
-        const footer = await rpc.waitAfter(
+        const row = await rpc.waitAfter(
           statusStart,
           (event) => {
-            const statusText = field(event, 'statusText');
+            const line = backgroundWidgetLine(event);
             return (
-              field(event, 'type') === 'extension_ui_request' &&
-              field(event, 'method') === 'setStatus' &&
-              field(event, 'statusKey') === 'background-tasks' &&
-              typeof statusText === 'string' &&
-              statusText.includes(' bg 1 done · Shift↓ · /bg-clear ') &&
-              !/failed|stopped/.test(statusText)
+              field(event, 'widgetPlacement') === 'belowEditor' &&
+              typeof line === 'string' &&
+              line.includes(' bg 1 done · Shift↓ · /bg-clear ') &&
+              !/failed|stopped/.test(line)
             );
           },
         );
-        assert.ok(footer);
+        assert.ok(row);
+        await rpc.waitAfter(statusStart, isBackgroundStatusClear);
 
         await rpc.prompt(`/logs ${id} 200`);
         await rpc.wait(notifyWith(/background task error:[\s\S]*Output exceeded cap/));
+        const clearStart = rpc.events.length;
         await rpc.prompt('/bg-clear');
-        await rpc.wait(notifyWith(/Cleared 2 finished background task notices/));
+        await rpc.waitAfter(clearStart, notifyWith(/Cleared 2 finished background task notices/));
+        await rpc.waitAfter(clearStart, isBackgroundWidgetClear);
+        await rpc.waitAfter(clearStart, isBackgroundStatusClear);
       },
       { PI_BG_MAX_OUTPUT_BYTES: '256' },
     );
