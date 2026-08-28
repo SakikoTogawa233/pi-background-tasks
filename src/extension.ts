@@ -274,8 +274,8 @@ export default function backgroundTasksExtension(pi: ExtensionAPI): void {
       const unseenDone = unseenFinished.filter((task) => task.status === 'completed');
       const unseenFinishedCount = unseenFinished.length;
       const updateSegment = formatUpdateSegment(latestKnownVersion, PACKAGE_VERSION ?? '');
-      ctx.ui.setWidget('background-tasks', undefined);
       if (running.length === 0 && unseenDone.length === 0) {
+        ctx.ui.setWidget('background-tasks', undefined);
         ctx.ui.setStatus(
           'background-tasks',
           updateSegment ? lightBlue(` bg ${updateSegment} `) : undefined,
@@ -292,7 +292,8 @@ export default function backgroundTasksExtension(pi: ExtensionAPI): void {
       const segments = [...parts, entryHint];
       if (updateSegment) segments.push(updateSegment);
       const label = ` bg ${segments.join(' · ')} `;
-      ctx.ui.setStatus('background-tasks', lightBlue(label));
+      ctx.ui.setStatus('background-tasks', undefined);
+      ctx.ui.setWidget('background-tasks', [lightBlue(label)], { placement: 'belowEditor' });
     } catch (error) {
       console.error(
         `[background-tasks] UI update failed: ${error instanceof Error ? error.message : String(error)}`,

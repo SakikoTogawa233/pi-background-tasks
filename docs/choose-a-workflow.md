@@ -13,4 +13,4 @@ covers_sources: []
 - Ordinary foreground shell work: `bash`; hand off with `Ctrl+B` if it runs long.
 - Deliberate inspection: `bg_status`, `bg_logs`, `/jobs`, or `/logs`.
 - Stop: `bg_kill`, `/kill`, or dock controls.
-- External plugin work: the owning plugin registers through EventBus v2; users still see one task registry and dock.
+- External plugin work: the owning plugin registers through EventBus v2; users still see one task registry, one dedicated task-status row, and one dock.

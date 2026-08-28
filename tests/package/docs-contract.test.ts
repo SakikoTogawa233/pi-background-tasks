@@ -27,14 +27,30 @@ void describe('docs package integration contract', () => {
     assert.match(publishing, /Production dependencies are empty/);
   });
 
-  void it('pins one registry/dock and running/done footer semantics', () => {
+  void it('pins one registry/dock and dedicated task-row semantics', () => {
     const host = text('docs/subsystems/host-ui.md');
     assert.match(host, /exactly five tools/);
-    assert.match(host, /one footer status, one overlay dock, one task namespace/);
+    assert.match(
+      host,
+      /one dedicated below-editor task row, one update-only native footer status, one overlay dock, one task namespace/,
+    );
+    assert.match(host, /running tasks or unseen successful completions/);
+    assert.match(host, /Failed and stopped tasks do not keep the row visible/);
     const shortcuts = text('docs/reference/shortcuts-and-dock.md');
     assert.match(shortcuts, /Ctrl\+B/);
     assert.match(shortcuts, /Shift\+Down/);
-    assert.match(text('README.md'), /one registry and footer dock/);
+    assert.match(
+      text('README.md'),
+      /one dedicated task-status row above Pi's native footer, and one footer dock/,
+    );
+  });
+
+  void it('shows the dedicated row above the native footer in the UI illustration', () => {
+    const illustration = text('docs/assets/footer-dock.svg');
+    assert.match(illustration, /dedicated task row above the unchanged native Pi footer/);
+    assert.match(illustration, /bg 1 running · 1 done · focused/);
+    assert.match(illustration, /\/workspace\/project/);
+    assert.match(illustration, /scripted-model/);
   });
 
   void it('pins v1 preservation and v2 owner-correlated ordering', () => {
@@ -48,26 +64,34 @@ void describe('docs package integration contract', () => {
     assert.match(eventbus, /During shutdown.*cancel_ack.*settle/s);
   });
 
-  void it('declares the extracted scope in the 3.0.0 changelog entry', () => {
+  void it('cuts the dedicated task row in 3.1.0 and preserves the 3.0.0 scope', () => {
     const changelog = text('CHANGELOG.md');
     const unreleased = changelog.slice(
       changelog.indexOf('## [Unreleased]'),
+      changelog.indexOf('## [3.1.0]'),
+    );
+    assert.doesNotMatch(unreleased, /### (Removed|Added|Changed)/u, 'Unreleased must be empty after the 3.1.0 cut');
+    const dedicatedRelease = changelog.slice(
+      changelog.indexOf('## [3.1.0]'),
       changelog.indexOf('## [3.0.0]'),
     );
-    assert.doesNotMatch(unreleased, /### (Removed|Added|Changed)/u, 'Unreleased must be empty after the 3.0.0 cut');
-    const released = changelog.slice(
+    assert.match(dedicatedRelease, /^## \[3\.1\.0\] - 2026-08-28$/m);
+    assert.match(dedicatedRelease, /### Changed/u);
+    assert.match(dedicatedRelease, /dedicated row above Pi's native footer/u);
+    assert.doesNotMatch(dedicatedRelease, /### (Removed|Added)/u);
+    const extractedRelease = changelog.slice(
       changelog.indexOf('## [3.0.0]'),
       changelog.indexOf('## [2.6.0]'),
     );
-    assert.match(released, /^## \[3\.0\.0\] - \d{4}-\d{2}-\d{2}$/m);
-    assert.match(released, /### Removed/);
+    assert.match(extractedRelease, /^## \[3\.0\.0\] - \d{4}-\d{2}-\d{2}$/m);
+    assert.match(extractedRelease, /### Removed/);
     for (const removed of [/delegate/u, /attested/u, /Fusion/u, /Anthropic attribution/u]) {
-      assert.match(released, removed, `3.0.0 must describe the removed surface: ${String(removed)}`);
+      assert.match(extractedRelease, removed, `3.0.0 must describe the removed surface: ${String(removed)}`);
     }
-    assert.match(released, /EventBus v2 external-task/u);
-    assert.match(released, /### Added|### Changed/u);
+    assert.match(extractedRelease, /EventBus v2 external-task/u);
+    assert.match(extractedRelease, /### Added|### Changed/u);
     const pkg = parseJsonText(text('package.json')) as { version: string };
-    assert.equal(pkg.version, '3.0.0', 'package.json must match the 3.0.0 changelog entry');
+    assert.equal(pkg.version, '3.1.0', 'package.json must match the 3.1.0 changelog entry');
   });
 
   void it('generates only task runtime paths and v1/v2 schemas', () => {

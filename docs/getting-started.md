@@ -11,4 +11,4 @@ covers_sources: []
 
 Install with `pi install npm:@sakiko233/pi-background-tasks`. Use `bg_run` or `/bg` for expected long-running commands. Use ordinary `bash` for synchronous work; in the TUI, `Ctrl+B` hands a still-running command to the background registry.
 
-Use `/jobs`, `/logs`, `/kill`, or the focused dock to inspect and control tasks.
+Running tasks and unseen successful completions appear on one dedicated row immediately above Pi's native footer. Use `/jobs`, `/logs`, `/kill`, or the focused dock to inspect and control tasks.

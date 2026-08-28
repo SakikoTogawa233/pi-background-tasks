@@ -69,6 +69,8 @@ async function foregroundHarness(
       PI_BG_SCRIPTED_SCENARIO: scenario,
       PI_BG_SCRIPTED_EVENTS: join('..', 'provider-events.jsonl'),
     },
+    cols: 80,
+    rows: 24,
   });
   t.after(async () => harness.cleanup());
   await harness.start();

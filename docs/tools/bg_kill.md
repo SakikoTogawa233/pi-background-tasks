@@ -13,7 +13,7 @@ Stop a running task. Shell tasks route through process-tree termination. Externa
 
 <!-- pi-docs:begin name="tool-contract-bg_kill" generator="scripts/docs/generate.mjs" -->
 - Label: **Background Kill**
-- Source: `src/extension.ts:839`
+- Source: `src/extension.ts:840`
 - Description: Stop a running background task by ID. Fails loudly if the task is unknown or already finished.
 - Root schema: `object`
 

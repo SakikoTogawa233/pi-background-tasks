@@ -13,7 +13,7 @@ Point-in-time status for one task or recent tasks. It is not a waiting loop.
 
 <!-- pi-docs:begin name="tool-contract-bg_status" generator="scripts/docs/generate.mjs" -->
 - Label: **Background Status**
-- Source: `src/extension.ts:763`
+- Source: `src/extension.ts:764`
 - Description: Inspect one background task or list all running/recent background tasks. This is a point-in-time inspection tool, not a waiting primitive.
 - Root schema: `object`
 

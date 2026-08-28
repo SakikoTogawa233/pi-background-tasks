@@ -13,7 +13,7 @@ Read a bounded head or tail from a task output file. Full output remains on disk
 
 <!-- pi-docs:begin name="tool-contract-bg_logs" generator="scripts/docs/generate.mjs" -->
 - Label: **Background Logs**
-- Source: `src/extension.ts:794`
+- Source: `src/extension.ts:795`
 - Description: Read bounded output from a background task for deliberate inspection; this is not a waiting primitive. Output is capped at 50.0KB for model safety and points to the full output file when truncated.
 - Root schema: `object`
 

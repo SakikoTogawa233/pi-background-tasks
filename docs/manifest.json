@@ -34,7 +34,7 @@
       "state": "missing"
     },
     {
-      "authored_body_sha256": "sha256:e1af1099f3ad1800519b0b20c159fb98a1137c74f622059f0eb7bb5fa0ebb110",
+      "authored_body_sha256": "sha256:c7862f4da76edb8fc3392fad2eff8fb3379c3281fe5efa95d7260c9081929280",
       "covers_sources": [
         "extensions/background-tasks.ts",
         "src/core/update-check.ts",
@@ -469,7 +469,7 @@
     "image": "https://raw.githubusercontent.com/SakikoTogawa233/pi-background-tasks/main/logo.png",
     "name": "@sakiko233/pi-background-tasks",
     "type": "module",
-    "version": "3.0.0"
+    "version": "3.1.0"
   },
   "public_surface_ids": [
     "command:bg",
@@ -499,56 +499,56 @@
         "id": "command:bg",
         "kind": "command",
         "name": "bg",
-        "source": "src/extension.ts:518"
+        "source": "src/extension.ts:519"
       },
       {
         "description": "Clear finished background task footer notices",
         "id": "command:bg-clear",
         "kind": "command",
         "name": "bg-clear",
-        "source": "src/extension.ts:560"
+        "source": "src/extension.ts:561"
       },
       {
         "description": "Open the background task manager UI",
         "id": "command:bg-tasks",
         "kind": "command",
         "name": "bg-tasks",
-        "source": "src/extension.ts:552"
+        "source": "src/extension.ts:553"
       },
       {
         "description": "Show how to update @sakiko233/pi-background-tasks to the latest published version",
         "id": "command:bg-update",
         "kind": "command",
         "name": "bg-update",
-        "source": "src/extension.ts:568"
+        "source": "src/extension.ts:569"
       },
       {
         "description": "List running and recent background tasks",
         "id": "command:jobs",
         "kind": "command",
         "name": "jobs",
-        "source": "src/extension.ts:606"
+        "source": "src/extension.ts:607"
       },
       {
         "description": "Stop a running background task: /kill <id>",
         "id": "command:kill",
         "kind": "command",
         "name": "kill",
-        "source": "src/extension.ts:650"
+        "source": "src/extension.ts:651"
       },
       {
         "description": "Show bounded output from a background task: /logs <id> [maxBytes]",
         "id": "command:logs",
         "kind": "command",
         "name": "logs",
-        "source": "src/extension.ts:619"
+        "source": "src/extension.ts:620"
       },
       {
         "description": "Open the Claude-like background task manager UI",
         "id": "command:tasks",
         "kind": "command",
         "name": "tasks",
-        "source": "src/extension.ts:544"
+        "source": "src/extension.ts:545"
       }
     ],
     "eventbus": [
@@ -599,7 +599,7 @@
         "id": "renderer:background-task-notification",
         "kind": "renderer",
         "name": "background-task-notification",
-        "source": "src/extension.ts:400"
+        "source": "src/extension.ts:401"
       }
     ],
     "shortcut": [
@@ -608,7 +608,7 @@
         "id": "shortcut:ctrl+alt+c",
         "kind": "shortcut",
         "name": "ctrl+alt+c",
-        "source": "src/extension.ts:598"
+        "source": "src/extension.ts:599"
       },
       {
         "description": "Move the most recent active foreground bash command to the background",
@@ -622,7 +622,7 @@
         "id": "shortcut:shift+down",
         "kind": "shortcut",
         "name": "shift+down",
-        "source": "src/extension.ts:591"
+        "source": "src/extension.ts:592"
       }
     ],
     "tool": [
@@ -676,7 +676,7 @@
           ],
           "type": "object"
         },
-        "source": "src/extension.ts:839"
+        "source": "src/extension.ts:840"
       },
       {
         "description": "Read bounded output from a background task for deliberate inspection; this is not a waiting primitive. Output is capped at 50.0KB for model safety and points to the full output file when truncated.",
@@ -710,7 +710,7 @@
           ],
           "type": "object"
         },
-        "source": "src/extension.ts:794"
+        "source": "src/extension.ts:795"
       },
       {
         "description": "Start a named long-running shell command in the background and return immediately with a task ID and output path. By default, completed, failed, or killed terminal state is delivered automatically as <background-task-notification> and starts a follow-up agent turn; do not sleep or poll merely to wait. Output is written to .pi/tasks and model-visible logs are bounded to 50.0KB.",
@@ -766,7 +766,7 @@
           ],
           "type": "object"
         },
-        "source": "src/extension.ts:683"
+        "source": "src/extension.ts:684"
       },
       {
         "description": "Inspect one background task or list all running/recent background tasks. This is a point-in-time inspection tool, not a waiting primitive.",
@@ -790,7 +790,7 @@
           "required": [],
           "type": "object"
         },
-        "source": "src/extension.ts:763"
+        "source": "src/extension.ts:764"
       }
     ],
     "workflow": []

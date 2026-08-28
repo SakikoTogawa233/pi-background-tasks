@@ -6,7 +6,7 @@
 |---|---|
 | Tools | Exactly `bash`, `bg_run`, `bg_status`, `bg_logs`, `bg_kill` |
 | Commands | `/bg`, `/jobs`, `/logs`, `/kill`, `/tasks`, `/bg-tasks`, `/bg-clear`, `/bg-update` |
-| UI | One footer status and one focused dock |
+| UI | One dedicated below-editor task row, one update-only native footer status, and one focused dock |
 | Runtime | `.pi/tasks/<session-id>-<pid>/` output and metadata |
 | EventBus v1 | Closed shell capabilities/run/status/logs/kill/terminal frames |
 | EventBus v2 | Closed external-task handshake/register/update/log/cancel/ack/settle/status/logs/kill/terminal frames |
@@ -16,6 +16,7 @@
 - Exact runtime tools and commands: package/SDK.
 - Foreground handoff and adopted process ownership: unit, SDK, PTY, tmux, scripted provider, Windows routing.
 - Direct shell task lifecycle: unit, SDK, RPC, package smoke, compatibility.
+- Dedicated shared task-row projection, native-status clearing, update-only fallback, external-owner aggregation, and wide/narrow placement: SDK, RPC, and real tmux.
 - Bounded logs and output caps: unit, SDK, RPC.
 - Completion notification and response-before-terminal ordering: unit, SDK, scripted provider.
 - EventBus v1 compatibility: unit and SDK.

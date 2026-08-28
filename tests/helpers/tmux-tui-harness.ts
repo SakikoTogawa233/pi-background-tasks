@@ -20,6 +20,8 @@ function delay(milliseconds: number): Promise<void> {
 export interface TmuxTuiHarnessOptions {
   readonly command: readonly string[];
   readonly env: Readonly<Record<string, string>>;
+  readonly cols: number;
+  readonly rows: number;
 }
 
 export interface TmuxTuiHarness {
@@ -43,7 +45,7 @@ export interface TmuxTuiHarness {
 
 /**
  * Run a real Pi TUI in a dedicated tmux server with an isolated project, HOME,
- * agent directory, session directory, and 80x24 pane.
+ * agent directory, session directory, and caller-selected pane dimensions.
  */
 export async function createTmuxTuiHarness(
   options: TmuxTuiHarnessOptions,
@@ -125,8 +127,22 @@ export async function createTmuxTuiHarness(
   assert.equal(versionResult.status, 0, versionResult.stderr);
   const tmuxVersion = versionResult.stdout.trim();
 
-  tmux(['new-session', '-d', '-s', sessionName, '-x', '80', '-y', '24', '-c', cwd]);
-  assert.equal(tmux(['display-message', '-p', '-t', sessionName, '#{pane_width}x#{pane_height}']).trim(), '80x24');
+  tmux([
+    'new-session',
+    '-d',
+    '-s',
+    sessionName,
+    '-x',
+    String(options.cols),
+    '-y',
+    String(options.rows),
+    '-c',
+    cwd,
+  ]);
+  assert.equal(
+    tmux(['display-message', '-p', '-t', sessionName, '#{pane_width}x#{pane_height}']).trim(),
+    `${String(options.cols)}x${String(options.rows)}`,
+  );
   assert.equal(tmux(['show-options', '-gv', 'extended-keys']).trim(), 'on');
 
   const sendText = (text: string): void => {
