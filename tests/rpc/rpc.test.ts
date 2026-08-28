@@ -103,22 +103,24 @@ class RPC {
   constructor(
     public cwd: string,
     env: Record<string, string> = {},
+    offline = true,
   ) {
+    const args = [
+      '--mode',
+      'rpc',
+      '--no-session',
+      '--no-extensions',
+      '-e',
+      extensionPath,
+      '--no-skills',
+      '--no-prompt-templates',
+      '--no-context-files',
+      '--no-tools',
+    ];
+    if (offline) args.splice(3, 0, '--offline');
     this.proc = spawn(
       piLaunch.executable,
-      piCliArgv(piLaunch, [
-        '--mode',
-        'rpc',
-        '--no-session',
-        '--offline',
-        '--no-extensions',
-        '-e',
-        extensionPath,
-        '--no-skills',
-        '--no-prompt-templates',
-        '--no-context-files',
-        '--no-tools',
-      ]),
+      piCliArgv(piLaunch, args),
       {
         cwd,
         env: {
@@ -230,11 +232,12 @@ async function removeRootWhenReleased(root: string): Promise<void> {
 async function withRpc(
   fn: (rpc: RPC, cwd: string) => Promise<void>,
   env: Record<string, string> = {},
+  offline = true,
 ): Promise<void> {
   const root = await mkdtemp(join(tmpdir(), 'pi-bg-rpc-'));
   const cwd = join(root, 'project');
   await mkdir(cwd, { recursive: true });
-  const rpc = new RPC(cwd, env);
+  const rpc = new RPC(cwd, env, offline);
   try {
     await fn(rpc, cwd);
   } finally {
@@ -470,6 +473,7 @@ void describe('rpc', () => {
           PI_OFFLINE: '0',
           PI_BG_REGISTRY_URL: registry.url,
         },
+        false,
       );
     } finally {
       await registry.close();

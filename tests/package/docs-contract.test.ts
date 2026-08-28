@@ -35,11 +35,14 @@ void describe('docs package integration contract', () => {
       /one dedicated below-editor task row, one update-only native footer status, one overlay dock, one task namespace/,
     );
     assert.match(host, /running tasks or unseen successful completions/);
-    assert.match(host, /failed and stopped tasks do not keep the row visible/);
+    assert.match(host, /Failed and stopped tasks do not keep the row visible/);
     const shortcuts = text('docs/reference/shortcuts-and-dock.md');
     assert.match(shortcuts, /Ctrl\+B/);
     assert.match(shortcuts, /Shift\+Down/);
-    assert.match(text('README.md'), /one dedicated task-status row and one footer dock/);
+    assert.match(
+      text('README.md'),
+      /one dedicated task-status row above Pi's native footer, and one footer dock/,
+    );
   });
 
   void it('pins v1 preservation and v2 owner-correlated ordering', () => {
