@@ -64,28 +64,34 @@ void describe('docs package integration contract', () => {
     assert.match(eventbus, /During shutdown.*cancel_ack.*settle/s);
   });
 
-  void it('declares the extracted scope in the 3.0.0 changelog entry', () => {
+  void it('cuts the dedicated task row in 3.1.0 and preserves the 3.0.0 scope', () => {
     const changelog = text('CHANGELOG.md');
     const unreleased = changelog.slice(
       changelog.indexOf('## [Unreleased]'),
+      changelog.indexOf('## [3.1.0]'),
+    );
+    assert.doesNotMatch(unreleased, /### (Removed|Added|Changed)/u, 'Unreleased must be empty after the 3.1.0 cut');
+    const dedicatedRelease = changelog.slice(
+      changelog.indexOf('## [3.1.0]'),
       changelog.indexOf('## [3.0.0]'),
     );
-    assert.match(unreleased, /### Changed/u);
-    assert.match(unreleased, /dedicated row above Pi's native footer/u);
-    assert.doesNotMatch(unreleased, /### (Removed|Added)/u);
-    const released = changelog.slice(
+    assert.match(dedicatedRelease, /^## \[3\.1\.0\] - 2026-08-28$/m);
+    assert.match(dedicatedRelease, /### Changed/u);
+    assert.match(dedicatedRelease, /dedicated row above Pi's native footer/u);
+    assert.doesNotMatch(dedicatedRelease, /### (Removed|Added)/u);
+    const extractedRelease = changelog.slice(
       changelog.indexOf('## [3.0.0]'),
       changelog.indexOf('## [2.6.0]'),
     );
-    assert.match(released, /^## \[3\.0\.0\] - \d{4}-\d{2}-\d{2}$/m);
-    assert.match(released, /### Removed/);
+    assert.match(extractedRelease, /^## \[3\.0\.0\] - \d{4}-\d{2}-\d{2}$/m);
+    assert.match(extractedRelease, /### Removed/);
     for (const removed of [/delegate/u, /attested/u, /Fusion/u, /Anthropic attribution/u]) {
-      assert.match(released, removed, `3.0.0 must describe the removed surface: ${String(removed)}`);
+      assert.match(extractedRelease, removed, `3.0.0 must describe the removed surface: ${String(removed)}`);
     }
-    assert.match(released, /EventBus v2 external-task/u);
-    assert.match(released, /### Added|### Changed/u);
+    assert.match(extractedRelease, /EventBus v2 external-task/u);
+    assert.match(extractedRelease, /### Added|### Changed/u);
     const pkg = parseJsonText(text('package.json')) as { version: string };
-    assert.equal(pkg.version, '3.0.0', 'package.json must match the 3.0.0 changelog entry');
+    assert.equal(pkg.version, '3.1.0', 'package.json must match the 3.1.0 changelog entry');
   });
 
   void it('generates only task runtime paths and v1/v2 schemas', () => {
