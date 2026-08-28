@@ -45,6 +45,14 @@ void describe('docs package integration contract', () => {
     );
   });
 
+  void it('shows the dedicated row above the native footer in the UI illustration', () => {
+    const illustration = text('docs/assets/footer-dock.svg');
+    assert.match(illustration, /dedicated task row above the unchanged native Pi footer/);
+    assert.match(illustration, /bg 1 running · 1 done · focused/);
+    assert.match(illustration, /\/workspace\/project/);
+    assert.match(illustration, /scripted-model/);
+  });
+
   void it('pins v1 preservation and v2 owner-correlated ordering', () => {
     const eventbus = text('docs/api/eventbus-v1.md');
     for (const operation of ['handshake', 'register', 'update', 'log', 'cancel_ack', 'settle', 'status', 'logs', 'kill']) {
