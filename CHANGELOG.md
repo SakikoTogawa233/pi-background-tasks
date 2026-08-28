@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Changed
+
+- Render running tasks and unseen successful completions on one dedicated row above Pi's native footer at every terminal width, while preserving the update-only native footer status when no task row is needed.
+
 ## [3.0.0] - 2026-08-21
 
 ### Removed
@@ -83,7 +87,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 - Exposed foreground Bash registration through the extension API and documented the Ctrl+B and timeout behavior in user and generated documentation.
 
-[Unreleased]: https://github.com/SakikoTogawa233/pi-background-tasks/compare/v2.6.0...HEAD
+[Unreleased]: https://github.com/SakikoTogawa233/pi-background-tasks/compare/v3.0.0...HEAD
 [2.6.0]: https://github.com/SakikoTogawa233/pi-background-tasks/compare/v2.5.3...v2.6.0
 [2.5.3]: https://github.com/SakikoTogawa233/pi-background-tasks/compare/v2.5.2...v2.5.3
 [2.5.2]: https://github.com/SakikoTogawa233/pi-background-tasks/compare/v2.5.1...v2.5.2

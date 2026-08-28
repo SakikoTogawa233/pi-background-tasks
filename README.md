@@ -45,7 +45,7 @@ pi install npm:@sakiko233/pi-background-tasks
 
 ## Commands and UI
 
-`/bg`, `/jobs`, `/logs`, `/kill`, `/tasks`, `/bg-tasks`, `/bg-clear`, and `/bg-update` share one registry and footer dock. Completion notifications are durable terminal truth and can trigger one follow-up turn.
+`/bg`, `/jobs`, `/logs`, `/kill`, `/tasks`, `/bg-tasks`, `/bg-clear`, and `/bg-update` share one registry, one dedicated task-status row above Pi's native footer, and one footer dock. Running tasks and unseen successful completions use the dedicated row at every terminal width; update-only notices remain in the native footer. Completion notifications are durable terminal truth and can trigger one follow-up turn.
 
 ## EventBus
 

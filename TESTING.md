@@ -47,5 +47,6 @@ npm run test:windows
 - EventBus v1 capabilities/run/status/logs/kill/terminal response ordering;
 - EventBus v2 unique service claim, handshake/register/update/log/cancel/ack/settle/status/logs/kill/terminal ordering, malformed-frame rejection, and shutdown settlement;
 - exact five-tool runtime surface and lifecycle-only packed payload;
-- one registry/dock for shell and external tasks;
+- one registry, one below-editor task-status row, one update-only native footer status, and one dock for shell and external tasks;
+- wide and narrow real-tmux placement plus row removal without an empty spacer;
 - SDK, RPC, component, PTY, tmux, scripted-provider, package, docs, compatibility, pnpm, and Windows-relevant lanes.

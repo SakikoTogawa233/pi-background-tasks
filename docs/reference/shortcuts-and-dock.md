@@ -12,9 +12,9 @@ covers_sources: []
 <!-- pi-docs:begin name="shortcut-contracts" generator="scripts/docs/generate.mjs" -->
 | Shortcut | Description | Provenance |
 | --- | --- | --- |
-| `ctrl+alt+c` | Clear finished background task footer notices (terminal-dependent fallback for /bg-clear) | `src/extension.ts:598` |
+| `ctrl+alt+c` | Clear finished background task footer notices (terminal-dependent fallback for /bg-clear) | `src/extension.ts:599` |
 | `ctrl+b` | Move the most recent active foreground bash command to the background | `src/core/foreground-bash.ts:641` |
-| `shift+down` | Open focused background task footer dock | `src/extension.ts:591` |
+| `shift+down` | Open focused background task footer dock | `src/extension.ts:592` |
 <!-- pi-docs:end name="shortcut-contracts" -->
 
-`Ctrl+B` hands off the newest eligible foreground Bash call. `Shift+Down` opens the one focused task dock. `/bg-clear` is the terminal-independent clear path; `Ctrl+Alt+C` is an optional fallback.
+`Ctrl+B` hands off the newest eligible foreground Bash call. `Shift+Down` opens the one focused task dock from the dedicated task-status row. `/bg-clear` is the terminal-independent clear path; `Ctrl+Alt+C` is an optional fallback.

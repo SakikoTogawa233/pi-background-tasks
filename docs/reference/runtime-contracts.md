@@ -18,13 +18,13 @@ covers_sources: []
 | `path` | read | `src/core/common.ts:474` |
 | `Path` | read | `src/core/common.ts:474` |
 | `PATH` | read | `src/core/common.ts:474` |
-| `PI_BG_DISABLE_UPDATE_CHECK` | read | `src/extension.ts:429` |
+| `PI_BG_DISABLE_UPDATE_CHECK` | read | `src/extension.ts:430` |
 | `PI_BG_MAX_OUTPUT_BYTES` | read | `src/core/registry.ts:35` |
-| `PI_BG_REGISTRY_URL` | read | `src/extension.ts:438` |
+| `PI_BG_REGISTRY_URL` | read | `src/extension.ts:439` |
 | `PI_BG_SHELL` | read | `src/core/common.ts:515` |
 | `PI_BG_SHELL_PATH` | read | `src/core/common.ts:516` |
 | `PI_MODEL` | read, write | `src/core/foreground-bash.ts:589`<br>`src/core/foreground-bash.ts:596` |
-| `PI_OFFLINE` | read | `src/extension.ts:430` |
+| `PI_OFFLINE` | read | `src/extension.ts:431` |
 | `PI_PROVIDER` | read, write | `src/core/foreground-bash.ts:588`<br>`src/core/foreground-bash.ts:595` |
 | `PI_REASONING_LEVEL` | read, write | `src/core/foreground-bash.ts:590`<br>`src/core/foreground-bash.ts:598` |
 | `PI_SESSION_FILE` | read, write | `src/core/foreground-bash.ts:587`<br>`src/core/foreground-bash.ts:593` |

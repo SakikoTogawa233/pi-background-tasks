@@ -14,5 +14,5 @@ Read bounded output for a task id or unambiguous prefix.
 <!-- pi-docs:begin name="command-contract-logs" generator="scripts/docs/generate.mjs" -->
 | Command | Description | Provenance |
 | --- | --- | --- |
-| `/logs` | Show bounded output from a background task: /logs <id> [maxBytes] | `src/extension.ts:619` |
+| `/logs` | Show bounded output from a background task: /logs <id> [maxBytes] | `src/extension.ts:620` |
 <!-- pi-docs:end name="command-contract-logs" -->
